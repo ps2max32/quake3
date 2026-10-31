@@ -15,8 +15,12 @@
 
 HERE     := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
 PS2MAX   ?= $(abspath $(HERE)/../..)
-MAXSDK   ?= $(PS2MAX)/libs/maxsdk
-OUT      ?= $(PS2MAX)/build/apps/maxsdk_quake3
+# the hires branch: 1080i (maxsdk_gl's MXGL_HIRES on maxsdk's hires passes,
+# the maxsdk worktree of branch hires, built apart from maxsdk's master)
+MAXSDK   ?= $(PS2MAX)/libs/maxsdk-hires
+MAXSDK_OUT ?= $(PS2MAX)/build/libs/maxsdk-hires
+MXGL_HIRES ?= 1
+OUT      ?= $(PS2MAX)/build/apps/maxsdk_quake3-hires
 all: $(OUT)/quake3.elf
 MXGL     ?= $(PS2MAX)/libs/maxsdk_gl
 include $(MXGL)/mk/mxgl.mk
@@ -43,7 +47,7 @@ Q3CFLAGS  = $(filter-out -ffreestanding -Wall -Wextra -Wno-unused-parameter -std
             -std=gnu99 -w -MMD -mvu0 -ffast-math -fapprox-func -cl-single-precision-constant -nostdlibinc -isystem $(PICOLIBC)/include -D__PS2__ -DNDEBUG \
             -DPRODUCT_VERSION=\"1.36-ps2\" -DUSE_INTERNAL_JPEG -DNO_GZIP \
             -DUSE_INTERNAL_SDL_HEADERS $(Q3_MEM) \
-            -I$(JPEG) -I$(ZLIB) -I$(SDLINC) -I$(C)/ps2 -I$(OUT)/ps2 -I$(MXGL_INC) -include $(C)/ps2/ps2_stdio.h -include $(C)/ps2/ps2_math.h
+            -I$(JPEG) -I$(ZLIB) -I$(SDLINC) -I$(C)/ps2 -I$(OUT)/ps2 -I$(MXGL_INC) $(MXGL_DEFS) -include $(C)/ps2/ps2_stdio.h -include $(C)/ps2/ps2_math.h
 
 QCOMMON  := cm_load cm_patch cm_polylib cm_test cm_trace cmd common cvar files md4 md5 msg \
             net_chan huffman q_math q_shared unzip ioapi vm vm_interpreted

@@ -23,3 +23,11 @@ marker; `ARGS` is added to the command line.
 
 Not done yet: sound (off), cinematics (stubbed), network play; lightmap colour comes from
 the vertex light.
+
+## Branch `hires`: 1080i
+
+This branch builds the 1920 x 1080 interlaced version (`$(OUT)` is
+`build/apps/maxsdk_quake3-hires`): maxsdk_gl with `MXGL_HIRES=1`, on the maxsdk worktree of
+branch `hires` (`libs/maxsdk-hires`, built into `build/libs/maxsdk-hires`). It runs, but
+the display lists' 2 MiB pool does not fit next to the hires records, so the world is drawn
+without them (slower).
