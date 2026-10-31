@@ -24,7 +24,9 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 #include "q_shared.h"
 #include "qcommon.h"
 #include <setjmp.h>
-#ifndef _WIN32
+#if defined(__PS2__)
+#include <sys/stat.h>
+#elif !defined(_WIN32)
 #include <netinet/in.h>
 #include <sys/stat.h> // umask
 #else
@@ -37,9 +39,13 @@ int demo_protocols[] =
 #define MAX_NUM_ARGVS	50
 
 #define MIN_DEDICATED_COMHUNKMEGS 1
+#ifndef DEF_COMHUNKMEGS
 #define DEF_COMHUNKMEGS 	128
+#endif
 #define MIN_COMHUNKMEGS		DEF_COMHUNKMEGS
+#ifndef DEF_COMZONEMEGS
 #define DEF_COMZONEMEGS		48
+#endif
 #define DEF_COMHUNKMEGS_S	XSTRING(DEF_COMHUNKMEGS)
 #define DEF_COMZONEMEGS_S	XSTRING(DEF_COMZONEMEGS)
 

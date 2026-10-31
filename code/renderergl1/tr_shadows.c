@@ -39,7 +39,11 @@ typedef struct {
 	int		facing;
 } edgeDef_t;
 
+#ifdef __PS2__
+#define	MAX_EDGE_DEFS	2
+#else
 #define	MAX_EDGE_DEFS	32
+#endif
 
 static	edgeDef_t	edgeDefs[SHADER_MAX_VERTEXES][MAX_EDGE_DEFS];
 static	int			numEdgeDefs[SHADER_MAX_VERTEXES];

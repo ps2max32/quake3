@@ -21,6 +21,9 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 */
 // tr_image.c
 #include "tr_local.h"
+#ifdef __PS2__
+#include <mxgl.h>
+#endif
 
 static byte			 s_intensitytable[256];
 static unsigned char s_gammatable[256];
@@ -1295,6 +1298,9 @@ void R_SetColorMappings( void ) {
 	}
 
 	tr.identityLight = 1.0f / ( 1 << tr.overbrightBits );
+#ifdef __PS2__
+	mxgl_ColorShift( tr.overbrightBits );
+#endif
 	tr.identityLightByte = 255 * tr.identityLight;
 
 

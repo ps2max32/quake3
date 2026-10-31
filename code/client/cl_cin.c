@@ -50,7 +50,11 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 #define ZA_SOUND_MONO		0x1020
 #define ZA_SOUND_STEREO		0x1021
 
+#ifdef __PS2__
+#define MAX_VIDEO_HANDLES	1
+#else
 #define MAX_VIDEO_HANDLES	16
+#endif
 
 
 static void RoQ_init( void );

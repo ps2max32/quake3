@@ -310,6 +310,22 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 
 #endif
 
+//=================================================================== PS2 ===
+
+#ifdef __PS2__
+
+#define OS_STRING "ps2"
+#define ID_INLINE inline
+#define PATH_SEP '/'
+
+#define ARCH_STRING "r5900"
+
+#define Q3_LITTLE_ENDIAN
+
+#define DLL_EXT ".so"
+
+#endif
+
 //============================================================ EMSCRIPTEN ===
 
 #ifdef __EMSCRIPTEN__

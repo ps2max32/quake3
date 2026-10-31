@@ -201,7 +201,11 @@ extern	vec3_t	listener_up;
 extern	dma_t	dma;
 
 #define	MAX_RAW_SAMPLES	16384
+#ifdef __PS2__
+#define MAX_RAW_STREAMS 1 // no VoIP
+#else
 #define MAX_RAW_STREAMS (MAX_CLIENTS * 2 + 1)
+#endif
 extern	portable_samplepair_t s_rawsamples[MAX_RAW_STREAMS][MAX_RAW_SAMPLES];
 extern	int		s_rawend[MAX_RAW_STREAMS];
 

@@ -22,6 +22,9 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 // tr_shade.c
 
 #include "tr_local.h" 
+#ifdef __PS2__
+#include <mxgl.h>
+#endif
 
 /*
 
@@ -925,6 +928,76 @@ static void ComputeTexCoords( shaderStage_t *pStage ) {
 /*
 ** RB_IterateStagesGeneric
 */
+#ifdef __PS2__
+/*
+The GS cannot multiply by the destination colour, only by the source
+alpha: a blendFunc filter stage is drawn as Cd * As with a lightmap kept as
+its brightness (mxgl_TexBrightness), up to 2x. A lightmap stage followed
+by a filter stage is drawn the other way round: the texture first, with the
+lightmap stage's state, then the lightmap as the filter. The stage under a
+lightmap filter is drawn without the overbright shift (the lightmap's 2x
+brings it), the others with it. The lightmap gives only the brightness:
+the stage under it, if white (rgbGen identity), takes the hue of the map's
+vertex light (the colour scaled to a largest channel of 255).
+*/
+#define PS2_BLEND_BITS ( GLS_SRCBLEND_BITS | GLS_DSTBLEND_BITS )
+static qboolean RB_PS2_IsFilter( unsigned bits ) {
+	bits &= PS2_BLEND_BITS;
+	return bits == ( GLS_SRCBLEND_DST_COLOR | GLS_DSTBLEND_ZERO ) ||
+	       bits == ( GLS_SRCBLEND_ZERO | GLS_DSTBLEND_SRC_COLOR );
+}
+
+static void RB_PS2_DrawStage( shaderCommands_t *input, shaderStage_t *pStage, unsigned bits, int shift, qboolean hue ) {
+	ComputeColors( pStage );
+	ComputeTexCoords( pStage );
+	if ( hue && ( pStage->rgbGen == CGEN_IDENTITY || pStage->rgbGen == CGEN_IDENTITY_LIGHTING ) ) {
+		int i;
+		for ( i = 0; i < input->numVertexes; i++ ) {
+			const byte *v = input->vertexColors[i];
+			byte *c = input->svars.colors[i];
+			int m = v[0] > v[1] ? v[0] : v[1];
+			m = m > v[2] ? m : v[2];
+			if ( m < 16 ) {
+				c[0] = c[1] = c[2] = 255;
+			} else {
+				c[0] = v[0] * 255 / m;
+				c[1] = v[1] * 255 / m;
+				c[2] = v[2] * 255 / m;
+			}
+		}
+	}
+	qglEnableClientState( GL_COLOR_ARRAY );
+	qglColorPointer( 4, GL_UNSIGNED_BYTE, 0, input->svars.colors );
+	qglTexCoordPointer( 2, GL_FLOAT, 0, input->svars.texcoords[0] );
+	R_BindAnimatedImage( &pStage->bundle[0] );
+	GL_State( bits );
+	mxgl_ColorShift( shift );
+	R_DrawElements( input->numIndexes, input->indexes );
+	mxgl_ColorShift( tr.overbrightBits );
+}
+
+/* qtrue if stage (and maybe the next) was drawn */
+static qboolean RB_PS2_Stages( shaderCommands_t *input, int *stage ) {
+	shaderStage_t *s = tess.xstages[*stage];
+	shaderStage_t *n = *stage + 1 < MAX_SHADER_STAGES ? tess.xstages[*stage + 1] : NULL;
+
+	if ( r_lightmap->integer || s->bundle[1].image[0] || !n || n->bundle[1].image[0] ||
+	     !RB_PS2_IsFilter( n->stateBits ) )
+		return qfalse;
+	if ( s->bundle[0].isLightmap && !( s->stateBits & PS2_BLEND_BITS ) && !n->bundle[0].isLightmap ) {
+		RB_PS2_DrawStage( input, n, s->stateBits | ( n->stateBits & GLS_ATEST_BITS ), 0, qtrue );
+		RB_PS2_DrawStage( input, s, n->stateBits & ~GLS_ATEST_BITS, tr.overbrightBits, qfalse );
+		( *stage )++;
+		return qtrue;
+	}
+	if ( n->bundle[0].isLightmap ) {
+		RB_PS2_DrawStage( input, s, s->stateBits, 0, qtrue );
+		return qtrue;
+	}
+	return qfalse;
+}
+#endif
+
 static void RB_IterateStagesGeneric( shaderCommands_t *input )
 {
 	int stage;
@@ -937,6 +1010,11 @@ static void RB_IterateStagesGeneric( shaderCommands_t *input )
 		{
 			break;
 		}
+
+#ifdef __PS2__
+		if ( RB_PS2_Stages( input, &stage ) )
+			continue;
+#endif
 
 		ComputeColors( pStage );
 		ComputeTexCoords( pStage );

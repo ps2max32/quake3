@@ -69,7 +69,11 @@ int   		s_paintedtime; 		// sample PAIRS
 
 // MAX_SFX may be larger than MAX_SOUNDS because
 // of custom player sounds
+#ifdef __PS2__
+#define		MAX_SFX			1024
+#else
 #define		MAX_SFX			4096
+#endif
 sfx_t		s_knownSfx[MAX_SFX];
 int			s_numSfx = 0;
 

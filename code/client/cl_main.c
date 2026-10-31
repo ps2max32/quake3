@@ -4702,7 +4702,7 @@ CL_CDKeyValidate
 =================
 */
 qboolean CL_CDKeyValidate( const char *key, const char *checksum ) {
-#ifdef STANDALONE
+#if defined(STANDALONE) || defined(__PS2__)
 	return qtrue;
 #else
 	char	ch;

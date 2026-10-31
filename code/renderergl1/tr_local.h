@@ -376,6 +376,9 @@ typedef struct shader_s {
   struct shader_s *remappedShader;                  // current shader this one is remapped too
 
 	struct	shader_s	*next;
+#ifdef __PS2__
+  int ps2Static;  // 0 not known yet, 1 the same every frame (display lists), 2 not
+#endif
 } shader_t;
 
 
@@ -786,7 +789,11 @@ void		R_Modellist_f (void);
 #define	MAX_SKINS				1024
 
 
+#ifdef __PS2__
+#define	MAX_DRAWSURFS			0x2000
+#else
 #define	MAX_DRAWSURFS			0x10000
+#endif
 #define	DRAWSURF_MASK			(MAX_DRAWSURFS-1)
 
 /*

@@ -1408,6 +1408,16 @@ int FS_FindVM(void **startSearch, char *found, int foundlen, const char *name, i
 
 	Com_sprintf(qvmName, sizeof(qvmName), "vm/%s.qvm", name);
 
+#ifdef __PS2__
+	// the game modules are linked in (Sys_LoadGameDll): no file to find
+	if(enableDll && *startSearch == NULL)
+	{
+		Q_strncpyz(found, name, foundlen);
+		*startSearch = fs_searchpaths;
+		return VMI_NATIVE;
+	}
+#endif
+
 	lastSearch = *startSearch;
 	if(*startSearch == NULL)
 		search = fs_searchpaths;

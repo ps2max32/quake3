@@ -1406,7 +1406,11 @@ typedef enum _flag_status {
 
 
 
+#ifdef __PS2__
+#define	MAX_GLOBAL_SERVERS				16
+#else
 #define	MAX_GLOBAL_SERVERS				4096
+#endif
 #define	MAX_OTHER_SERVERS					128
 #define MAX_PINGREQUESTS					32
 #define MAX_SERVERSTATUSREQUESTS	16

@@ -500,6 +500,141 @@ void RB_BeginDrawingView (void) {
 RB_RenderDrawSurfList
 ==================
 */
+#ifdef __PS2__
+/*
+==================
+PS2: world surfaces as display lists
+
+A world surface whose shader gives the same vertices, colours and texture
+coordinates every frame (RB_PS2_StaticShader) is made into a display list
+the first time it is drawn (mxgl_NewList: the stage iterator's draws are
+recorded), and called from then on (mxgl_CallList): ps2_gl.c sends its
+VU1 batches as a chain made once, instead of the surface going through tess
+each frame. The lists go when the world or the textures change.
+==================
+*/
+#include <mxgl.h>
+
+#define PS2_LIST_SLOTS 8192	// power of two, more than ps2_gl's lists
+static struct { const surfaceType_t *surf; int id; } ps2_listMap[PS2_LIST_SLOTS];
+static int ps2_nextList = 1;
+static const world_t *ps2_listWorld;
+
+static qboolean RB_PS2_StaticShader( shader_t *sh ) {
+	int i;
+
+	if ( sh->ps2Static ) {
+		return sh->ps2Static == 1;
+	}
+	sh->ps2Static = 2;
+	if ( sh->isSky || sh->sort == SS_PORTAL || sh->numDeforms || sh->remappedShader ) {
+		return qfalse;
+	}
+	for ( i = 0; i < MAX_SHADER_STAGES; i++ ) {
+		shaderStage_t *st = sh->stages[i];
+		if ( !st || !st->active ) {
+			break;
+		}
+		if ( st->bundle[0].numImageAnimations > 1 || st->bundle[0].isVideoMap ||
+			st->bundle[0].numTexMods || st->bundle[1].image[0] ) {
+			return qfalse;
+		}
+		if ( st->bundle[0].tcGen != TCGEN_TEXTURE && st->bundle[0].tcGen != TCGEN_LIGHTMAP ) {
+			return qfalse;
+		}
+		switch ( st->rgbGen ) {
+		case CGEN_IDENTITY: case CGEN_IDENTITY_LIGHTING: case CGEN_EXACT_VERTEX:
+		case CGEN_VERTEX: case CGEN_ONE_MINUS_VERTEX: case CGEN_CONST:
+			break;
+		default:
+			return qfalse;
+		}
+		switch ( st->alphaGen ) {
+		case AGEN_IDENTITY: case AGEN_SKIP: case AGEN_VERTEX: case AGEN_ONE_MINUS_VERTEX:
+		case AGEN_CONST:
+			break;
+		default:
+			return qfalse;
+		}
+	}
+	sh->ps2Static = 1;
+	return qtrue;
+}
+
+/* the list of a surface: its id, 0 if it has none yet (*slot: where it goes),
+   -1 if it cannot have one */
+static int RB_PS2_ListOf( const surfaceType_t *surf, int **slot ) {
+	unsigned h = ( (unsigned)(intptr_t)surf >> 4 ) * 2654435761u;
+	int k;
+
+	*slot = NULL;
+	for ( k = 0; k < PS2_LIST_SLOTS; k++ ) {
+		int at = ( h + k ) & ( PS2_LIST_SLOTS - 1 );
+		if ( ps2_listMap[at].surf == surf ) {
+			return ps2_listMap[at].id;
+		}
+		if ( !ps2_listMap[at].surf ) {
+			ps2_listMap[at].surf = surf;
+			ps2_listMap[at].id = 0;
+			*slot = &ps2_listMap[at].id;
+			return 0;
+		}
+	}
+	return -1;
+}
+
+static void RB_PS2_ResetLists( void ) {
+	if ( tr.world == ps2_listWorld && !mxgl_ListsDirty() ) {
+		return;
+	}
+	mxgl_DeleteAllLists();
+	Com_Memset( ps2_listMap, 0, sizeof( ps2_listMap ) );
+	ps2_nextList = 1;
+	ps2_listWorld = tr.world;
+}
+
+/* draws the world surface as a display list (made now if it has none);
+   qfalse: it is not one, add it to tess */
+static qboolean RB_PS2_DrawSurface( drawSurf_t *drawSurf, shader_t *shader, int fogNum,
+		int dlighted, int entityNum ) {
+	surfaceType_t st = *drawSurf->surface;
+	int id, *slot;
+
+	if ( entityNum != REFENTITYNUM_WORLD || fogNum || dlighted || !shader ||
+		( st != SF_FACE && st != SF_GRID && st != SF_TRIANGLES ) ||
+		!RB_PS2_StaticShader( shader ) ) {
+		return qfalse;
+	}
+	id = RB_PS2_ListOf( drawSurf->surface, &slot );
+	if ( id < 0 ) {
+		return qfalse;
+	}
+	// what tess has of this batch goes first
+	if ( tess.numIndexes ) {
+		RB_EndSurface();
+		RB_BeginSurface( shader, fogNum );
+	}
+	if ( !id ) {
+		// make it: the stage iterator's draws of this surface alone
+		if ( ps2_nextList >= 4096 || !mxgl_NewList( ps2_nextList ) ) {
+			*slot = -1;
+			return qfalse;
+		}
+		rb_surfaceTable[ st ]( drawSurf->surface );
+		RB_EndSurface();
+		RB_BeginSurface( shader, fogNum );
+		if ( !mxgl_EndList() ) {
+			*slot = -1;
+			rb_surfaceTable[ st ]( drawSurf->surface );
+			return qtrue;
+		}
+		id = *slot = ps2_nextList++;
+	}
+	mxgl_CallList( id );
+	return qtrue;
+}
+#endif
+
 void RB_RenderDrawSurfList( drawSurf_t *drawSurfs, int numDrawSurfs ) {
 	shader_t		*shader, *oldShader;
 	int				fogNum, oldFogNum;
@@ -516,6 +651,9 @@ void RB_RenderDrawSurfList( drawSurf_t *drawSurfs, int numDrawSurfs ) {
 
 	// clear the z buffer, set the modelview, etc
 	RB_BeginDrawingView ();
+#ifdef __PS2__
+	RB_PS2_ResetLists();
+#endif
 
 	// draw everything
 	oldEntityNum = -1;
@@ -533,6 +671,11 @@ void RB_RenderDrawSurfList( drawSurf_t *drawSurfs, int numDrawSurfs ) {
 	for (i = 0, drawSurf = drawSurfs ; i < numDrawSurfs ; i++, drawSurf++) {
 		if ( drawSurf->sort == (unsigned)oldSort ) {
 			// fast path, same as previous sort
+#ifdef __PS2__
+			if ( RB_PS2_DrawSurface( drawSurf, oldShader, oldFogNum, oldDlighted, oldEntityNum ) ) {
+				continue;
+			}
+#endif
 			rb_surfaceTable[ *drawSurf->surface ]( drawSurf->surface );
 			continue;
 		}
@@ -653,6 +796,11 @@ void RB_RenderDrawSurfList( drawSurf_t *drawSurfs, int numDrawSurfs ) {
 		}
 
 		// add the triangles for this surface
+#ifdef __PS2__
+		if ( RB_PS2_DrawSurface( drawSurf, shader, fogNum, dlighted, entityNum ) ) {
+			continue;
+		}
+#endif
 		rb_surfaceTable[ *drawSurf->surface ]( drawSurf->surface );
 	}
 

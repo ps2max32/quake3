@@ -63,6 +63,14 @@ static void R_JPGErrorExit(j_common_ptr cinfo)
 
   ri.Printf(PRINT_ALL, "Error: %s", buffer);
 
+#ifdef __PS2__
+  {
+    extern void ps2_memreport(const char *when);
+    static int said;
+    if (!said++)
+      ps2_memreport("at the first JPEG error");
+  }
+#endif
   /* Return control to the setjmp point */
   longjmp(jerr->setjmp_buffer, 1);
 }
