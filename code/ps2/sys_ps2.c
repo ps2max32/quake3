@@ -302,19 +302,6 @@ const char *NET_AdrToString(netadr_t a) {
 }
 const char *NET_AdrToStringwPort(netadr_t a) { return NET_AdrToString(a); }
 
-/* ---- sound: none yet -------------------------------------------------------- */
-
-qboolean SNDDMA_Init(void) { return qfalse; }
-int SNDDMA_GetDMAPos(void) { return 0; }
-void SNDDMA_Shutdown(void) {}
-void SNDDMA_BeginPainting(void) {}
-void SNDDMA_Submit(void) {}
-void SNDDMA_StartCapture(void) {}
-int SNDDMA_AvailableCaptureSamples(void) { return 0; }
-void SNDDMA_Capture(int samples, byte *data) {}
-void SNDDMA_StopCapture(void) {}
-void SNDDMA_MasterGain(float val) {}
-
 /* ---- the pad ---------------------------------------------------------------- */
 
 static int pad_ok;
@@ -404,7 +391,7 @@ int main(int argc, char **argv) {
 	Q_strncpyz(cmdline,
 	           "+set fs_basepath host: +set fs_homepath host: +set com_hunkMegs 10 +set com_zoneMegs 3 +set vm_game 0 +set vm_cgame 0 "
 	           "+set vm_ui 0 +set sv_pure 0 +set r_vertexLight 0 +set r_textureMode GL_LINEAR_MIPMAP_LINEAR +set r_picmip 2 "
-	           "+set com_soundMegs 1 +set s_initsound 0 +set in_joystick 1 "
+	           "+set com_soundMegs 1 +set s_mixPreStep 0 +set s_mixahead 0.14 +set in_joystick 1 "
 	           "+set r_ignoreGLErrors 1 +set com_introplayed 1 +set cl_allowDownload 0 "
 	           "+set ui_cdkeychecked 1 +set bot_enable 0 +set cg_drawFPS 1 +set com_maxfps 0 "
 	           "+bind JOY1 \"+moveup\" +bind JOY2 \"+movedown\" +bind JOY3 weapnext "

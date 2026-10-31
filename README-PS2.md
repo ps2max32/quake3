@@ -19,9 +19,10 @@ marker; `ARGS` is added to the command line.
 | Game code | game, cgame and q3_ui built natively and linked in, each with its symbols made local but `vmMain`/`dllEntry` (`<module>_vmMain`); `Sys_LoadGameDll` returns them |
 | Files | stdio on the IOP file server (`host:`), `code/ps2/ps2_file.c`; `fs_basepath host:` |
 | Input | pad 0: d-pad arrows, sticks move/look, R1 attack, X jump, O crouch, square/triangle weapons, START menu |
-| Memory | 32 MiB: hunk 12 MiB (q3dm1 uses 8.4), zone 3 MiB, stack 1 MiB, large static tables shrunk |
+| Memory | 32 MiB: hunk 12 MiB (q3dm1 uses 8.4), zone 3 MiB, sounds 1 MiB (`com_soundMegs 1` is 512 chunks, `client/snd_mem.c`), stack 1 MiB, large static tables shrunk |
+| Sound | ioquake3's mixer at 22050 Hz 16-bit stereo into a ring, sent to maxsdk's PCM stream (`mx/snd.h`, audsrv) by `code/ps2/snd_ps2.c` as far as the mixer has painted; `s_mixPreStep 0` (each mix starts where the sending stopped) and `s_mixahead 0.14` (more than the stream's ring) |
 
-Not done yet: sound (off), cinematics (stubbed), network play; lightmap colour comes from
+Not done yet: cinematics (stubbed), network play; lightmap colour comes from
 the vertex light.
 
 ## Branch `hires`: 1080i

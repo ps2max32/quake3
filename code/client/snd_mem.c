@@ -81,11 +81,21 @@ void SND_setup(void) {
 
 	cv = Cvar_Get( "com_soundMegs", DEF_COMSOUNDMEGS, CVAR_LATCH | CVAR_ARCHIVE );
 
+#ifdef __PS2__
+	/* a sndBuffer is 2 KiB: 1536 a "meg" are 3 MiB, too much next to the
+	   hunk and zone in the 20 MiB heap (pk3 reads then fail); 512 */
+	scs = (cv->integer*512);
+#else
 	scs = (cv->integer*1536);
+#endif
 
 	buffer = malloc(scs*sizeof(sndBuffer) );
 	// allocate the stack based hunk allocator
 	sfxScratchBuffer = malloc(SND_CHUNK_SIZE * sizeof(short) * 4);	//Hunk_Alloc(SND_CHUNK_SIZE * sizeof(short) * 4);
+#ifdef __PS2__
+	if (!buffer || !sfxScratchBuffer)
+		Com_Error(ERR_FATAL, "SND_setup: no memory for %d sound chunks", scs);
+#endif
 	sfxScratchPointer = NULL;
 
 	inUse = scs*sizeof(sndBuffer);
