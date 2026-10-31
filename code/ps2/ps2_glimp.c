@@ -1,5 +1,9 @@
 /* ps2_glimp.c: the GLimp_* functions of renderergl1 on maxsdk_gl
-   (libs/maxsdk_gl), and the qgl* function pointers: its gl* functions. */
+   (libs/maxsdk_gl), and the qgl* function pointers: its gl* functions.
+   The screen is the TV's (NTSC 640 x 448, PAL 640 x 512), or 1080i
+   (1920 x 1080) when the mode is 1920x1080 (r_mode -1, r_customwidth,
+   r_customheight: the Graphics menu's video mode, from r_availableModes),
+   set as the renderer starts (vid_restart). */
 
 #include "../renderergl1/tr_local.h"
 #include <mxgl.h>
@@ -76,14 +80,22 @@ void GLimp_Init(qboolean fixedFunction) {
 	QGL_DESKTOP_1_1_PROCS;
 	QGL_DESKTOP_1_1_FIXED_FUNCTION_PROCS;
 #undef GLE
-	glConfig.vidWidth = MXGL_WIDTH;
-	glConfig.vidHeight = MXGL_HEIGHT;
-	glConfig.windowAspect = 4.0f / 3.0f;
+	int hires = ri.Cvar_VariableIntegerValue("r_mode") == -1 &&
+	            ri.Cvar_VariableIntegerValue("r_customheight") >= 1080;
+	if (mxgl_set_mode(hires ? MXGL_1080I : MXGL_SD) < 0) {
+		ri.Printf(PRINT_ALL, "1080i: not enough memory\n");
+		hires = 0;
+	}
+	int w, h;
+	mxgl_screen(&w, &h);
+	glConfig.vidWidth = w;
+	glConfig.vidHeight = h;
+	glConfig.windowAspect = hires ? 16.0f / 9.0f : 4.0f / 3.0f;
 	glConfig.colorBits = 32;
 	glConfig.depthBits = 24;
 	glConfig.stencilBits = 0;
 	glConfig.isFullscreen = qtrue;
-	glConfig.displayFrequency = 60;
+	glConfig.displayFrequency = mxgl_mode() == MXGL_PAL ? 50 : 60;
 	glConfig.driverType = GLDRV_ICD;
 	glConfig.hardwareType = GLHW_GENERIC;
 	/* "gamma": the overbright range is the GS's modulate (mxgl_ColorShift) */
@@ -95,7 +107,9 @@ void GLimp_Init(qboolean fixedFunction) {
 	Q_strncpyz(glConfig.renderer_string, (const char *)qglGetString(GL_RENDERER), sizeof glConfig.renderer_string);
 	Q_strncpyz(glConfig.version_string, (const char *)qglGetString(GL_VERSION), sizeof glConfig.version_string);
 	Q_strncpyz(glConfig.extensions_string, "GL_EXT_compiled_vertex_array", sizeof glConfig.extensions_string);
-	ri.Cvar_Get("r_availableModes", "640x448", CVAR_ROM);
+	/* the Graphics menu's modes: the TV's and 1080i */
+	ri.Cvar_Get("r_availableModes", "", CVAR_ROM);
+	ri.Cvar_Set("r_availableModes", mxgl_mode() == MXGL_PAL ? "640x512 1920x1080" : "640x448 1920x1080");
 	ri.IN_Init(NULL);
 }
 

@@ -14,7 +14,7 @@ marker; `ARGS` is added to the command line.
 
 | Part | How |
 |---|---|
-| Renderer | renderergl1 on `libs/maxsdk_gl` (OpenGL 1.1 subset on the GS, shared with `apps/maxsdk_quake1` and `maxsdk_quake2`); `code/ps2/ps2_glimp.c` points the `qgl*` at it. 640 x 448, 16-bit colour (dithered), mipmaps, trilinear; the world's static surfaces are display lists (DMA chains the frame calls) |
+| Renderer | renderergl1 on `libs/maxsdk_gl` (OpenGL 1.1 subset on the GS, shared with `apps/maxsdk_quake1` and `maxsdk_quake2`); `code/ps2/ps2_glimp.c` points the `qgl*` at it. The TV's mode (NTSC 640 x 448, PAL 640 x 512) or 1080i (below), 16-bit colour (dithered), mipmaps, trilinear; the world's static surfaces are display lists (DMA chains the frame calls) |
 | Lighting | lightmaps (`r_vertexLight 0`) as brightness textures the GS multiplies by (`Cd * As`), the surface tinted by the vertex light's hue; overbright (`r_overBrightBits 1`) by the GS's 2x modulate |
 | Game code | game, cgame and q3_ui built natively and linked in, each with its symbols made local but `vmMain`/`dllEntry` (`<module>_vmMain`); `Sys_LoadGameDll` returns them |
 | Files | stdio on the IOP file server (`host:`), `code/ps2/ps2_file.c`; `fs_basepath host:` |
@@ -25,10 +25,14 @@ marker; `ARGS` is added to the command line.
 Not done yet: cinematics (stubbed), network play; lightmap colour comes from
 the vertex light.
 
-## Branch `hires`: 1080i
+## 1080i
 
-This branch builds the 1920 x 1080 interlaced version (`$(OUT)` is
-`build/apps/maxsdk_quake3-hires`): maxsdk_gl with `MXGL_HIRES=1`, on the maxsdk worktree of
-branch `hires` (`libs/maxsdk-hires`, built into `build/libs/maxsdk-hires`). It runs, but
-the display lists' 2 MiB pool does not fit next to the hires records, so the world is drawn
-without them (slower).
+Setup, System, Graphics lists the TV's mode and 1920x1080 (`r_availableModes`); Apply
+restarts the renderer (`vid_restart`), whose `GLimp_Init` sets 1080i for `r_mode -1`,
+`r_customheight 1080` (`code/ps2/ps2_glimp.c`). 1080i takes 2 MiB of memory while it is
+on, and the display lists' 2 MiB pool goes for it.
+
+Not enough memory yet: with the sound on, the heap after `Com_Init` has about 1.4 MiB left
+in 1080i (3.4 in the TV's mode), and `q3dm1` does not load (the menus run). The display
+lists' pool (2 MiB) no longer fits in the TV's mode either since the sound came in, so the
+world is drawn without lists there too.

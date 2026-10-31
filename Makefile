@@ -15,12 +15,8 @@
 
 HERE     := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
 PS2MAX   ?= $(abspath $(HERE)/../..)
-# the hires branch: 1080i (maxsdk_gl's MXGL_HIRES on maxsdk's hires passes,
-# the maxsdk worktree of branch hires, built apart from maxsdk's master)
-MAXSDK   ?= $(PS2MAX)/libs/maxsdk-hires
-MAXSDK_OUT ?= $(PS2MAX)/build/libs/maxsdk-hires
-MXGL_HIRES ?= 1
-OUT      ?= $(PS2MAX)/build/apps/maxsdk_quake3-hires
+MAXSDK   ?= $(PS2MAX)/libs/maxsdk
+OUT      ?= $(PS2MAX)/build/apps/maxsdk_quake3
 all: $(OUT)/quake3.elf
 MXGL     ?= $(PS2MAX)/libs/maxsdk_gl
 include $(MXGL)/mk/mxgl.mk
