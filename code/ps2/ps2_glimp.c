@@ -1,5 +1,5 @@
-/* ps2_glimp.c: the GLimp_* functions of renderergl1 on maxsdk_gl
-   (libs/maxsdk_gl), and the qgl* function pointers: its gl* functions.
+/* ps2_glimp.c: the GLimp_* functions of renderergl1 on libgl
+   (libs/libgl), and the qgl* function pointers: its gl* functions.
    The screen is the TV's (NTSC 640 x 448, PAL 640 x 512), or 1080i
    (1920 x 1080) when the mode is 1920x1080 (r_mode -1, r_customwidth,
    r_customheight: the Graphics menu's video mode, from r_availableModes),
@@ -34,7 +34,7 @@ QGL_EXT_direct_state_access_PROCS;
 int qglMajorVersion = 1, qglMinorVersion = 1;
 int qglesMajorVersion, qglesMinorVersion;
 
-/* the GL calls of maxsdk_gl */
+/* the GL calls of libgl */
 void APIENTRY glActiveTextureARB(GLenum t);
 void APIENTRY glClientActiveTextureARB(GLenum t);
 void APIENTRY glMultiTexCoord2fARB(GLenum t, GLfloat s, GLfloat tt);
@@ -58,7 +58,7 @@ static void set_procs(void) {
 #undef S
 }
 
-/* every qgl function that maxsdk_gl does not have: says which, once */
+/* every qgl function that libgl does not have: says which, once */
 #define GLE(ret, name, ...) \
 	static ret APIENTRY missing_##name(__VA_ARGS__) { \
 		static int said; \

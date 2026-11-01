@@ -10,18 +10,18 @@
 # linked into one object whose symbols are local except its vmMain and
 # dllEntry, renamed <module>_vmMain and <module>_dllEntry, so the three
 # copies of q_shared.c and bg_*.c do not clash (code/ps2/sys_ps2.c finds
-# them in Sys_LoadGameDll). The renderer draws through libs/maxsdk_gl: an
+# them in Sys_LoadGameDll). The renderer draws through libs/libgl: an
 # OpenGL 1.1 subset on the GS (code/ps2/ps2_glimp.c sets the qgl* to it).
 
 HERE     := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
 PS2MAX   ?= $(abspath $(HERE)/../..)
 MAXSDK   ?= $(PS2MAX)/libs/maxsdk
-OUT      ?= $(PS2MAX)/build/apps/maxsdk_quake3
+OUT      ?= $(PS2MAX)/build/apps/quake3
 all: $(OUT)/quake3.elf
-MXGL     ?= $(PS2MAX)/libs/maxsdk_gl
+MXGL     ?= $(PS2MAX)/libs/libgl
 include $(MXGL)/mk/mxgl.mk
 include $(MAXSDK)/mk/maxsdk.mk
-# MX_MEMORY=vm (started by mxload.elf): Quake III in VM, maxsdk_gl in core
+# MX_MEMORY=vm (started by mxload.elf): Quake III in VM, libgl in core
 MX_CORE_OBJS = $(MXGL_OBJS)
 
 PICOLIBC ?= $(PS2MAX)/build/libs/picolibc/install

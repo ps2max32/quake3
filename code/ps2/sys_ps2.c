@@ -367,7 +367,7 @@ void IN_Restart(void) {}
 
 /* maxsdk's virtual memory (<mx/vm.h>): malloc (the hunk, the zone, the
    sounds) in up to 128 MiB, paged to a swap file next to the game's data;
-   the core heap holds what the GS reads by DMA (maxsdk_gl: arenas,
+   the core heap holds what the GS reads by DMA (libgl: arenas,
    textures, display lists) */
 #ifndef Q3_CLEAN_FRAMES
 #define Q3_CLEAN_FRAMES 0 /* maxsdk's writer thread (mx_vm_config.clean_frames): off */
