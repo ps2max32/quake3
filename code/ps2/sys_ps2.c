@@ -372,10 +372,16 @@ void IN_Restart(void) {}
 #ifndef Q3_CLEAN_FRAMES
 #define Q3_CLEAN_FRAMES 0 /* maxsdk's writer thread (mx_vm_config.clean_frames): off */
 #endif
+#ifndef Q3_VM_TRACE
+#define Q3_VM_TRACE 0 /* bytes of maxsdk's VM trace (mx_vm_config.trace, taken from the
+                         frames), from 100 frames before PROF to the end, saved as
+                         host:quake3.trc: off */
+#endif
 const struct mx_vm_config mx_vm_config = {
 	.swap = "host:quake3.swp",
 	.core_heap = MXGL_CORE_BYTES + (6u << 20),
 	.clean_frames = Q3_CLEAN_FRAMES,
+	.trace = Q3_VM_TRACE,
 };
 
 int main(int argc, char **argv) {
@@ -406,13 +412,21 @@ int main(int argc, char **argv) {
 			mx_printf("ps2: frame %u at %d ms\n", frame, Sys_Milliseconds());
 		if (PS2_FRAMES && frame + 2 == PS2_FRAMES)
 			Cbuf_AddText("meminfo\n");
-		if (PS2_PROF && frame == PS2_PROF)
+		if (Q3_VM_TRACE && PS2_PROF && frame + 100 == PS2_PROF)
+			mx_vm_trace_restart();
+		if (PS2_PROF && frame == PS2_PROF) {
+			mx_vm_trace_mark(1);
 			mx_prof_start(2000);
+		}
 		if (PS2_FRAMES && frame + 1 == PS2_FRAMES) {
 			if (PS2_PROF) {
 				mx_prof_stop();
+				mx_vm_trace_mark(2);
 				mx_prof_report(600);
 			}
+			if (Q3_VM_TRACE)
+				mx_printf("ps2: VM trace host:quake3.trc: %d events\n",
+				          mx_vm_trace_save("host:quake3.trc"));
 			int r = mxgl_screenshot(PS2_SHOT);
 			mx_printf("ps2: %u frames, picture %s: %d\n", frame + 1, PS2_SHOT, r);
 			ps2_end(0);
