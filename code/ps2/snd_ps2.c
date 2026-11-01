@@ -18,7 +18,8 @@
 #define FRAMES 8192 /* the ring: 0.37 s, a power of two */
 
 static short ring[FRAMES * 2] __attribute__((aligned(64)));
-static int sent; /* frames sent to the stream, as s_paintedtime counts them */
+static int sent;    /* frames sent to the stream, as s_paintedtime counts them */
+static int painted; /* frames the mixer has painted into the ring */
 
 qboolean SNDDMA_Init(void)
 {
@@ -34,25 +35,17 @@ qboolean SNDDMA_Init(void)
 	dma.fullsamples = FRAMES;
 	dma.submission_chunk = 1;
 	dma.buffer = (byte *)ring;
-	sent = 0;
+	sent = painted = 0;
 	Com_Printf("Sound: %d Hz 16-bit stereo through audsrv\n", RATE);
 	return qtrue;
 }
 
-int SNDDMA_GetDMAPos(void)
+/* Sends ring[sent .. painted) as far as the stream has room. */
+static void send(void)
 {
-	return (sent * 2) & (FRAMES * 2 - 1);
-}
-
-void SNDDMA_BeginPainting(void)
-{
-}
-
-void SNDDMA_Submit(void)
-{
-	if (s_paintedtime < sent) /* snd_dma.c chopped its counters */
-		sent = s_paintedtime;
-	int n = s_paintedtime - sent;
+	int n = painted - sent;
+	if (n <= 0)
+		return;
 	int room = (int)(mx_snd_stream_room() / 4);
 	if (n > room)
 		n = room;
@@ -65,6 +58,29 @@ void SNDDMA_Submit(void)
 		if (took < k)
 			break;
 	}
+}
+
+/* What has been sent counts as played. S_Update_ mixes only when this has
+   moved since its last call (and then calls SNDDMA_Submit), and before that
+   S_GetSoundtime sets s_paintedtime back to it: so what was painted and not
+   taken (the stream's ring full) is remembered here (painted) and sent
+   now, or the position would stay and the sound stop for good. */
+int SNDDMA_GetDMAPos(void)
+{
+	send();
+	return (sent * 2) & (FRAMES * 2 - 1);
+}
+
+void SNDDMA_BeginPainting(void)
+{
+}
+
+void SNDDMA_Submit(void)
+{
+	if (s_paintedtime < sent) /* snd_dma.c chopped its counters */
+		sent = s_paintedtime;
+	painted = s_paintedtime;
+	send();
 }
 
 void SNDDMA_Shutdown(void)

@@ -38,6 +38,15 @@ int demo_protocols[] =
 
 #define MAX_NUM_ARGVS	50
 
+#ifdef __PS2__
+// virtual memory (maxsdk): not cleared here, which would touch every page
+// (and send it to the swap file); the zone and the hunk clear what they
+// hand out, and fresh pages are zero
+#define PS2_ZALLOC(n, m) malloc((n) * (m))
+#else
+#define PS2_ZALLOC calloc
+#endif
+
 #define MIN_DEDICATED_COMHUNKMEGS 1
 #ifndef DEF_COMHUNKMEGS
 #define DEF_COMHUNKMEGS 	128
@@ -1430,7 +1439,7 @@ Com_InitZoneMemory
 */
 void Com_InitSmallZoneMemory( void ) {
 	s_smallZoneTotal = 512 * 1024;
-	smallzone = calloc( s_smallZoneTotal, 1 );
+	smallzone = PS2_ZALLOC( s_smallZoneTotal, 1 );
 	if ( !smallzone ) {
 		Com_Error( ERR_FATAL, "Small zone data failed to allocate %1.1f megs", (float)s_smallZoneTotal / (1024*1024) );
 	}
@@ -1455,7 +1464,7 @@ void Com_InitZoneMemory( void ) {
 		s_zoneTotal = cv->integer * 1024 * 1024;
 	}
 
-	mainzone = calloc( s_zoneTotal, 1 );
+	mainzone = PS2_ZALLOC( s_zoneTotal, 1 );
 	if ( !mainzone ) {
 		Com_Error( ERR_FATAL, "Zone data failed to allocate %i megs", s_zoneTotal / (1024*1024) );
 	}
@@ -1584,7 +1593,7 @@ void Com_InitHunkMemory( void ) {
 		s_hunkTotal = cv->integer * 1024 * 1024;
 	}
 
-	s_hunkData = calloc( s_hunkTotal + 31, 1 );
+	s_hunkData = PS2_ZALLOC( s_hunkTotal + 31, 1 );
 	if ( !s_hunkData ) {
 		Com_Error( ERR_FATAL, "Hunk data failed to allocate %i megs", s_hunkTotal / (1024*1024) );
 	}

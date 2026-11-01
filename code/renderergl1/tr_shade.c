@@ -514,7 +514,13 @@ static void ProjectDlightTexture_scalar( void ) {
 			colors[0] = ri.ftol(floatColor[0] * modulate);
 			colors[1] = ri.ftol(floatColor[1] * modulate);
 			colors[2] = ri.ftol(floatColor[2] * modulate);
+#ifdef __PS2__
+			// the GS brightens by the source alpha, not per channel
+			// (mxgl: DST_COLOR ONE is Cd * (1 + As)): the strongest channel
+			colors[3] = MAX( colors[0], MAX( colors[1], colors[2] ) );
+#else
 			colors[3] = 255;
+#endif
 		}
 
 		// build a list of triangles that need light
@@ -934,8 +940,8 @@ The GS cannot multiply by the destination colour, only by the source
 alpha: a blendFunc filter stage is drawn as Cd * As with a lightmap kept as
 its brightness (mxgl_TexBrightness), up to 2x. A lightmap stage followed
 by a filter stage is drawn the other way round: the texture first, with the
-lightmap stage's state, then the lightmap as the filter. The stage under a
-lightmap filter is drawn without the overbright shift (the lightmap's 2x
+lightmap stage's state, then the lightmap as the filter. The stages under a
+lightmap filter are drawn without the overbright shift (the lightmap's 2x
 brings it), the others with it. The lightmap gives only the brightness:
 the stage under it, if white (rgbGen identity), takes the hue of the map's
 vertex light (the colour scaled to a largest channel of 255).
@@ -943,7 +949,9 @@ vertex light (the colour scaled to a largest channel of 255).
 #define PS2_BLEND_BITS ( GLS_SRCBLEND_BITS | GLS_DSTBLEND_BITS )
 static qboolean RB_PS2_IsFilter( unsigned bits ) {
 	bits &= PS2_BLEND_BITS;
+	// no destination alpha (mxgl): ONE_MINUS_DST_ALPHA is ZERO
 	return bits == ( GLS_SRCBLEND_DST_COLOR | GLS_DSTBLEND_ZERO ) ||
+	       bits == ( GLS_SRCBLEND_DST_COLOR | GLS_DSTBLEND_ONE_MINUS_DST_ALPHA ) ||
 	       bits == ( GLS_SRCBLEND_ZERO | GLS_DSTBLEND_SRC_COLOR );
 }
 
@@ -990,6 +998,23 @@ static qboolean RB_PS2_Stages( shaderCommands_t *input, int *stage ) {
 		( *stage )++;
 		return qtrue;
 	}
+	if ( n->bundle[0].isLightmap && ( s->stateBits & GLS_ATEST_BITS ) ) {
+		/* the lightmap's depthFunc equal would be GEQUAL (the GS has no
+		   EQUAL): it would also land on what is seen through the holes the
+		   alpha test made. Drawn once, lit by the vertex light instead */
+		ComputeColors( s );
+		if ( s->rgbGen == CGEN_IDENTITY || s->rgbGen == CGEN_IDENTITY_LIGHTING )
+			Com_Memcpy( input->svars.colors, input->vertexColors, input->numVertexes * 4 );
+		ComputeTexCoords( s );
+		qglEnableClientState( GL_COLOR_ARRAY );
+		qglColorPointer( 4, GL_UNSIGNED_BYTE, 0, input->svars.colors );
+		qglTexCoordPointer( 2, GL_FLOAT, 0, input->svars.texcoords[0] );
+		R_BindAnimatedImage( &s->bundle[0] );
+		GL_State( s->stateBits );
+		R_DrawElements( input->numIndexes, input->indexes );
+		( *stage )++;
+		return qtrue;
+	}
 	if ( n->bundle[0].isLightmap ) {
 		RB_PS2_DrawStage( input, s, s->stateBits, 0, qtrue );
 		return qtrue;
@@ -1001,6 +1026,13 @@ static qboolean RB_PS2_Stages( shaderCommands_t *input, int *stage ) {
 static void RB_IterateStagesGeneric( shaderCommands_t *input )
 {
 	int stage;
+#ifdef __PS2__
+	// the stages under a lightmap filter: without the overbright shift
+	int lmf = 0;
+	for ( stage = 0; stage < MAX_SHADER_STAGES && tess.xstages[stage]; stage++ )
+		if ( tess.xstages[stage]->bundle[0].isLightmap && RB_PS2_IsFilter( tess.xstages[stage]->stateBits ) )
+			lmf = stage;
+#endif
 
 	for ( stage = 0; stage < MAX_SHADER_STAGES; stage++ )
 	{
@@ -1049,7 +1081,13 @@ static void RB_IterateStagesGeneric( shaderCommands_t *input )
 			//
 			// draw
 			//
+#ifdef __PS2__
+			mxgl_ColorShift( stage < lmf ? 0 : tr.overbrightBits );
+#endif
 			R_DrawElements( input->numIndexes, input->indexes );
+#ifdef __PS2__
+			mxgl_ColorShift( tr.overbrightBits );
+#endif
 		}
 		// allow skipping out to show just lightmaps during development
 		if ( r_lightmap->integer && ( pStage->bundle[0].isLightmap || pStage->bundle[1].isLightmap ) )

@@ -21,6 +21,8 @@ all: $(OUT)/quake3.elf
 MXGL     ?= $(PS2MAX)/libs/maxsdk_gl
 include $(MXGL)/mk/mxgl.mk
 include $(MAXSDK)/mk/maxsdk.mk
+# MX_MEMORY=vm (started by mxload.elf): Quake III in VM, maxsdk_gl in core
+MX_CORE_OBJS = $(MXGL_OBJS)
 
 PICOLIBC ?= $(PS2MAX)/build/libs/picolibc/install
 LIBMXC    = $(MAXSDK_OUT)/libmxc.a
@@ -33,8 +35,9 @@ JPEG     := $(C)/thirdparty/jpeg-9f
 ZLIB     := $(C)/thirdparty/zlib-1.3.1
 SDLINC   := $(C)/thirdparty/SDL2-2.32.8/include
 
-# Memory sizes for 32 MiB (code/qcommon/common.c)
-Q3_MEM   ?= -DDEF_COMHUNKMEGS=10 -DDEF_COMZONEMEGS=3
+# Hunk and zone (code/qcommon/common.c): Quake III 1.32's 56 and 16 MiB, in
+# maxsdk's virtual memory; ioquake3's 128 and 48 do not fit in its 128 MiB
+Q3_MEM   ?= -DDEF_COMHUNKMEGS=56 -DDEF_COMZONEMEGS=16
 # VU0 macro mode (-mvu0: vector code on VU0) and fast math everywhere;
 # unsuffixed literals are float (-cl-single-precision-constant, clang's
 # twin of gcc's -fsingle-precision-constant) and the math.h functions go to
@@ -124,11 +127,12 @@ MODULES := $(OUT)/qagame.o $(OUT)/cgame.o $(OUT)/ui.o
 
 # FRAMES: end after that many frames with a picture (host:quake3.tga);
 # ARGS: more of the command line (e.g. ARGS="+map q3dm1"); GLSHOT: the
-# same picture at that rendered frame (loading screens included). They go into
+# same picture at that rendered frame (loading screens included); PROF=n:
+# a profile (mx/prof.h, tools/prof.py) of the frames from n to FRAMES. They go into
 # $(OUT)/ps2/runcfg.h, rewritten only when they change.
 RUNCFG := $(OUT)/ps2/runcfg.h
-$(shell mkdir -p $(OUT)/ps2; printf '#define PS2_FRAMES %s\n#define PS2_ARGS "%s"\n#define PS2_GLSHOT %s\n' \
-  '$(or $(FRAMES),0)' '$(ARGS)' '$(or $(GLSHOT),0)' > $(RUNCFG).new; \
+$(shell mkdir -p $(OUT)/ps2; printf '#define PS2_FRAMES %s\n#define PS2_ARGS "%s"\n#define PS2_GLSHOT %s\n#define PS2_PROF %s\n' \
+  '$(or $(FRAMES),0)' '$(ARGS)' '$(or $(GLSHOT),0)' '$(or $(PROF),0)' > $(RUNCFG).new; \
   cmp -s $(RUNCFG).new $(RUNCFG) || mv $(RUNCFG).new $(RUNCFG); rm -f $(RUNCFG).new)
 
 $(OUT)/quake3.elf: $(ENGINE_OBJS) $(MODULES) $(MXGL_OBJS) $(HLSL_OBJS) $(MX_LIB) $(MX_CRT0) $(MX_LD) $(LIBC_LIBS)

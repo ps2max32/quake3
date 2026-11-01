@@ -1,7 +1,13 @@
 /* ps2_file.c: stdio files on the IOP file server (ps2_stdio.h). Paths are
    the engine's OS paths, "host:..." (fs_basepath is "host:"). Reads go
    through a buffer per file, as the pk3 reader asks for a few bytes at a
-   time and each mx_fio_read is a SIF RPC. */
+   time and each mx_fio_read is a SIF RPC.
+
+   The IOP's file manager has 16 descriptors (3 for stdio), and the engine
+   keeps every pk3 open, besides maxsdk's swap file and the program's ELF
+   (virtual memory): files being read hold one only while used, at most
+   MAX_READ_FDS of them; the one used longest ago is closed for another and
+   opened again when read again. */
 
 #include <errno.h>
 #include <stdlib.h>
@@ -13,6 +19,11 @@
 #include "ps2_stdio.h"
 
 #define BUF_BYTES (16 * 1024)
+#define MAX_READ_FDS 6
+
+struct pfile;
+static struct pfile *read_open[MAX_READ_FDS]; /* read files with a descriptor */
+static u32 use_clock;
 
 struct pfile {
   int fd;
@@ -23,6 +34,8 @@ struct pfile {
   long buf_pos;  /* file position of buf[0] */
   int buf_len;   /* bytes in buf */
   char *buf;
+  u32 used;      /* use_clock at the last read */
+  char path[];   /* for reading: to open it again */
 };
 
 static int is_std(FILE *f) { return f == stdout || f == stderr || f == stdin; }
@@ -48,18 +61,54 @@ static void host_path(char *out, size_t room, const char *path) {
   out[n] = 0;
 }
 
+/* the slot of a read file in read_open, or -1 */
+static int read_slot(struct pfile *f) {
+  for (int i = 0; i < MAX_READ_FDS; i++)
+    if (read_open[i] == f)
+      return i;
+  return -1;
+}
+
+/* a free slot in read_open: the file used longest ago closed if need be */
+static int free_slot(void) {
+  int old = -1;
+  for (int i = 0; i < MAX_READ_FDS; i++) {
+    if (!read_open[i])
+      return i;
+    if (old < 0 || read_open[i]->used < read_open[old]->used)
+      old = i;
+  }
+  mx_fio_close(read_open[old]->fd);
+  read_open[old]->fd = -1;
+  read_open[old] = NULL;
+  return old;
+}
+
+/* a read file's descriptor, opened again if it was closed; < 0 if not */
+static int read_fd(struct pfile *f) {
+  f->used = ++use_clock;
+  if (f->fd >= 0)
+    return f->fd;
+  int i = free_slot();
+  f->fd = mx_fio_open(f->path, MX_FIO_RDONLY);
+  if (f->fd >= 0)
+    read_open[i] = f;
+  return f->fd;
+}
+
 FILE *ps2_fopen(const char *path, const char *mode) {
   char hp[512];
   host_path(hp, sizeof hp, path);
   int w = strchr(mode, 'w') || strchr(mode, 'a');
   int flags = w ? MX_FIO_WRONLY | MX_FIO_CREAT | (strchr(mode, 'a') ? 0 : MX_FIO_TRUNC)
                 : MX_FIO_RDONLY;
+  int slot = w ? -1 : free_slot();
   int fd = mx_fio_open(hp, flags);
   if (fd < 0) {
     errno = ENOENT;
     return NULL;
   }
-  struct pfile *f = calloc(1, sizeof *f);
+  struct pfile *f = calloc(1, sizeof *f + (w ? 0 : strlen(hp) + 1));
   if (!f) {
     mx_fio_close(fd);
     errno = ENOMEM;
@@ -68,12 +117,16 @@ FILE *ps2_fopen(const char *path, const char *mode) {
   f->fd = fd;
   f->write = w;
   if (!w) {
+    strcpy(f->path, hp);
+    read_open[slot] = f;
+    f->used = ++use_clock;
     f->size = mx_fio_lseek(fd, 0, MX_FIO_SEEK_END);
     mx_fio_lseek(fd, 0, MX_FIO_SEEK_SET);
     f->buf = malloc(BUF_BYTES);
     if (!f->buf) {
       mx_printf("ps2_fopen %s: no memory\n", hp);
       mx_fio_close(fd);
+      read_open[slot] = NULL;
       free(f);
       errno = ENOMEM;
       return NULL;
@@ -88,7 +141,11 @@ int ps2_fclose(FILE *ff) {
   if (!ff || is_std(ff))
     return 0;
   struct pfile *f = (struct pfile *)ff;
-  mx_fio_close(f->fd);
+  int i = read_slot(f);
+  if (i >= 0)
+    read_open[i] = NULL;
+  if (f->fd >= 0)
+    mx_fio_close(f->fd);
   free(f->buf);
   free(f);
   return 0;
@@ -96,11 +153,10 @@ int ps2_fclose(FILE *ff) {
 
 /* read n bytes at file position pos (the file's own position follows) */
 static int raw_read(struct pfile *f, long pos, void *dst, int n) {
-  static long at = -1; /* not tracked per file: seek every time */
-  (void)at;
-  if (mx_fio_lseek(f->fd, pos, MX_FIO_SEEK_SET) != pos)
+  int fd = read_fd(f);
+  if (fd < 0 || mx_fio_lseek(fd, pos, MX_FIO_SEEK_SET) != pos)
     return -1;
-  return mx_fio_read(f->fd, dst, (u32)n);
+  return mx_fio_read(fd, dst, (u32)n);
 }
 
 size_t ps2_fread(void *p, size_t size, size_t n, FILE *ff) {

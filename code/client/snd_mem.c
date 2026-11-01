@@ -45,6 +45,9 @@ memory management
 static	sndBuffer	*buffer = NULL;
 static	sndBuffer	*freelist = NULL;
 static	int inUse = 0;
+#ifdef __PS2__
+static	sndBuffer	*fresh, *freshEnd;
+#endif
 static	int totalInUse = 0;
 
 short *sfxScratchBuffer = NULL;
@@ -60,6 +63,12 @@ void	SND_free(sndBuffer *v) {
 sndBuffer*	SND_malloc(void) {
 	sndBuffer *v;
 redo:
+#ifdef __PS2__
+	if (freelist == NULL && fresh < freshEnd) {
+		*(sndBuffer **)fresh = NULL;
+		freelist = fresh++;
+	}
+#endif
 	if (freelist == NULL) {
 		S_FreeOldestSound();
 		goto redo;
@@ -81,24 +90,23 @@ void SND_setup(void) {
 
 	cv = Cvar_Get( "com_soundMegs", DEF_COMSOUNDMEGS, CVAR_LATCH | CVAR_ARCHIVE );
 
-#ifdef __PS2__
-	/* a sndBuffer is 2 KiB: 1536 a "meg" are 3 MiB, too much next to the
-	   hunk and zone in the 20 MiB heap (pk3 reads then fail); 512 */
-	scs = (cv->integer*512);
-#else
 	scs = (cv->integer*1536);
-#endif
 
 	buffer = malloc(scs*sizeof(sndBuffer) );
 	// allocate the stack based hunk allocator
 	sfxScratchBuffer = malloc(SND_CHUNK_SIZE * sizeof(short) * 4);	//Hunk_Alloc(SND_CHUNK_SIZE * sizeof(short) * 4);
-#ifdef __PS2__
-	if (!buffer || !sfxScratchBuffer)
-		Com_Error(ERR_FATAL, "SND_setup: no memory for %d sound chunks", scs);
-#endif
 	sfxScratchPointer = NULL;
 
 	inUse = scs*sizeof(sndBuffer);
+#ifdef __PS2__
+	// virtual memory (maxsdk): the chunks not used yet are handed out in
+	// order (SND_malloc), not linked here: linking touched every page of
+	// them (24 MiB), which then went out to the swap file
+	fresh = buffer;
+	freshEnd = buffer + scs;
+	freelist = NULL;
+	(void)p, (void)q;
+#else
 	p = buffer;;
 	q = p + scs;
 	while (--q > p)
@@ -106,6 +114,7 @@ void SND_setup(void) {
 	
 	*(sndBuffer **)q = NULL;
 	freelist = p + scs - 1;
+#endif
 
 	Com_Printf("Sound memory manager started\n");
 }

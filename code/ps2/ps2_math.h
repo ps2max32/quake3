@@ -61,6 +61,12 @@ static inline float ps2_acosf(float x) {
   return ps2_atan2f(__builtin_sqrtf(s > 0 ? s : 0), x);
 }
 
+/* float to the nearest integer (halves away from zero) on the FPU:
+   picolibc's lrintf rounds in soft float (Quake 3's Q_ftol, for every
+   vertex colour) */
+static inline long ps2_lrintf(float x) { return (long)(x >= 0 ? x + 0.5f : x - 0.5f); }
+
+#define lrintf ps2_lrintf
 #define sin(x) ps2_sinf(x)
 #define cos(x) ps2_cosf(x)
 #define tan(x) ps2_tanf(x)

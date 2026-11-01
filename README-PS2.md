@@ -18,8 +18,8 @@ marker; `ARGS` is added to the command line.
 | Lighting | lightmaps (`r_vertexLight 0`) as brightness textures the GS multiplies by (`Cd * As`), the surface tinted by the vertex light's hue; overbright (`r_overBrightBits 1`) by the GS's 2x modulate |
 | Game code | game, cgame and q3_ui built natively and linked in, each with its symbols made local but `vmMain`/`dllEntry` (`<module>_vmMain`); `Sys_LoadGameDll` returns them |
 | Files | stdio on the IOP file server (`host:`), `code/ps2/ps2_file.c`; `fs_basepath host:` |
-| Input | pad 0: d-pad arrows, sticks move/look, R1 attack, X jump, O crouch, square/triangle weapons, START menu |
-| Memory | 32 MiB: hunk 12 MiB (q3dm1 uses 8.4), zone 3 MiB, sounds 1 MiB (`com_soundMegs 1` is 512 chunks, `client/snd_mem.c`), stack 1 MiB, large static tables shrunk |
+| Input | pad 0: d-pad arrows, sticks move/look, R1 attack, X jump, O crouch, square/triangle weapons, START menu, R3 (right stick pressed) the counters on/off (`r_ps2stats`) |
+| Memory | maxsdk's virtual memory (`mx_vm_config` in `code/ps2/sys_ps2.c`), paged to `host:quake3.swp`: with `make MX_MEMORY=vm` (started by `mxload.elf host:quake3.elf`) the program's code, data and bss are in VM too, only maxsdk, libc and maxsdk_gl (`MX_CORE_OBJS`) in core; `malloc` in up to 128 MiB: hunk 56 MiB, zone 16 MiB (`Q3_MEM` in the `Makefile`; ioquake3's 128 and 48 do not fit), sounds `com_soundMegs` as ioquake3; a core heap of 12 MiB for maxsdk_gl (what the GS reads by DMA); stack 1 MiB. In PCSX2 only on the EE interpreter (`PCSX2_EE=interp`) |
 | Sound | ioquake3's mixer at 22050 Hz 16-bit stereo into a ring, sent to maxsdk's PCM stream (`mx/snd.h`, audsrv) by `code/ps2/snd_ps2.c` as far as the mixer has painted; `s_mixPreStep 0` (each mix starts where the sending stopped) and `s_mixahead 0.14` (more than the stream's ring) |
 
 Not done yet: cinematics (stubbed), network play; lightmap colour comes from
@@ -29,10 +29,4 @@ the vertex light.
 
 Setup, System, Graphics lists the TV's mode and 1920x1080 (`r_availableModes`); Apply
 restarts the renderer (`vid_restart`), whose `GLimp_Init` sets 1080i for `r_mode -1`,
-`r_customheight 1080` (`code/ps2/ps2_glimp.c`). 1080i takes 2 MiB of memory while it is
-on, and the display lists' 2 MiB pool goes for it.
-
-Not enough memory yet: with the sound on, the heap after `Com_Init` has about 1.4 MiB left
-in 1080i (3.4 in the TV's mode), and `q3dm1` does not load (the menus run). The display
-lists' pool (2 MiB) no longer fits in the TV's mode either since the sound came in, so the
-world is drawn without lists there too.
+`r_customheight 1080` (`code/ps2/ps2_glimp.c`).

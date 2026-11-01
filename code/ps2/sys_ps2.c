@@ -7,10 +7,12 @@
 
 #include <mx/mx.h>
 #include <mx/pad.h>
+#include <mx/vm.h>
 
 #include "../qcommon/q_shared.h"
 #include "../qcommon/qcommon.h"
 #include "../client/keycodes.h"
+#include <mx/prof.h>
 #include <mxgl.h>
 
 void mx_exit(int status) __attribute__((noreturn));
@@ -332,6 +334,9 @@ void IN_Frame(void) {
 		if ((held ^ last) & b)
 			Com_QueueEvent(t, SE_KEY, pad_keys[i].key, (held & b) != 0, 0, NULL);
 	}
+	/* R3 (the right stick pressed): the counters on and off (r_ps2stats) */
+	if (held & ~last & MX_PAD_R3)
+		Cvar_Set("r_ps2stats", Cvar_VariableIntegerValue("r_ps2stats") ? "0" : "1");
 	last = held;
 	/* the sticks: axes 0, 1 left (side, forward), 2, 3 right (yaw, pitch), in
 	   half SDL's range (-16383 .. 16383: j_yaw -0.022 is 360 degrees a
@@ -358,40 +363,31 @@ void IN_Frame(void) {
 void IN_Shutdown(void) {}
 void IN_Restart(void) {}
 
-/* the free heap: the largest block malloc gives, and the sum of blocks of
-   64 KiB and up it gives one after the other */
-void ps2_memreport(const char *when) {
-	void *blk[512];
-	int n = 0;
-	unsigned total = 0, largest = 0;
-	for (unsigned sz = 16u << 20; sz >= 64 * 1024 && n < 512;) {
-		void *p = malloc(sz);
-		if (p) {
-			blk[n++] = p;
-			total += sz;
-			if (sz > largest)
-				largest = sz;
-		} else {
-			sz >>= 1;
-		}
-	}
-	while (n)
-		free(blk[--n]);
-	mx_printf("ps2: free heap %s: largest %u KiB, about %u KiB\n", when, largest >> 10, total >> 10);
-}
-
 /* ---- main --------------------------------------------------------------------- */
 
+/* maxsdk's virtual memory (<mx/vm.h>): malloc (the hunk, the zone, the
+   sounds) in up to 128 MiB, paged to a swap file next to the game's data;
+   the core heap holds what the GS reads by DMA (maxsdk_gl: arenas,
+   textures, display lists) */
+#ifndef Q3_CLEAN_FRAMES
+#define Q3_CLEAN_FRAMES 0 /* maxsdk's writer thread (mx_vm_config.clean_frames): off */
+#endif
+const struct mx_vm_config mx_vm_config = {
+	.swap = "host:quake3.swp",
+	.core_heap = MXGL_CORE_BYTES + (6u << 20),
+	.clean_frames = Q3_CLEAN_FRAMES,
+};
+
 int main(int argc, char **argv) {
-	extern void *mx_heap_start(void), *mx_heap_end(void);
-	mx_printf("Quake 3 (ioquake3) on maxsdk: heap %u KiB\n",
-	          (unsigned)((char *)mx_heap_end() - (char *)mx_heap_start()) / 1024);
+	mx_printf("Quake 3 (ioquake3) on maxsdk: virtual memory %s\n", mx_vm_active() ? "on" : "off");
 	Sys_Milliseconds();
+	/* r_picmip 2: the textures are core memory (the GS reads them by DMA)
+	   and copied into 1.8 MiB of GS memory */
 	char cmdline[MAX_STRING_CHARS];
 	Q_strncpyz(cmdline,
-	           "+set fs_basepath host: +set fs_homepath host: +set com_hunkMegs 10 +set com_zoneMegs 3 +set vm_game 0 +set vm_cgame 0 "
+	           "+set fs_basepath host: +set fs_homepath host: +set vm_game 0 +set vm_cgame 0 "
 	           "+set vm_ui 0 +set sv_pure 0 +set r_vertexLight 0 +set r_textureMode GL_LINEAR_MIPMAP_LINEAR +set r_picmip 2 "
-	           "+set com_soundMegs 1 +set s_mixPreStep 0 +set s_mixahead 0.14 +set in_joystick 1 "
+	           "+set s_mixPreStep 0 +set s_mixahead 0.14 +set in_joystick 1 "
 	           "+set r_ignoreGLErrors 1 +set com_introplayed 1 +set cl_allowDownload 0 "
 	           "+set ui_cdkeychecked 1 +set bot_enable 0 +set cg_drawFPS 1 +set com_maxfps 0 "
 	           "+bind JOY1 \"+moveup\" +bind JOY2 \"+movedown\" +bind JOY3 weapnext "
@@ -403,7 +399,6 @@ int main(int argc, char **argv) {
 	}
 	Com_Init(cmdline);
 	NET_Init();
-	ps2_memreport("after Com_Init");
 
 	for (u32 frame = 0;; frame++) {
 		Com_Frame();
@@ -411,7 +406,13 @@ int main(int argc, char **argv) {
 			mx_printf("ps2: frame %u at %d ms\n", frame, Sys_Milliseconds());
 		if (PS2_FRAMES && frame + 2 == PS2_FRAMES)
 			Cbuf_AddText("meminfo\n");
+		if (PS2_PROF && frame == PS2_PROF)
+			mx_prof_start(2000);
 		if (PS2_FRAMES && frame + 1 == PS2_FRAMES) {
+			if (PS2_PROF) {
+				mx_prof_stop();
+				mx_prof_report(600);
+			}
 			int r = mxgl_screenshot(PS2_SHOT);
 			mx_printf("ps2: %u frames, picture %s: %d\n", frame + 1, PS2_SHOT, r);
 			ps2_end(0);
