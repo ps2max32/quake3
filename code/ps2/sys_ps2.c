@@ -367,8 +367,8 @@ void IN_Restart(void) {}
 
 /* maxsdk's virtual memory (<mx/vm.h>): malloc (the hunk, the zone, the
    sounds) in up to 128 MiB, paged to a swap file next to the game's data;
-   the core heap holds what the GS reads by DMA (libgl: arenas,
-   textures, display lists) */
+   what the GS reads by DMA (libgl: arenas, textures, display lists) is
+   pinned memory (<mx/mem.h>) */
 #ifndef Q3_CLEAN_FRAMES
 #define Q3_CLEAN_FRAMES 0 /* maxsdk's writer thread (mx_vm_config.clean_frames): off */
 #endif
@@ -379,7 +379,9 @@ void IN_Restart(void) {}
 #endif
 const struct mx_vm_config mx_vm_config = {
 	.swap = "host:quake3.swp",
-	.core_heap = MXGL_CORE_BYTES + (6u << 20),
+	/* no core heap: libgl's pinned memory (arenas, lists, textures; beam
+	   racing's records while it is on) is frames taken from the pool as
+	   needed, the rest of RAM VM's pages (Quake 3 waits on the swap file) */
 	.clean_frames = Q3_CLEAN_FRAMES,
 	.trace = Q3_VM_TRACE,
 };
@@ -387,12 +389,14 @@ const struct mx_vm_config mx_vm_config = {
 int main(int argc, char **argv) {
 	mx_printf("Quake 3 (ioquake3) on maxsdk: virtual memory %s\n", mx_vm_active() ? "on" : "off");
 	Sys_Milliseconds();
-	/* r_picmip 2: the textures are core memory (the GS reads them by DMA)
-	   and copied into 1.8 MiB of GS memory */
+	/* r_picmip 1: the textures are core memory (the GS reads them by DMA)
+	   and copied into 1.8 MiB of GS memory; with the pak of 8-bit textures
+	   (make pak: baseq3/ps2tex.pk3) a byte a texel, so 128 x 128. Without
+	   it (16 bits a texel) r_picmip 2 takes about as much */
 	char cmdline[MAX_STRING_CHARS];
 	Q_strncpyz(cmdline,
 	           "+set fs_basepath host: +set fs_homepath host: +set vm_game 0 +set vm_cgame 0 "
-	           "+set vm_ui 0 +set sv_pure 0 +set r_vertexLight 0 +set r_textureMode GL_LINEAR_MIPMAP_LINEAR +set r_picmip 2 "
+	           "+set vm_ui 0 +set sv_pure 0 +set r_vertexLight 0 +set r_textureMode GL_LINEAR_MIPMAP_LINEAR +set r_picmip 1 "
 	           "+set s_mixPreStep 0 +set s_mixahead 0.14 +set in_joystick 1 "
 	           "+set r_ignoreGLErrors 1 +set com_introplayed 1 +set cl_allowDownload 0 "
 	           "+set ui_cdkeychecked 1 +set bot_enable 0 +set cg_drawFPS 1 +set com_maxfps 0 "

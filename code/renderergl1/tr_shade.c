@@ -22,9 +22,6 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 // tr_shade.c
 
 #include "tr_local.h" 
-#ifdef __PS2__
-#include <mxgl.h>
-#endif
 
 /*
 
@@ -179,10 +176,15 @@ void R_DrawElements( int numIndexes, const glIndex_t *indexes ) {
 
 
 	if ( primitives == 2 ) {
+#ifdef __PS2__
+		// the indexes are of tess's vertices: no index searched for (GL 1.2)
+		glDrawRangeElements( GL_TRIANGLES, 0, tess.numVertexes - 1, numIndexes, GL_INDEX_TYPE, indexes );
+#else
 		qglDrawElements( GL_TRIANGLES, 
 						numIndexes,
 						GL_INDEX_TYPE,
 						indexes );
+#endif
 		return;
 	}
 
@@ -516,7 +518,7 @@ static void ProjectDlightTexture_scalar( void ) {
 			colors[2] = ri.ftol(floatColor[2] * modulate);
 #ifdef __PS2__
 			// the GS brightens by the source alpha, not per channel
-			// (mxgl: DST_COLOR ONE is Cd * (1 + As)): the strongest channel
+			// (libgl: DST_COLOR ONE is Cd * (1 + As)): the strongest channel
 			colors[3] = MAX( colors[0], MAX( colors[1], colors[2] ) );
 #else
 			colors[3] = 255;
@@ -835,9 +837,104 @@ static void ComputeColors( shaderStage_t *pStage )
 ComputeTexCoords
 ===============
 */
+#ifdef __PS2__
+/*
+The tcMods of a stage that are affine (all but turb) as GL's texture
+matrix, not done to each vertex on the EE: m is s' = m[0] s + m[2] t + m[4],
+t' = m[1] s + m[3] t + m[5]. NULL: the identity.
+*/
+static qboolean ps2_texMatrixOn;
+float RB_PS2_EvalWaveForm( const waveForm_t *wf );
+void RB_PS2_TexMatrix( const float *m ) {
+	float	g[16];
+
+	if ( !m && !ps2_texMatrixOn ) {
+		return;
+	}
+	Com_Memset( g, 0, sizeof( g ) );
+	g[10] = g[15] = 1;
+	if ( m ) {
+		g[0] = m[0], g[1] = m[1], g[4] = m[2], g[5] = m[3], g[12] = m[4], g[13] = m[5];
+	} else {
+		g[0] = g[5] = 1;
+	}
+	qglMatrixMode( GL_TEXTURE );
+	qglLoadMatrixf( g );
+	qglMatrixMode( GL_MODELVIEW );
+	ps2_texMatrixOn = m != NULL;
+}
+
+/* r = a then b (b applied to a's result) */
+static void PS2_TexMatMul( float *r, const float *b ) {
+	float a[6];
+	Com_Memcpy( a, r, sizeof( a ) );
+	r[0] = b[0] * a[0] + b[2] * a[1];
+	r[1] = b[1] * a[0] + b[3] * a[1];
+	r[2] = b[0] * a[2] + b[2] * a[3];
+	r[3] = b[1] * a[2] + b[3] * a[3];
+	r[4] = b[0] * a[4] + b[2] * a[5] + b[4];
+	r[5] = b[1] * a[4] + b[3] * a[5] + b[5];
+}
+
+/* the stage's tcMods of bundle b as a matrix in m; qfalse if one is not affine */
+static qboolean PS2_TexModMatrix( shaderStage_t *pStage, int b, float *m ) {
+	int tm;
+
+	m[0] = m[3] = 1, m[1] = m[2] = m[4] = m[5] = 0;
+	for ( tm = 0; tm < pStage->bundle[b].numTexMods; tm++ ) {
+		texModInfo_t *t = &pStage->bundle[b].texMods[tm];
+		float a[6] = { 1, 0, 0, 1, 0, 0 };
+		double sc[2];
+
+		switch ( t->type ) {
+		case TMOD_NONE:
+			return qtrue;
+		case TMOD_TURBULENT:
+			return qfalse;
+		case TMOD_ENTITY_TRANSLATE:
+		case TMOD_SCROLL: {
+			const float *sp = t->type == TMOD_SCROLL ? t->scroll : backEnd.currentEntity->e.shaderTexCoord;
+			sc[0] = sp[0] * tess.shaderTime, sc[1] = sp[1] * tess.shaderTime;
+			a[4] = sc[0] - floor( sc[0] ), a[5] = sc[1] - floor( sc[1] );
+			break;
+		}
+		case TMOD_SCALE:
+			a[0] = t->scale[0], a[3] = t->scale[1];
+			break;
+		case TMOD_STRETCH: {
+			float p = 1.0f / RB_PS2_EvalWaveForm( &t->wave );
+			a[0] = a[3] = p, a[4] = a[5] = 0.5f - 0.5f * p;
+			break;
+		}
+		case TMOD_TRANSFORM:
+			a[0] = t->matrix[0][0], a[1] = t->matrix[0][1], a[2] = t->matrix[1][0], a[3] = t->matrix[1][1];
+			a[4] = t->translate[0], a[5] = t->translate[1];
+			break;
+		case TMOD_ROTATE: {
+			double degs = -t->rotateSpeed * tess.shaderTime;
+			int64_t index = degs * ( FUNCTABLE_SIZE / 360.0f );
+			float sinValue = tr.sinTable[ index & FUNCTABLE_MASK ];
+			float cosValue = tr.sinTable[ ( index + FUNCTABLE_SIZE / 4 ) & FUNCTABLE_MASK ];
+			a[0] = cosValue, a[2] = -sinValue, a[4] = 0.5 - 0.5 * cosValue + 0.5 * sinValue;
+			a[1] = sinValue, a[3] = cosValue, a[5] = 0.5 - 0.5 * sinValue - 0.5 * cosValue;
+			break;
+		}
+		default:
+			return qfalse;
+		}
+		PS2_TexMatMul( m, a );
+	}
+	return qtrue;
+}
+#endif
+
 static void ComputeTexCoords( shaderStage_t *pStage ) {
 	int		i;
 	int		b;
+#ifdef __PS2__
+	float	texMatrix[6];
+	qboolean texMatrixUsed = qfalse;
+#endif
 
 	for ( b = 0; b < NUM_TEXTURE_BUNDLES; b++ ) {
 		int tm;
@@ -875,12 +972,23 @@ static void ComputeTexCoords( shaderStage_t *pStage ) {
 			RB_CalcEnvironmentTexCoords( ( float * ) tess.svars.texcoords[b] );
 			break;
 		case TCGEN_BAD:
+#ifdef __PS2__
+			goto ps2_done;
+#else
 			return;
+#endif
 		}
 
 		//
 		// alter texture coordinates
 		//
+#ifdef __PS2__
+		// unit 0's affine ones: the texture matrix
+		if ( b == 0 && pStage->bundle[0].numTexMods && PS2_TexModMatrix( pStage, 0, texMatrix ) ) {
+			texMatrixUsed = qtrue;
+			continue;
+		}
+#endif
 		for ( tm = 0; tm < pStage->bundle[b].numTexMods ; tm++ ) {
 			switch ( pStage->bundle[b].texMods[tm].type )
 			{
@@ -929,6 +1037,10 @@ static void ComputeTexCoords( shaderStage_t *pStage ) {
 			}
 		}
 	}
+#ifdef __PS2__
+ps2_done:
+	RB_PS2_TexMatrix( texMatrixUsed ? texMatrix : NULL );
+#endif
 }
 
 /*
@@ -938,7 +1050,7 @@ static void ComputeTexCoords( shaderStage_t *pStage ) {
 /*
 The GS cannot multiply by the destination colour, only by the source
 alpha: a blendFunc filter stage is drawn as Cd * As with a lightmap kept as
-its brightness (mxgl_TexBrightness), up to 2x. A lightmap stage followed
+its brightness (lightmaps are GL_LUMINANCE8), up to 2x. A lightmap stage followed
 by a filter stage is drawn the other way round: the texture first, with the
 lightmap stage's state, then the lightmap as the filter. The stages under a
 lightmap filter are drawn without the overbright shift (the lightmap's 2x
@@ -949,7 +1061,7 @@ vertex light (the colour scaled to a largest channel of 255).
 #define PS2_BLEND_BITS ( GLS_SRCBLEND_BITS | GLS_DSTBLEND_BITS )
 static qboolean RB_PS2_IsFilter( unsigned bits ) {
 	bits &= PS2_BLEND_BITS;
-	// no destination alpha (mxgl): ONE_MINUS_DST_ALPHA is ZERO
+	// no destination alpha (libgl): ONE_MINUS_DST_ALPHA is ZERO
 	return bits == ( GLS_SRCBLEND_DST_COLOR | GLS_DSTBLEND_ZERO ) ||
 	       bits == ( GLS_SRCBLEND_DST_COLOR | GLS_DSTBLEND_ONE_MINUS_DST_ALPHA ) ||
 	       bits == ( GLS_SRCBLEND_ZERO | GLS_DSTBLEND_SRC_COLOR );
@@ -979,9 +1091,9 @@ static void RB_PS2_DrawStage( shaderCommands_t *input, shaderStage_t *pStage, un
 	qglTexCoordPointer( 2, GL_FLOAT, 0, input->svars.texcoords[0] );
 	R_BindAnimatedImage( &pStage->bundle[0] );
 	GL_State( bits );
-	mxgl_ColorShift( shift );
+	GL_PS2_Shift( shift );
 	R_DrawElements( input->numIndexes, input->indexes );
-	mxgl_ColorShift( tr.overbrightBits );
+	GL_PS2_Shift( tr.overbrightBits );
 }
 
 /* qtrue if stage (and maybe the next) was drawn */
@@ -993,7 +1105,7 @@ static qboolean RB_PS2_Stages( shaderCommands_t *input, int *stage ) {
 	     !RB_PS2_IsFilter( n->stateBits ) )
 		return qfalse;
 	if ( s->bundle[0].isLightmap && !( s->stateBits & PS2_BLEND_BITS ) && !n->bundle[0].isLightmap ) {
-		RB_PS2_DrawStage( input, n, s->stateBits | ( n->stateBits & GLS_ATEST_BITS ), 0, qtrue );
+		RB_PS2_DrawStage( input, n, s->stateBits | ( n->stateBits & GLS_ATEST_BITS ), 0, !ps2_colorlight );
 		RB_PS2_DrawStage( input, s, n->stateBits & ~GLS_ATEST_BITS, tr.overbrightBits, qfalse );
 		( *stage )++;
 		return qtrue;
@@ -1016,7 +1128,7 @@ static qboolean RB_PS2_Stages( shaderCommands_t *input, int *stage ) {
 		return qtrue;
 	}
 	if ( n->bundle[0].isLightmap ) {
-		RB_PS2_DrawStage( input, s, s->stateBits, 0, qtrue );
+		RB_PS2_DrawStage( input, s, s->stateBits, 0, !ps2_colorlight );
 		return qtrue;
 	}
 	return qfalse;
@@ -1082,11 +1194,11 @@ static void RB_IterateStagesGeneric( shaderCommands_t *input )
 			// draw
 			//
 #ifdef __PS2__
-			mxgl_ColorShift( stage < lmf ? 0 : tr.overbrightBits );
+			GL_PS2_Shift( stage < lmf ? 0 : tr.overbrightBits );
 #endif
 			R_DrawElements( input->numIndexes, input->indexes );
 #ifdef __PS2__
-			mxgl_ColorShift( tr.overbrightBits );
+			GL_PS2_Shift( tr.overbrightBits );
 #endif
 		}
 		// allow skipping out to show just lightmaps during development
@@ -1179,6 +1291,9 @@ void RB_StageIteratorGeneric( void )
 	// call shader function
 	//
 	RB_IterateStagesGeneric( input );
+#ifdef __PS2__
+	RB_PS2_TexMatrix( NULL );	// the dlight and fog passes, and draws after: none
+#endif
 
 	// 
 	// now do any dynamic lighting needed

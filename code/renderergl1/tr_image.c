@@ -21,9 +21,6 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 */
 // tr_image.c
 #include "tr_local.h"
-#ifdef __PS2__
-#include <mxgl.h>
-#endif
 
 static byte			 s_intensitytable[256];
 static unsigned char s_gammatable[256];
@@ -653,10 +650,25 @@ static void Upload32( unsigned *data,
 
 	if(lightMap)
 	{
+#ifdef __PS2__
+		// coloured light (r_ps2colorlight, ps2_glimp.c): 8 bits a channel,
+		// which libgl multiplies the destination by a channel at a time; it
+		// keeps them so only if they are not mipmapped when they come
+		// (their filters are set after the upload, below). Else (and with
+		// beam racing, where libgl takes their brightness) the brightness
+		// of the colour texels (their largest component), which libgl
+		// multiplies the destination by (the GS's Cd * As)
+		if ( ps2_colorlight ) {
+			internalFormat = GL_RGB8;
+			qglTexParameterf( GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR );
+		} else
+			internalFormat = GL_LUMINANCE8;
+#else
 		if(r_greyscale->integer)
 			internalFormat = GL_LUMINANCE;
 		else
 			internalFormat = GL_RGB;
+#endif
 	}
 	else
 	{
@@ -832,6 +844,79 @@ done:
 }
 
 
+#ifdef __PS2__
+/*
+The PS2's pak (tools/ps2pak.py): <name>.p8, a mipmapped image as
+GL_OES_compressed_paletted_texture (its own palette, 8 or 4 bits a texel,
+its levels), behind a header. Uploaded with one glCompressedTexImage2D from
+the level Upload32 would start at (powers of two, picmip, the largest
+size): libgl keeps it as it is (T8 and a CLUT).
+*/
+#define P8_HEAD 24
+static byte *ps2_p8;	// the .p8 R_CreateImage uploads
+
+static int R_PS2_P8Get( int i ) {
+	return ps2_p8[4 + i * 2] | ps2_p8[5 + i * 2] << 8;
+}
+
+static void R_PS2_UploadP8( qboolean mipmap, qboolean picmip, int *format, int *pUploadWidth, int *pUploadHeight ) {
+	int pw = R_PS2_P8Get( 2 ), ph = R_PS2_P8Get( 3 ), w0 = R_PS2_P8Get( 4 ), h0 = R_PS2_P8Get( 5 );
+	int levels = R_PS2_P8Get( 6 );
+	GLenum fmt = ps2_p8[20] | ps2_p8[21] << 8 | ps2_p8[22] << 16 | (unsigned)ps2_p8[23] << 24;
+	int bits = fmt <= GL_PALETTE4_RGB5_A1_OES ? 4 : 8;
+	int eb = fmt == GL_PALETTE4_RGBA8_OES || fmt == GL_PALETTE8_RGBA8_OES ? 4 : 3;
+	int palBytes = ( bits == 4 ? 16 : 256 ) * eb;
+	byte *pal = ps2_p8 + P8_HEAD, *lv = pal + palBytes;
+	int tw = pw, th = ph, skip = 0, n, i, bytes;
+
+	if ( picmip ) {
+		tw >>= r_picmip->integer;
+		th >>= r_picmip->integer;
+	}
+	if ( tw < 1 )
+		tw = 1;
+	if ( th < 1 )
+		th = 1;
+	while ( tw > glConfig.maxTextureSize || th > glConfig.maxTextureSize ) {
+		tw >>= 1;
+		th >>= 1;
+	}
+	while ( skip < levels - 1 && ( w0 >> skip > tw || h0 >> skip > th ) ) {
+		int lw = MAX( w0 >> skip, 1 ), lh = MAX( h0 >> skip, 1 );
+		lv += bits == 8 ? lw * lh : ( lw * lh + 1 ) / 2;
+		skip++;
+	}
+	n = mipmap ? levels - skip : 1;
+	bytes = palBytes;
+	for ( i = 0; i < n; i++ ) {
+		int lw = MAX( w0 >> ( skip + i ), 1 ), lh = MAX( h0 >> ( skip + i ), 1 );
+		bytes += bits == 8 ? lw * lh : ( lw * lh + 1 ) / 2;
+	}
+	// r_intensity on the palette (the texels are its indices)
+	for ( i = 0; i < palBytes; i += eb ) {
+		pal[i] = s_intensitytable[pal[i]];
+		pal[i + 1] = s_intensitytable[pal[i + 1]];
+		pal[i + 2] = s_intensitytable[pal[i + 2]];
+	}
+	// the palette just before the first level used
+	memmove( lv - palBytes, pal, palBytes );
+	qglCompressedTexImage2D( GL_TEXTURE_2D, 1 - n, fmt, MAX( w0 >> skip, 1 ), MAX( h0 >> skip, 1 ), 0,
+							 bytes, lv - palBytes );
+
+	*format = fmt;
+	*pUploadWidth = MAX( w0 >> skip, 1 );
+	*pUploadHeight = MAX( h0 >> skip, 1 );
+	if ( mipmap ) {
+		qglTexParameterf( GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, gl_filter_min );
+		qglTexParameterf( GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, gl_filter_max );
+	} else {
+		qglTexParameterf( GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR );
+		qglTexParameterf( GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR );
+	}
+	GL_CheckErrors();
+}
+#endif
+
 /*
 ================
 R_CreateImage
@@ -886,7 +971,13 @@ image_t *R_CreateImage( const char *name, byte *pic, int width, int height,
 
 	GL_Bind(image);
 
-	Upload32( (unsigned *)pic, image->width, image->height, 
+#ifdef __PS2__
+	if ( ps2_p8 )
+		R_PS2_UploadP8( image->flags & IMGFLAG_MIPMAP, image->flags & IMGFLAG_PICMIP,
+						&image->internalFormat, &image->uploadWidth, &image->uploadHeight );
+	else
+#endif
+	Upload32( (unsigned *)pic, image->width, image->height,
 								image->flags & IMGFLAG_MIPMAP,
 								image->flags & IMGFLAG_PICMIP,
 								isLightmap,
@@ -1053,6 +1144,29 @@ image_t	*R_FindImageFile( const char *name, imgType_t type, imgFlags_t flags )
 			return image;
 		}
 	}
+
+#ifdef __PS2__
+	// the PS2's paletted copy of a mipmapped image, if the pak has it
+	if ( ( flags & IMGFLAG_MIPMAP ) && qglCompressedTexImage2D && !r_greyscale->value && !r_colorMipLevels->integer ) {
+		char p8name[MAX_QPATH];
+		void *buf;
+		long len;
+
+		COM_StripExtension( name, p8name, sizeof( p8name ) );
+		Q_strcat( p8name, sizeof( p8name ), ".p8" );
+		len = ri.FS_ReadFile( p8name, &buf );
+		if ( buf ) {
+			ps2_p8 = buf;
+			image = NULL;
+			if ( len >= P8_HEAD && !memcmp( buf, "P8T1", 4 ) )
+				image = R_CreateImage( ( char * ) name, NULL, R_PS2_P8Get( 0 ), R_PS2_P8Get( 1 ), type, flags, 0 );
+			ps2_p8 = NULL;
+			ri.FS_FreeFile( buf );
+			if ( image )
+				return image;
+		}
+	}
+#endif
 
 	//
 	// load the pic from disk
@@ -1299,7 +1413,7 @@ void R_SetColorMappings( void ) {
 
 	tr.identityLight = 1.0f / ( 1 << tr.overbrightBits );
 #ifdef __PS2__
-	mxgl_ColorShift( tr.overbrightBits );
+	GL_PS2_Shift( tr.overbrightBits );
 #endif
 	tr.identityLightByte = 255 * tr.identityLight;
 

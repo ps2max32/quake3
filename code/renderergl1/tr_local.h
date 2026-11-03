@@ -38,6 +38,13 @@ QGL_1_1_FIXED_FUNCTION_PROCS;
 QGL_DESKTOP_1_1_PROCS;
 QGL_DESKTOP_1_1_FIXED_FUNCTION_PROCS;
 QGL_3_0_PROCS;
+#ifdef __PS2__
+QGL_1_3_PROCS;	// glCompressedTexImage2D: the PS2's paletted textures
+#endif
+#ifdef __PS2__
+/* coloured lightmaps (ps2_glimp.c: r_ps2colorlight, not with beam racing) */
+extern int ps2_colorlight;
+#endif
 #undef GLE
 
 #define GL_INDEX_TYPE		GL_UNSIGNED_INT
@@ -852,6 +859,9 @@ typedef struct {
 	int			texEnv[2];
 	int			faceCulling;
 	unsigned long	glStateBits;
+#ifdef __PS2__
+	int			ps2Shift;	// GL_PS2_Shift's RGB_SCALE (-1: not known)
+#endif
 } glstate_t;
 
 typedef struct {
@@ -1129,6 +1139,10 @@ void	GL_TextureMode( const char *string );
 void	GL_CheckErrors( void );
 void	GL_State( unsigned long stateVector );
 void	GL_TexEnv( int env );
+#ifdef __PS2__
+void	GL_PS2_Shift( int shift );
+void	RB_PS2_TexMatrix( const float *m );
+#endif
 void	GL_Cull( int cullType );
 
 #define GLS_SRCBLEND_ZERO						0x00000001

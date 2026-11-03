@@ -2,8 +2,10 @@
    (libs/libgl), and the qgl* function pointers: its gl* functions.
    The screen is the TV's (NTSC 640 x 448, PAL 640 x 512), or 1080i
    (1920 x 1080) when the mode is 1920x1080 (r_mode -1, r_customwidth,
-   r_customheight: the Graphics menu's video mode, from r_availableModes),
-   set as the renderer starts (vid_restart). */
+   r_customheight: the Graphics menu's video mode, from r_availableModes);
+   with beam racing when r_ps2beam is 1 (the menu's Beam Racing), in 24-bit
+   colour when r_colorbits is 32 (Color Depth 32 bit: beam racing in the
+   TV's mode only); set as the renderer starts (vid_restart). */
 
 #include "../renderergl1/tr_local.h"
 #include <mxgl.h>
@@ -32,6 +34,10 @@ QGL_EXT_direct_state_access_PROCS;
 #undef GLE
 
 int qglMajorVersion = 1, qglMinorVersion = 1;
+/* coloured lightmaps in effect (r_ps2colorlight 1, not with beam racing):
+   tr_image.c keeps them in 8 bits a channel, tr_shade.c gives no stage the
+   vertex light's hue (mono lightmaps' stand-in) */
+int ps2_colorlight;
 int qglesMajorVersion, qglesMinorVersion;
 
 /* the GL calls of libgl */
@@ -82,10 +88,29 @@ void GLimp_Init(qboolean fixedFunction) {
 #undef GLE
 	int hires = ri.Cvar_VariableIntegerValue("r_mode") == -1 &&
 	            ri.Cvar_VariableIntegerValue("r_customheight") >= 1080;
-	if (mxgl_set_mode(hires ? MXGL_1080I : MXGL_SD) < 0) {
-		ri.Printf(PRINT_ALL, "1080i: not enough memory\n");
-		hires = 0;
+	/* beam racing (libgl's MXGL_BEAM): twice the room for textures in the
+	   TV's mode, at most a frame a field */
+	cvar_t *beam = ri.Cvar_Get("r_ps2beam", "0", CVAR_ARCHIVE);
+	int flags = (beam->integer ? MXGL_BEAM : 0) |
+	            (ri.Cvar_VariableIntegerValue("r_colorbits") == 32 ? MXGL_RGB24 : 0);
+	if (mxgl_set_mode((hires ? MXGL_1080I : MXGL_SD) | flags) < 0) {
+		ri.Printf(PRINT_ALL, "beam racing: not enough memory\n");
+		ri.Cvar_Set("r_ps2beam", "0");
 	}
+	flags = mxgl_mode_flags();
+	ri.Printf(PRINT_ALL, "ps2: %s%s%s\n", hires ? "1080i" : "TV mode", flags & MXGL_BEAM ? ", beam racing" : "",
+	          flags & MXGL_RGB24 ? ", 24-bit colour" : "");
+	/* coloured light: the lightmaps' products a channel at a time (three
+	   passes); with beam racing their brightness */
+	ps2_colorlight = ri.Cvar_Get("r_ps2colorlight", "1", CVAR_ARCHIVE | CVAR_LATCH)->integer &&
+	                 !(flags & MXGL_BEAM);
+	mxgl_color_light(ps2_colorlight);
+	/* the textures' top levels left out only while GS memory overflows or
+	   the swap file is read (-1: MXGL_TEX_AUTO), or that many always */
+	mxgl_texture_quality(ri.Cvar_Get("r_ps2texquality", "-1", CVAR_ARCHIVE)->integer);
+	int hi = 120, lo = 80, sw = 30;
+	sscanf(ri.Cvar_Get("r_ps2texlimits", "120 80 30", CVAR_ARCHIVE)->string, "%d%*c%d%*c%d", &hi, &lo, &sw);
+	mxgl_texture_limits(hi, lo, sw);
 	int w, h;
 	mxgl_screen(&w, &h);
 	glConfig.vidWidth = w;
@@ -98,15 +123,22 @@ void GLimp_Init(qboolean fixedFunction) {
 	glConfig.displayFrequency = mxgl_mode() == MXGL_PAL ? 50 : 60;
 	glConfig.driverType = GLDRV_ICD;
 	glConfig.hardwareType = GLHW_GENERIC;
-	/* "gamma": the overbright range is the GS's modulate (mxgl_ColorShift) */
+	/* "gamma": the overbright range is GL_COMBINE's RGB_SCALE (GL_PS2_Shift),
+	   the GS's modulate up to 2x */
 	glConfig.deviceSupportsGamma = qtrue;
 	glConfig.textureCompression = TC_NONE;
 	glConfig.textureEnvAddAvailable = qfalse;
+	/* one unit, though libgl has two (GL_ARB_multitexture, a second pass):
+	   tr_shade.c's stages for the PS2 give the lightmap's pass the hue of
+	   the vertex light, which a collapsed stage would lose */
 	glConfig.numTextureUnits = 1;
 	Q_strncpyz(glConfig.vendor_string, (const char *)qglGetString(GL_VENDOR), sizeof glConfig.vendor_string);
 	Q_strncpyz(glConfig.renderer_string, (const char *)qglGetString(GL_RENDERER), sizeof glConfig.renderer_string);
 	Q_strncpyz(glConfig.version_string, (const char *)qglGetString(GL_VERSION), sizeof glConfig.version_string);
-	Q_strncpyz(glConfig.extensions_string, "GL_EXT_compiled_vertex_array", sizeof glConfig.extensions_string);
+	Q_strncpyz(glConfig.extensions_string, (const char *)qglGetString(GL_EXTENSIONS), sizeof glConfig.extensions_string);
+	/* the paletted textures of the PS2's pak (tr_image.c, tools/ps2pak.py) */
+	if (strstr(glConfig.extensions_string, "GL_OES_compressed_paletted_texture"))
+		qglCompressedTexImage2D = (CompressedTexImage2Dproc *)mxglGetProcAddress("glCompressedTexImage2D");
 	/* the Graphics menu's modes: the TV's and 1080i */
 	ri.Cvar_Get("r_availableModes", "", CVAR_ROM);
 	ri.Cvar_Set("r_availableModes", mxgl_mode() == MXGL_PAL ? "640x512 1920x1080" : "640x448 1920x1080");

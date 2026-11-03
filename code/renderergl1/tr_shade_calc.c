@@ -63,6 +63,10 @@ static float EvalWaveForm( const waveForm_t *wf )
 	return WAVEVALUE( table, wf->base, wf->amplitude, wf->phase, wf->frequency );
 }
 
+#ifdef __PS2__
+float RB_PS2_EvalWaveForm( const waveForm_t *wf ) { return EvalWaveForm( wf ); }
+#endif
+
 static float EvalWaveFormClamped( const waveForm_t *wf )
 {
 	float glow  = EvalWaveForm( wf );

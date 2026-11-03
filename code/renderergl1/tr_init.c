@@ -851,6 +851,10 @@ void GL_SetDefaultState( void )
 	qglEnable(GL_TEXTURE_2D);
 	GL_TextureMode( r_textureMode->string );
 	GL_TexEnv( GL_MODULATE );
+#ifdef __PS2__
+	glState.ps2Shift = -1;	// not known: set again by the next GL_PS2_Shift
+	GL_PS2_Shift( tr.overbrightBits );
+#endif
 
 	qglShadeModel( GL_SMOOTH );
 	qglDepthFunc( GL_LEQUAL );

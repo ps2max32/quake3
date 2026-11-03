@@ -4,6 +4,8 @@
 #   make run             quake3.elf in PCSX2 with the game data in
 #                        build/pcsx2-test/baseq3 (Q3DATA: the retail
 #                        baseq3 directory, copied there once)
+#   make pak             build/pcsx2-test/baseq3/ps2tex.pk3: the textures
+#                        as 8-bit paletted ones (tools/ps2pak.py)
 #
 # The engine (qcommon, server, client, botlib, renderergl1) is linked with
 # the game modules (game, cgame, q3_ui) built natively: each module is
@@ -19,9 +21,15 @@ MAXSDK   ?= $(PS2MAX)/libs/maxsdk
 OUT      ?= $(PS2MAX)/build/apps/quake3
 all: $(OUT)/quake3.elf
 MXGL     ?= $(PS2MAX)/libs/libgl
+# beam racing's records: a frame of Quake III's stream is up to ~350 KB
+# (demo four; three quarters of a record), more than libgl's default
+MXGL_REC_BYTES ?= 524288
 include $(MXGL)/mk/mxgl.mk
+# the program in VM (ld/maxsdk-vm.ld), started by mxload.elf; MX_MEMORY=phys:
+# all of it in physical memory (32 MiB, no VM in PCSX2's recompiler)
+MX_MEMORY ?= vm
 include $(MAXSDK)/mk/maxsdk.mk
-# MX_MEMORY=vm (started by mxload.elf): Quake III in VM, libgl in core
+# in VM: Quake III in VM, libgl in core
 MX_CORE_OBJS = $(MXGL_OBJS)
 
 PICOLIBC ?= $(PS2MAX)/build/libs/picolibc/install
@@ -145,11 +153,23 @@ run: $(OUT)/quake3.elf
 	@mkdir -p $(RUNDIR)/baseq3
 	@for f in "$(Q3DATA)"/pak*.pk3; do \
 	  [ -f "$(RUNDIR)/baseq3/$$(basename "$$f")" ] || cp -v "$$f" $(RUNDIR)/baseq3/; done
+ifeq ($(MX_MEMORY),vm)
+	cp $(OUT)/quake3.elf $(RUNDIR)/quake3.elf && echo "host:quake3.elf" > $(RUNDIR)/mxload.txt
+	PCSX2_EE=interp ~/.claude/skills/ps2-pcsx2-test/run.sh $(MX_LOADER) $(or $(TIMEOUT),1800)
+else
 	~/.claude/skills/ps2-pcsx2-test/run.sh $(OUT)/quake3.elf $(or $(TIMEOUT),600)
+endif
+
+# the textures as 8-bit paletted ones (tools/ps2pak.py; the renderer takes a
+# mipmapped image's .p8 before the original): a pk3 next to the paks
+pak: $(RUNDIR)/baseq3/ps2tex.pk3
+$(RUNDIR)/baseq3/ps2tex.pk3: $(HERE)/tools/ps2pak.py
+	@mkdir -p $(RUNDIR)/baseq3
+	python3 $(HERE)/tools/ps2pak.py $@ "$(Q3DATA)"
 
 clean:
 	rm -rf $(OUT)
 
-.PHONY: all run clean
+.PHONY: all run pak clean
 
 -include $(shell find $(OUT) -name '*.d' 2>/dev/null)

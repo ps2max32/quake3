@@ -265,6 +265,10 @@ typedef struct {
 	menulist_s		ratio;
 	menulist_s		mode;
 	menulist_s		driver;
+#ifdef __PS2__
+	menulist_s		beam;	// in the GL driver's place: r_ps2beam
+	menulist_s		colorlight;	// r_ps2colorlight
+#endif
 	menuslider_s	tq;
 	menulist_s  	fs;
 	menulist_s  	lighting;
@@ -291,6 +295,10 @@ typedef struct
 	int filter;
 	int driver;
 	qboolean extensions;
+#ifdef __PS2__
+	int beam;
+	int colorlight;
+#endif
 } InitialVideoOptions_s;
 
 static InitialVideoOptions_s	s_ivo;
@@ -478,6 +486,10 @@ static void GraphicsOptions_GetInitialVideo( void )
 	s_ivo.lighting    = s_graphicsoptions.lighting.curvalue;
 	s_ivo.geometry    = s_graphicsoptions.geometry.curvalue;
 	s_ivo.filter      = s_graphicsoptions.filter.curvalue;
+#ifdef __PS2__
+	s_ivo.beam        = s_graphicsoptions.beam.curvalue;
+	s_ivo.colorlight  = s_graphicsoptions.colorlight.curvalue;
+#endif
 	s_ivo.texturebits = s_graphicsoptions.texturebits.curvalue;
 }
 
@@ -640,6 +652,17 @@ static void GraphicsOptions_UpdateMenuItems( void )
 	{
 		s_graphicsoptions.apply.generic.flags &= ~(QMF_HIDDEN|QMF_INACTIVE);
 	}
+#ifdef __PS2__
+	if ( s_ivo.beam != s_graphicsoptions.beam.curvalue || s_ivo.colorlight != s_graphicsoptions.colorlight.curvalue )
+	{
+		s_graphicsoptions.apply.generic.flags &= ~(QMF_HIDDEN|QMF_INACTIVE);
+	}
+	// coloured light: not with beam racing (libgl takes the lightmaps' brightness)
+	if ( s_graphicsoptions.beam.curvalue )
+		s_graphicsoptions.colorlight.generic.flags |= QMF_GRAYED;
+	else
+		s_graphicsoptions.colorlight.generic.flags &= ~QMF_GRAYED;
+#endif
 
 	GraphicsOptions_CheckConfig();
 }	
@@ -714,6 +737,10 @@ static void GraphicsOptions_ApplyChanges( void *unused, int notification )
 		break;
 	}
 	trap_Cvar_SetValue( "r_vertexLight", s_graphicsoptions.lighting.curvalue );
+#ifdef __PS2__
+	trap_Cvar_SetValue( "r_ps2beam", s_graphicsoptions.beam.curvalue );
+	trap_Cvar_SetValue( "r_ps2colorlight", s_graphicsoptions.colorlight.curvalue );
+#endif
 
 	if ( s_graphicsoptions.geometry.curvalue == 2 )
 	{
@@ -1122,6 +1149,17 @@ void GraphicsOptions_MenuInit( void )
 	s_graphicsoptions.driver.generic.y     = y;
 	s_graphicsoptions.driver.itemnames     = s_driver_names;
 	s_graphicsoptions.driver.curvalue      = (uis.glconfig.driverType == GLDRV_VOODOO);
+#ifdef __PS2__
+	// the PS2: beam racing (r_ps2beam) where the GL driver was: twice the
+	// room for textures in the TV's mode, at most a frame a field
+	s_graphicsoptions.beam.generic.type  = MTYPE_SPINCONTROL;
+	s_graphicsoptions.beam.generic.name  = "Beam Racing:";
+	s_graphicsoptions.beam.generic.flags = QMF_PULSEIFFOCUS|QMF_SMALLFONT;
+	s_graphicsoptions.beam.generic.x     = 400;
+	s_graphicsoptions.beam.generic.y     = y;
+	s_graphicsoptions.beam.itemnames     = enabled_names;
+	s_graphicsoptions.beam.curvalue      = trap_Cvar_VariableValue( "r_ps2beam" ) != 0;
+#endif
 	y += BIGCHAR_HEIGHT+2;
 
 	// references/modifies "r_allowExtensions"
@@ -1180,6 +1218,19 @@ void GraphicsOptions_MenuInit( void )
 	s_graphicsoptions.lighting.generic.y	 = y;
 	s_graphicsoptions.lighting.itemnames     = lighting_names;
 	y += BIGCHAR_HEIGHT+2;
+
+#ifdef __PS2__
+	// the PS2: coloured lightmaps (three passes of their stage; monochrome
+	// with beam racing)
+	s_graphicsoptions.colorlight.generic.type  = MTYPE_SPINCONTROL;
+	s_graphicsoptions.colorlight.generic.name  = "Colored Light:";
+	s_graphicsoptions.colorlight.generic.flags = QMF_PULSEIFFOCUS|QMF_SMALLFONT;
+	s_graphicsoptions.colorlight.generic.x     = 400;
+	s_graphicsoptions.colorlight.generic.y     = y;
+	s_graphicsoptions.colorlight.itemnames     = enabled_names;
+	s_graphicsoptions.colorlight.curvalue      = trap_Cvar_VariableValue( "r_ps2colorlight" ) != 0;
+	y += BIGCHAR_HEIGHT+2;
+#endif
 
 	// references/modifies "r_lodBias" & "subdivisions"
 	s_graphicsoptions.geometry.generic.type  = MTYPE_SPINCONTROL;
@@ -1260,13 +1311,20 @@ void GraphicsOptions_MenuInit( void )
 	Menu_AddItem( &s_graphicsoptions.menu, ( void * ) &s_graphicsoptions.network );
 
 	Menu_AddItem( &s_graphicsoptions.menu, ( void * ) &s_graphicsoptions.list );
+#ifdef __PS2__
+	Menu_AddItem( &s_graphicsoptions.menu, ( void * ) &s_graphicsoptions.beam );
+#else
 	Menu_AddItem( &s_graphicsoptions.menu, ( void * ) &s_graphicsoptions.driver );
+#endif
 	Menu_AddItem( &s_graphicsoptions.menu, ( void * ) &s_graphicsoptions.allow_extensions );
 	Menu_AddItem( &s_graphicsoptions.menu, ( void * ) &s_graphicsoptions.ratio );
 	Menu_AddItem( &s_graphicsoptions.menu, ( void * ) &s_graphicsoptions.mode );
 	Menu_AddItem( &s_graphicsoptions.menu, ( void * ) &s_graphicsoptions.colordepth );
 	Menu_AddItem( &s_graphicsoptions.menu, ( void * ) &s_graphicsoptions.fs );
 	Menu_AddItem( &s_graphicsoptions.menu, ( void * ) &s_graphicsoptions.lighting );
+#ifdef __PS2__
+	Menu_AddItem( &s_graphicsoptions.menu, ( void * ) &s_graphicsoptions.colorlight );
+#endif
 	Menu_AddItem( &s_graphicsoptions.menu, ( void * ) &s_graphicsoptions.geometry );
 	Menu_AddItem( &s_graphicsoptions.menu, ( void * ) &s_graphicsoptions.tq );
 	Menu_AddItem( &s_graphicsoptions.menu, ( void * ) &s_graphicsoptions.texturebits );

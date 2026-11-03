@@ -165,7 +165,13 @@ void GL_TexEnv( int env )
 	switch ( env )
 	{
 	case GL_MODULATE:
+#ifdef __PS2__
+		// GL_COMBINE (its COMBINE_RGB and _ALPHA: MODULATE), so that
+		// RGB_SCALE (the overbright shift, GL_PS2_Shift) holds
+		qglTexEnvf( GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_COMBINE );
+#else
 		qglTexEnvf( GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE );
+#endif
 		break;
 	case GL_REPLACE:
 		qglTexEnvf( GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE );
@@ -181,6 +187,20 @@ void GL_TexEnv( int env )
 		break;
 	}
 }
+
+#ifdef __PS2__
+/*
+** GL_PS2_Shift: the colour of the draws after (their MODULATE: GL_COMBINE)
+** scaled by 1 << shift, the overbright range of hardware gamma
+*/
+void GL_PS2_Shift( int shift )
+{
+	if ( shift == glState.ps2Shift )
+		return;
+	glState.ps2Shift = shift;
+	qglTexEnvf( GL_TEXTURE_ENV, GL_RGB_SCALE, (float)( 1 << shift ) );
+}
+#endif
 
 /*
 ** GL_State
@@ -507,13 +527,12 @@ PS2: world surfaces as display lists
 
 A world surface whose shader gives the same vertices, colours and texture
 coordinates every frame (RB_PS2_StaticShader) is made into a display list
-the first time it is drawn (mxgl_NewList: the stage iterator's draws are
-recorded), and called from then on (mxgl_CallList): ps2_gl.c sends its
+the first time it is drawn (glNewList: the stage iterator's draws are
+recorded), and called from then on (glCallList): ps2_gl.c sends its
 VU1 batches as a chain made once, instead of the surface going through tess
 each frame. The lists go when the world or the textures change.
 ==================
 */
-#include <mxgl.h>
 
 #define PS2_LIST_SLOTS 8192	// power of two, more than ps2_gl's lists
 static struct { const surfaceType_t *surf; int id; } ps2_listMap[PS2_LIST_SLOTS];
@@ -584,10 +603,10 @@ static int RB_PS2_ListOf( const surfaceType_t *surf, int **slot ) {
 }
 
 static void RB_PS2_ResetLists( void ) {
-	if ( tr.world == ps2_listWorld && !mxgl_ListsDirty() ) {
+	if ( tr.world == ps2_listWorld ) {
 		return;
 	}
-	mxgl_DeleteAllLists();
+	glDeleteLists( 1, 4095 );
 	Com_Memset( ps2_listMap, 0, sizeof( ps2_listMap ) );
 	ps2_nextList = 1;
 	ps2_listWorld = tr.world;
@@ -616,21 +635,28 @@ static qboolean RB_PS2_DrawSurface( drawSurf_t *drawSurf, shader_t *shader, int 
 	}
 	if ( !id ) {
 		// make it: the stage iterator's draws of this surface alone
-		if ( ps2_nextList >= 4096 || !mxgl_NewList( ps2_nextList ) ) {
+		if ( ps2_nextList >= 4096 ) {
 			*slot = -1;
 			return qfalse;
 		}
+		// drawn while it is made (GL_COMPILE_AND_EXECUTE: its state calls
+		// are done too, as glState says)
+		RB_PS2_TexMatrix( NULL );	// a list's draws take the matrix of the call
+		qglGetError();
+		glNewList( ps2_nextList, GL_COMPILE_AND_EXECUTE );
 		rb_surfaceTable[ st ]( drawSurf->surface );
 		RB_EndSurface();
 		RB_BeginSurface( shader, fogNum );
-		if ( !mxgl_EndList() ) {
-			*slot = -1;
-			rb_surfaceTable[ st ]( drawSurf->surface );
-			return qtrue;
-		}
-		id = *slot = ps2_nextList++;
+		glEndList();
+		// not all of it fitted (GL_OUT_OF_MEMORY): drawn now, as it is from now on
+		*slot = qglGetError() == GL_NO_ERROR ? ps2_nextList++ : -1;
+		return qtrue;
 	}
-	mxgl_CallList( id );
+	RB_PS2_TexMatrix( NULL );
+	// the state after it as before (glState's)
+	glPushAttrib( GL_ALL_ATTRIB_BITS );
+	glCallList( id );
+	glPopAttrib();
 	return qtrue;
 }
 #endif
