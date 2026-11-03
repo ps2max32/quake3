@@ -24,6 +24,9 @@ MXGL     ?= $(PS2MAX)/libs/libgl
 # beam racing's records: a frame of Quake III's stream is up to ~350 KB
 # (demo four; three quarters of a record), more than libgl's default
 MXGL_REC_BYTES ?= 524288
+# the stages' colours on VU1 (code/ps2/q3stage.hlsl, glShaderBinary)
+HLSL_DIRS  += $(HERE)/code/ps2
+MXGL_PROGS := q3stage
 include $(MXGL)/mk/mxgl.mk
 # the program in VM (ld/maxsdk-vm.ld), started by mxload.elf; MX_MEMORY=phys:
 # all of it in physical memory (32 MiB, no VM in PCSX2's recompiler)

@@ -1141,6 +1141,8 @@ void	GL_State( unsigned long stateVector );
 void	GL_TexEnv( int env );
 #ifdef __PS2__
 void	GL_PS2_Shift( int shift );
+qboolean	GL_PS2_StageProgram( const float *mul, const float *add );
+extern qboolean ps2_listCompiling;
 void	RB_PS2_TexMatrix( const float *m );
 #endif
 void	GL_Cull( int cullType );

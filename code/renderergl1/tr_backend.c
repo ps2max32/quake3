@@ -193,6 +193,8 @@ void GL_TexEnv( int env )
 ** GL_PS2_Shift: the colour of the draws after (their MODULATE: GL_COMBINE)
 ** scaled by 1 << shift, the overbright range of hardware gamma
 */
+qboolean ps2_listCompiling;
+
 void GL_PS2_Shift( int shift )
 {
 	if ( shift == glState.ps2Shift )
@@ -644,9 +646,11 @@ static qboolean RB_PS2_DrawSurface( drawSurf_t *drawSurf, shader_t *shader, int 
 		RB_PS2_TexMatrix( NULL );	// a list's draws take the matrix of the call
 		qglGetError();
 		glNewList( ps2_nextList, GL_COMPILE_AND_EXECUTE );
+		ps2_listCompiling = qtrue;	// colours made on the EE: a list keeps them
 		rb_surfaceTable[ st ]( drawSurf->surface );
 		RB_EndSurface();
 		RB_BeginSurface( shader, fogNum );
+		ps2_listCompiling = qfalse;
 		glEndList();
 		// not all of it fitted (GL_OUT_OF_MEMORY): drawn now, as it is from now on
 		*slot = qglGetError() == GL_NO_ERROR ? ps2_nextList++ : -1;

@@ -244,6 +244,12 @@ static void R_BindAnimatedImage( textureBundle_t *bundle ) {
 
 	// Windows x86 doesn't load renderer DLL with 64 bit modulus
 	//index %= bundle->numImageAnimations;
+#ifdef __PS2__
+	/* a 32-bit modulus: the loop below turns index / n times, thousands a
+	   bind late in a long game (64-bit subtractions on the R5900) */
+	if ( index <= 0x7FFFFFFF )
+		index = (unsigned)index % (unsigned)bundle->numImageAnimations;
+#endif
 	while ( index >= bundle->numImageAnimations ) {
 		index -= bundle->numImageAnimations;
 	}
@@ -713,6 +719,11 @@ static void ComputeColors( shaderStage_t *pStage )
 	case AGEN_SKIP:
 		break;
 	case AGEN_IDENTITY:
+#ifdef __PS2__
+		/* RB_CalcDiffuseColor and RB_CalcWaveColor give alpha 255 already */
+		if ( pStage->rgbGen == CGEN_LIGHTING_DIFFUSE || pStage->rgbGen == CGEN_WAVEFORM )
+			break;
+#endif
 		if ( pStage->rgbGen != CGEN_IDENTITY ) {
 			if ( ( pStage->rgbGen == CGEN_VERTEX && tr.identityLight != 1 ) ||
 				 pStage->rgbGen != CGEN_VERTEX ) {
@@ -1067,7 +1078,168 @@ static qboolean RB_PS2_IsFilter( unsigned bits ) {
 	       bits == ( GLS_SRCBLEND_ZERO | GLS_DSTBLEND_SRC_COLOR );
 }
 
+/*
+The stage's colours as vertex colour * mul + add (q3stage.hlsl on VU1:
+no loop over the vertices here), as ComputeColors makes them: rgbGen and
+alphaGen that are a constant or affine in the vertex colour; a constant
+from tr_shade_calc.c's own functions made for one vertex. hue: rgb
+identity becomes the vertex colour's hue (add -255). qfalse: not so (the
+lighting ones, fog, a list being made: its colours are recorded).
+*/
+static qboolean PS2_StageColors( shaderStage_t *pStage, qboolean hue, float *mul, float *add ) {
+	byte c[4] = { 255, 255, 255, 255 };
+	float il = tr.identityLight;
+	int n, i, alpha = 0;	// alpha: 1 when rgbGen set it
+
+	if ( ps2_listCompiling || r_greyscale->value || ( tess.fogNum && pStage->adjustColorsForFog != ACFF_NONE ) ) {
+		return qfalse;
+	}
+	n = tess.numVertexes;
+	tess.numVertexes = 1;
+	for ( i = 0; i < 4; i++ ) {
+		mul[i] = 0, add[i] = 0;
+	}
+	switch ( pStage->rgbGen ) {
+	case CGEN_IDENTITY:
+		add[0] = add[1] = add[2] = add[3] = 255;
+		alpha = 1;
+		break;
+	case CGEN_IDENTITY_LIGHTING:
+		add[0] = add[1] = add[2] = add[3] = tr.identityLightByte;
+		alpha = 1;
+		break;
+	case CGEN_EXACT_VERTEX:
+		mul[0] = mul[1] = mul[2] = mul[3] = 1;
+		alpha = 1;
+		break;
+	case CGEN_VERTEX:
+		mul[0] = mul[1] = mul[2] = il, mul[3] = 1;
+		alpha = 1;
+		break;
+	case CGEN_ONE_MINUS_VERTEX:
+		mul[0] = mul[1] = mul[2] = -il;
+		add[0] = add[1] = add[2] = 255 * il;
+		break;
+	case CGEN_CONST:
+		Com_Memcpy( c, pStage->constantColor, 4 );
+		alpha = 2;
+		break;
+	case CGEN_FOG:
+		Com_Memcpy( c, &tr.world->fogs[tess.fogNum].colorInt, 4 );
+		alpha = 2;
+		break;
+	case CGEN_WAVEFORM:
+		RB_CalcWaveColor( &pStage->rgbWave, c );
+		alpha = 2;
+		break;
+	case CGEN_ENTITY:
+		RB_CalcColorFromEntity( c );
+		alpha = 2;
+		break;
+	case CGEN_ONE_MINUS_ENTITY:
+		RB_CalcColorFromOneMinusEntity( c );
+		alpha = 2;
+		break;
+	default:
+		tess.numVertexes = n;
+		return qfalse;
+	}
+	if ( alpha == 2 ) {
+		for ( i = 0; i < 4; i++ ) {
+			add[i] = c[i];
+		}
+	}
+	if ( hue && ( pStage->rgbGen == CGEN_IDENTITY || pStage->rgbGen == CGEN_IDENTITY_LIGHTING ) ) {
+		mul[0] = mul[1] = mul[2] = 0;
+		add[0] = add[1] = add[2] = -255;
+	}
+	switch ( pStage->alphaGen ) {
+	case AGEN_SKIP:
+		break;
+	case AGEN_IDENTITY:
+		if ( pStage->rgbGen != CGEN_IDENTITY && !( pStage->rgbGen == CGEN_VERTEX && il == 1 ) ) {
+			mul[3] = 0, add[3] = 255;
+			alpha = 1;
+		}
+		break;
+	case AGEN_CONST:
+		if ( pStage->rgbGen != CGEN_CONST ) {
+			mul[3] = 0, add[3] = pStage->constantColor[3];
+			alpha = 1;
+		}
+		break;
+	case AGEN_WAVEFORM:
+		RB_CalcWaveAlpha( &pStage->alphaWave, c );
+		mul[3] = 0, add[3] = c[3];
+		alpha = 1;
+		break;
+	case AGEN_ENTITY:
+		RB_CalcAlphaFromEntity( c );
+		mul[3] = 0, add[3] = c[3];
+		alpha = 1;
+		break;
+	case AGEN_ONE_MINUS_ENTITY:
+		RB_CalcAlphaFromOneMinusEntity( c );
+		mul[3] = 0, add[3] = c[3];
+		alpha = 1;
+		break;
+	case AGEN_VERTEX:
+		if ( pStage->rgbGen != CGEN_VERTEX ) {
+			mul[3] = 1, add[3] = 0;
+			alpha = 1;
+		}
+		break;
+	case AGEN_ONE_MINUS_VERTEX:
+		mul[3] = -1, add[3] = 255;
+		alpha = 1;
+		break;
+	default:
+		alpha = 0;
+		break;
+	}
+	tess.numVertexes = n;
+	// no alpha from either (oneMinusVertex without an alphaGen: the last
+	// stage's alpha was kept), or one the program cannot make
+	return alpha != 0 && ( pStage->alphaGen != AGEN_LIGHTING_SPECULAR && pStage->alphaGen != AGEN_PORTAL );
+}
+
+/* stage's texture coordinates as an array (tess.texCoords, its own
+   coordinates or the lightmap's) with its tcMods in the texture matrix,
+   or NULL (ComputeTexCoords makes them) */
+static const float *PS2_StageTexCoords( shaderStage_t *pStage ) {
+	float m[6];
+	int b;
+
+	switch ( pStage->bundle[0].tcGen ) {
+	case TCGEN_TEXTURE: b = 0; break;
+	case TCGEN_LIGHTMAP: b = 1; break;
+	default: return NULL;
+	}
+	if ( pStage->bundle[0].numTexMods && !PS2_TexModMatrix( pStage, 0, m ) ) {
+		return NULL;
+	}
+	RB_PS2_TexMatrix( pStage->bundle[0].numTexMods ? m : NULL );
+	return tess.texCoords[0][b];
+}
+
 static void RB_PS2_DrawStage( shaderCommands_t *input, shaderStage_t *pStage, unsigned bits, int shift, qboolean hue ) {
+	float mul[4], add[4];
+	const float *tc;
+
+	/* on VU1 (q3stage.hlsl): the vertex colours and coordinates as they are */
+	if ( PS2_StageColors( pStage, hue, mul, add ) && ( tc = PS2_StageTexCoords( pStage ) ) != NULL &&
+	     GL_PS2_StageProgram( mul, add ) ) {
+		qglEnableClientState( GL_COLOR_ARRAY );
+		qglColorPointer( 4, GL_UNSIGNED_BYTE, 0, input->vertexColors );
+		qglTexCoordPointer( 2, GL_FLOAT, sizeof( input->texCoords[0] ), tc );
+		R_BindAnimatedImage( &pStage->bundle[0] );
+		GL_State( bits );
+		GL_PS2_Shift( shift );
+		R_DrawElements( input->numIndexes, input->indexes );
+		GL_PS2_Shift( tr.overbrightBits );
+		GL_PS2_StageProgram( NULL, NULL );
+		return;
+	}
 	ComputeColors( pStage );
 	ComputeTexCoords( pStage );
 	if ( hue && ( pStage->rgbGen == CGEN_IDENTITY || pStage->rgbGen == CGEN_IDENTITY_LIGHTING ) ) {
@@ -1158,6 +1330,13 @@ static void RB_IterateStagesGeneric( shaderCommands_t *input )
 #ifdef __PS2__
 		if ( RB_PS2_Stages( input, &stage ) )
 			continue;
+		/* one texture: its colours on VU1 when they can be (RB_PS2_DrawStage) */
+		if ( !pStage->bundle[1].image[0] ) {
+			RB_PS2_DrawStage( input, pStage, pStage->stateBits, stage < lmf ? 0 : tr.overbrightBits, qfalse );
+			if ( r_lightmap->integer && pStage->bundle[0].isLightmap )
+				break;
+			continue;
+		}
 #endif
 
 		ComputeColors( pStage );

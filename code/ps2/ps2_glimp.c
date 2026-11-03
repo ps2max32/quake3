@@ -38,6 +38,59 @@ int qglMajorVersion = 1, qglMinorVersion = 1;
    tr_image.c keeps them in 8 bits a channel, tr_shade.c gives no stage the
    vertex light's hue (mono lightmaps' stand-in) */
 int ps2_colorlight;
+
+/* the stages' colours on VU1 (q3stage.hlsl; libgl's GL_PS2_vertex_program_binary):
+   GL 2.0's calls, which the renderer's GL headers do not have */
+GLuint glCreateShader(GLenum type);
+void glShaderBinary(GLsizei count, const GLuint *shaders, GLenum format, const void *binary,
+                    GLsizei length);
+GLuint glCreateProgram(void);
+void glAttachShader(GLuint prog, GLuint sh);
+void glLinkProgram(GLuint prog);
+void glGetProgramiv(GLuint prog, GLenum pname, GLint *v);
+void glUseProgram(GLuint prog);
+GLint glGetUniformLocation(GLuint prog, const char *name);
+void glUniform4fv(GLint loc, GLsizei count, const GLfloat *v);
+#ifndef GL_VERTEX_SHADER
+#define GL_VERTEX_SHADER 0x8B31
+#define GL_LINK_STATUS 0x8B82
+#endif
+extern const struct mxgl_vu1_binary q3stage_vu1;
+static GLuint stage_prog;
+static GLint stage_mul, stage_add;
+
+static void stage_program_init(void) {
+	if (stage_prog)
+		return;
+	GLuint sh = glCreateShader(GL_VERTEX_SHADER), prog = glCreateProgram();
+	GLint ok = 0;
+	glShaderBinary(1, &sh, GL_PS2_VU1_BINARY, &q3stage_vu1, sizeof q3stage_vu1);
+	glAttachShader(prog, sh);
+	glLinkProgram(prog);
+	glGetProgramiv(prog, GL_LINK_STATUS, &ok);
+	if (!ok) {
+		ri.Printf(PRINT_WARNING, "ps2: the stage program did not link\n");
+		return;
+	}
+	stage_prog = prog;
+	stage_mul = glGetUniformLocation(prog, "cmul");
+	stage_add = glGetUniformLocation(prog, "cadd");
+}
+
+/* the draws after: colour = vertex colour * mul + add (q3stage.hlsl), or
+   as they are (mul NULL); qfalse if there is no program */
+qboolean GL_PS2_StageProgram(const float *mul, const float *add) {
+	if (!stage_prog)
+		return qfalse;
+	if (!mul) {
+		glUseProgram(0);
+		return qtrue;
+	}
+	glUseProgram(stage_prog);
+	glUniform4fv(stage_mul, 1, mul);
+	glUniform4fv(stage_add, 1, add);
+	return qtrue;
+}
 int qglesMajorVersion, qglesMinorVersion;
 
 /* the GL calls of libgl */
@@ -105,6 +158,7 @@ void GLimp_Init(qboolean fixedFunction) {
 	ps2_colorlight = ri.Cvar_Get("r_ps2colorlight", "1", CVAR_ARCHIVE | CVAR_LATCH)->integer &&
 	                 !(flags & MXGL_BEAM);
 	mxgl_color_light(ps2_colorlight);
+	stage_program_init();
 	/* the textures' top levels left out only while GS memory overflows or
 	   the swap file is read (-1: MXGL_TEX_AUTO), or that many always */
 	mxgl_texture_quality(ri.Cvar_Get("r_ps2texquality", "-1", CVAR_ARCHIVE)->integer);
