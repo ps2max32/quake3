@@ -426,7 +426,7 @@ int main(int argc, char **argv) {
 			if (PS2_PROF) {
 				mx_prof_stop();
 				mx_vm_trace_mark(2);
-				mx_prof_report(600);
+				mx_prof_report(4000);
 			}
 			if (Q3_VM_TRACE)
 				mx_printf("ps2: VM trace host:quake3.trc: %d events\n",
