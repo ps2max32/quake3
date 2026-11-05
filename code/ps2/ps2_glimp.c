@@ -204,19 +204,14 @@ void GLimp_Shutdown(void) {}
 #include "runcfg.h"
 void mx_exit(int status) __attribute__((noreturn));
 
-extern int mxgl_show_stats;
 
 void GLimp_EndFrame(void) {
 	static unsigned frames;
-	static cvar_t *stats;
-	if (!stats)
-		stats = ri.Cvar_Get("r_ps2stats", "1", CVAR_ARCHIVE);
-	mxgl_show_stats = stats->integer;
 	mxgl_end_frame();
 	mxgl_frame_done();
 	if (PS2_GLSHOT && ++frames == PS2_GLSHOT) {
 		ri.Printf(PRINT_ALL, "ps2: rendered frame %u, picture: %d\n", frames,
-		          mxgl_screenshot("host:quake3.tga"));
+		          mxgl_screenshot("quake3.tga"));
 		ri.Printf(PRINT_ALL, "@@PS2TEST_END@@ status=0\n");
 		mx_exit(0);
 	}

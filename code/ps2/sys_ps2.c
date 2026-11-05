@@ -19,13 +19,13 @@ void mx_exit(int status) __attribute__((noreturn));
 int ps2_listdir(const char *dir, void (*fn)(const char *name, int is_dir, void *ctx), void *ctx);
 
 /* frames to run before the program ends by itself (0: never), and the
-   picture taken then (PS2_SHOT, "host:..."); set by the Makefile */
+   picture taken then (PS2_SHOT); set by the Makefile */
 #include "runcfg.h"
 #ifndef PS2_FRAMES
 #define PS2_FRAMES 0
 #endif
 #ifndef PS2_SHOT
-#define PS2_SHOT "host:quake3.tga"
+#define PS2_SHOT "quake3.tga"
 #endif
 #ifndef PS2_ARGS
 #define PS2_ARGS ""
@@ -174,7 +174,7 @@ void Sys_GLimpInit(void) {}
 
 /* ---- paths and files -------------------------------------------------------- */
 
-static char install_path[MAX_OSPATH] = "host:";
+static char install_path[MAX_OSPATH] = ".";
 void Sys_SetDefaultInstallPath(const char *path) { Q_strncpyz(install_path, path, sizeof install_path); }
 char *Sys_DefaultInstallPath(void) { return install_path; }
 char *Sys_DefaultAppPath(void) { return install_path; }
@@ -334,9 +334,6 @@ void IN_Frame(void) {
 		if ((held ^ last) & b)
 			Com_QueueEvent(t, SE_KEY, pad_keys[i].key, (held & b) != 0, 0, NULL);
 	}
-	/* R3 (the right stick pressed): the counters on and off (r_ps2stats) */
-	if (held & ~last & MX_PAD_R3)
-		Cvar_Set("r_ps2stats", Cvar_VariableIntegerValue("r_ps2stats") ? "0" : "1");
 	last = held;
 	/* the sticks: axes 0, 1 left (side, forward), 2, 3 right (yaw, pitch), in
 	   half SDL's range (-16383 .. 16383: j_yaw -0.022 is 360 degrees a
@@ -378,7 +375,7 @@ void IN_Restart(void) {}
                          host:quake3.trc: off */
 #endif
 const struct mx_vm_config mx_vm_config = {
-	.swap = "host:quake3.swp",
+	.swap = "quake3.swp",
 	/* no core heap: libgl's pinned memory (arenas, lists, textures; beam
 	   racing's records while it is on) is frames taken from the pool as
 	   needed, the rest of RAM VM's pages (Quake 3 waits on the swap file) */
@@ -395,11 +392,11 @@ int main(int argc, char **argv) {
 	   it (16 bits a texel) r_picmip 2 takes about as much */
 	char cmdline[MAX_STRING_CHARS];
 	Q_strncpyz(cmdline,
-	           "+set fs_basepath host: +set fs_homepath host: +set vm_game 0 +set vm_cgame 0 "
+	           "+set fs_basepath . +set fs_homepath . +set vm_game 0 +set vm_cgame 0 "
 	           "+set vm_ui 0 +set sv_pure 0 +set r_vertexLight 0 +set r_textureMode GL_LINEAR_MIPMAP_LINEAR +set r_picmip 1 "
 	           "+set s_mixPreStep 0 +set s_mixahead 0.14 +set in_joystick 1 "
 	           "+set r_ignoreGLErrors 1 +set com_introplayed 1 +set cl_allowDownload 0 "
-	           "+set ui_cdkeychecked 1 +set bot_enable 0 +set cg_drawFPS 1 +set com_maxfps 0 "
+	           "+set ui_cdkeychecked 1 +set bot_enable 0 +set cg_drawFPS 0 +set com_maxfps 0 "
 	           "+bind JOY1 \"+moveup\" +bind JOY2 \"+movedown\" +bind JOY3 weapnext "
 	           "+bind JOY4 weapprev +bind JOY5 \"+attack\" +bind JOY6 \"+speed\" " PS2_ARGS,
 	           sizeof cmdline);
@@ -429,8 +426,8 @@ int main(int argc, char **argv) {
 				mx_prof_report(4000);
 			}
 			if (Q3_VM_TRACE)
-				mx_printf("ps2: VM trace host:quake3.trc: %d events\n",
-				          mx_vm_trace_save("host:quake3.trc"));
+				mx_printf("ps2: VM trace quake3.trc: %d events\n",
+				          mx_vm_trace_save("quake3.trc"));
 			int r = mxgl_screenshot(PS2_SHOT);
 			mx_printf("ps2: %u frames, picture %s: %d\n", frame + 1, PS2_SHOT, r);
 			ps2_end(0);

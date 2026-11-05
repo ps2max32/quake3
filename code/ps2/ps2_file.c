@@ -1,5 +1,5 @@
 /* ps2_file.c: stdio files on the IOP file server (ps2_stdio.h). Paths are
-   the engine's OS paths, "host:..." (fs_basepath is "host:"). Reads go
+   the engine's OS paths, relative to the directory of the ELF. Reads go
    through a buffer per file, as the pk3 reader asks for a few bytes at a
    time and each mx_fio_read is a SIF RPC.
 
@@ -40,14 +40,12 @@ struct pfile {
 
 static int is_std(FILE *f) { return f == stdout || f == stderr || f == stdin; }
 
-/* "host:/a//b" or "host:./a" -> "host:a/b" */
+/* "host:/a//b" or "host:./a" -> "a/b": in the directory of the ELF */
 static void host_path(char *out, size_t room, const char *path) {
   const char *p = path;
   if (!strncmp(p, "host:", 5))
     p += 5;
   size_t n = 0;
-  memcpy(out, "host:", 5);
-  n = 5;
   while (*p == '/' || (p[0] == '.' && p[1] == '/'))
     p += *p == '/' ? 1 : 2;
   for (; *p && n + 1 < room; p++) {
