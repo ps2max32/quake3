@@ -1,0 +1,90 @@
+; q3stage.hlsl by hand, with clipping and culling on VU1 (libs/libgl/src/mxglc.i): a
+; shader stage's colours, vertex colour * cmul + cadd, and a negative cadd in r, g, b
+; the vertex colour's hue times -cadd / 255 (white below 16). The context's uniforms
+; are mxglc.i's: 5 cscale, 8 cmul, 9 cadd.
+	.section .vutext, "ax", @progbits
+	.set MXGLC_COLOUR, 1
+	.set MXGLC_FOG, 0
+
+	; vf22 cmul * cscale, vf23 max(cadd, 0) * cscale + 1.5 * 2^23, vf24 the hue's
+	; factor: max(-cadd, 0) / 255 * cscale
+	.macro mxglc_colour_load
+	nop				xitop vi2
+	nop				nop
+	nop				nop
+	nop				lq.xyzw vf22, 8(vi2)
+	nop				lq.xyzw vf23, 9(vi2)
+	nop				lq.xyzw vf25, 5(vi2)
+	nop				loi 0x3b808081
+	nop				nop
+	nop				nop
+	sub.xyz vf24, vf0, vf23		nop
+	maxx.xyzw vf23, vf23, vf0x	nop
+	mul.xyzw vf22, vf22, vf25	nop
+	nop				nop
+	maxx.xyz vf24, vf24, vf0x	nop
+	mul.xyzw vf23, vf23, vf25	nop
+	nop				nop
+	nop				nop
+	muli.xyz vf24, vf24, i		nop
+	nop				loi 0x4b400000
+	nop				nop
+	addi.xyzw vf23, vf23, i		nop
+	nop				nop
+	nop				nop
+	mul.xyz vf24, vf24, vf25	nop
+	.endm
+
+	; m the largest channel; big = saturate(m - 15); the hue is
+	; c * (big * 255 / max(m, 1)) + (1 - big) * 255
+	.macro mxglc_colour
+	itof0.xyzw vf14, vf14		loi 0x41700000
+	nop				nop
+	nop				nop
+	nop				nop
+	maxy.x vf25, vf14, vf14y	nop
+	nop				nop
+	nop				nop
+	nop				nop
+	maxz.x vf25, vf25, vf14z	nop
+	nop				nop
+	nop				nop
+	nop				nop
+	subi.x vf26, vf25, i		nop
+	maxw.x vf25, vf25, vf0w		loi 0x437f0000
+	nop				nop
+	nop				nop
+	maxx.x vf26, vf26, vf0x		div q, vf0w, vf25x
+	nop				nop
+	nop				nop
+	nop				nop
+	miniw.x vf26, vf26, vf0w	nop
+	nop				nop
+	nop				nop
+	nop				nop
+	muli.x vf27, vf26, i		nop
+	addi.x vf28, vf0, i		nop
+	nop				nop
+	nop				nop
+	sub.x vf28, vf28, vf27		waitq
+	mulq.x vf27, vf27, q		nop
+	nop				nop
+	nop				nop
+	nop				nop
+	mulx.xyz vf29, vf14, vf27x	nop
+	nop				nop
+	nop				nop
+	nop				nop
+	addx.xyz vf29, vf29, vf28x	nop
+	nop				nop
+	nop				nop
+	nop				nop
+	mulaw.xyzw acc, vf23, vf0w	nop
+	madda.xyz acc, vf29, vf24	nop
+	madd.xyzw vf17, vf14, vf22	nop
+	nop				nop
+	nop				nop
+	nop				nop
+	.endm
+
+	.include "mxglc.i"

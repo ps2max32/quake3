@@ -55,7 +55,12 @@ void glUniform4fv(GLint loc, GLsizei count, const GLfloat *v);
 #define GL_VERTEX_SHADER 0x8B31
 #define GL_LINK_STATUS 0x8B82
 #endif
+#ifdef MXGL_VU1CLIP
+extern const struct mxgl_vu1_binary q3stagec_vu1;
+#define q3stage_vu1 q3stagec_vu1
+#else
 extern const struct mxgl_vu1_binary q3stage_vu1;
+#endif
 static GLuint stage_prog;
 static GLint stage_mul, stage_add;
 

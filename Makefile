@@ -27,6 +27,11 @@ MXGL_REC_BYTES ?= 524288
 # the stages' colours on VU1 (code/ps2/q3stage.hlsl, glShaderBinary)
 HLSL_DIRS  += $(HERE)/code/ps2
 MXGL_PROGS := q3stage
+# with clipping on VU1 (libs/libgl, MXGL_VU1CLIP=1): q3stagec.vsm, the same by hand
+ifeq ($(MXGL_VU1CLIP),1)
+MXGL_VSM_DIR   := $(HERE)/code/ps2
+MXGL_VSM_PROGS := q3stagec
+endif
 include $(MXGL)/mk/mxgl.mk
 # the program in VM (ld/maxsdk-vm.ld), started by mxload.elf; MX_MEMORY=phys:
 # all of it in physical memory (32 MiB, no VM in PCSX2's recompiler)
@@ -158,9 +163,9 @@ run: $(OUT)/quake3.elf
 	  [ -f "$(RUNDIR)/baseq3/$$(basename "$$f")" ] || cp -v "$$f" $(RUNDIR)/baseq3/; done
 ifeq ($(MX_MEMORY),vm)
 	cp $(OUT)/quake3.elf $(RUNDIR)/quake3.elf && echo "host:quake3.elf" > $(RUNDIR)/mxload.txt
-	PCSX2_EE=interp ~/.claude/skills/ps2-pcsx2-test/run.sh $(MX_LOADER) $(or $(TIMEOUT),1800)
+	PCSX2_EE=interp $(PCSX2_RUN) $(MX_LOADER) $(or $(TIMEOUT),1800)
 else
-	~/.claude/skills/ps2-pcsx2-test/run.sh $(OUT)/quake3.elf $(or $(TIMEOUT),600)
+	$(PCSX2_RUN) $(OUT)/quake3.elf $(or $(TIMEOUT),600)
 endif
 
 # the textures as 8-bit paletted ones (tools/ps2pak.py; the renderer takes a
