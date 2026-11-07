@@ -217,7 +217,6 @@ void GLimp_EndFrame(void) {
 	if (PS2_GLSHOT && ++frames == PS2_GLSHOT) {
 		ri.Printf(PRINT_ALL, "ps2: rendered frame %u, picture: %d\n", frames,
 		          mxgl_screenshot("quake3.tga"));
-		ri.Printf(PRINT_ALL, "@@PS2TEST_END@@ status=0\n");
 		mx_exit(0);
 	}
 }

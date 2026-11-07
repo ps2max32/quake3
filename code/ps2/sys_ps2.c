@@ -31,11 +31,6 @@ int ps2_listdir(const char *dir, void (*fn)(const char *name, int is_dir, void *
 #define PS2_ARGS ""
 #endif
 
-static void ps2_end(int status) {
-	mx_printf("@@PS2TEST_END@@ status=%d\n", status);
-	mx_exit(status);
-}
-
 /* ---- time ----------------------------------------------------------------- */
 
 static u64 cycles(void) {
@@ -135,12 +130,12 @@ void QDECL Sys_Error(const char *error, ...) {
 	Q_vsnprintf(text, sizeof text, error, ap);
 	va_end(ap);
 	mx_printf("Sys_Error: %s\n", text);
-	ps2_end(1);
+	mx_exit(1);
 }
 
 void Sys_Quit(void) {
 	mx_printf("Sys_Quit\n");
-	ps2_end(0);
+	mx_exit(0);
 }
 
 void Sys_SetErrorText(const char *text) {}
@@ -431,7 +426,7 @@ int main(int argc, char **argv) {
 				          mx_vm_trace_save("quake3.trc"));
 			int r = mxgl_screenshot(PS2_SHOT);
 			mx_printf("ps2: %u frames, picture %s: %d\n", frame + 1, PS2_SHOT, r);
-			ps2_end(0);
+			mx_exit(0);
 		}
 	}
 	return 0;
