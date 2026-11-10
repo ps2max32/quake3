@@ -152,7 +152,7 @@ $(shell mkdir -p $(OUT)/ps2; printf '#define PS2_FRAMES %s\n#define PS2_ARGS "%s
   cmp -s $(RUNCFG).new $(RUNCFG) || mv $(RUNCFG).new $(RUNCFG); rm -f $(RUNCFG).new)
 
 $(OUT)/quake3.elf: $(ENGINE_OBJS) $(MODULES) $(MXGL_OBJS) $(HLSL_OBJS) $(MX_LIB) $(MX_CRT0) $(MX_LD) $(LIBC_LIBS)
-	$(call link,$@,--defsym=__stack_size=0x100000 $(MX_CRT0) $(ENGINE_OBJS) $(MODULES) $(MXGL_OBJS) $(HLSL_OBJS) $(LIBC_LIBS))
+	$(call link,$@,--defsym=__mx_stack_size=0x100000 $(MX_CRT0) $(ENGINE_OBJS) $(MODULES) $(MXGL_OBJS) $(HLSL_OBJS) $(LIBC_LIBS))
 
 # ---- running --------------------------------------------------------------------
 Q3DATA   ?= /mnt/truenas_data_exthdd/spellen/PC/Quake III Arena/baseq3
