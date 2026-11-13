@@ -426,6 +426,20 @@ int main(int argc, char **argv) {
 			sum[frame % 3][0] += mx_pcr0(), sum[frame % 3][1] += mx_pcr1();
 			cyc[frame % 3] += mx_count() - pc0, nf[frame % 3]++;
 		}
+		{
+			extern unsigned long long ps2_perf[10];
+			static unsigned long long at[10];
+			if (PS2_PROF && frame == PS2_PROF)
+				memcpy(at, ps2_perf, sizeof at);
+			if (PS2_FRAMES && frame + 2 == PS2_FRAMES) {
+				u32 nfr = frame - PS2_PROF, v[10];
+				for (int i = 0; i < 10; i++)
+					v[i] = (u32)((ps2_perf[i] - at[i]) / nfr);
+				mx_printf("perf: a frame: MD3 surfaces %u, vertices %u, triangles %u, %u cycles making them; "
+				          "%u batches of them, %u cycles drawing those; all: %u batches, %u cycles, %u vertices, "
+				          "%u indexes times passes\n", v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7], v[8], v[9]);
+			}
+		}
 		if (PS2_FRAMES && frame + 2 == PS2_FRAMES)
 			mx_printf("perf: a frame: I-cache misses %u, D-cache misses %u (%u cycles); instructions %u, "
 			          "TLB misses %u (%u cycles); ITLB misses %u, DTLB misses %u\n",

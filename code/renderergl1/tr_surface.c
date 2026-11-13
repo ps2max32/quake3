@@ -725,6 +725,16 @@ static void LerpMeshVertexes(md3Surface_t *surf, float backlerp)
 RB_SurfaceMesh
 =============
 */
+#ifdef Q3_PERF
+/* counts over the frames (sys_ps2.c prints them): [0] MD3 surfaces, [1] their
+   vertices, [2] triangles, [3] cycles in RB_SurfaceMesh, [4] batches with MD3
+   surfaces, [5] cycles of their RB_EndSurface, [6] all batches, [7] cycles of
+   all RB_EndSurface, [8] vertices of all, [9] indexes times passes of all */
+unsigned long long ps2_perf[10];
+int ps2_perf_mesh;
+static inline unsigned ps2_count( void ) { unsigned c; __asm__ volatile( "mfc0 %0, $9" : "=r"( c ) ); return c; }
+#endif
+
 static void RB_SurfaceMesh(md3Surface_t *surface) {
 	int				j;
 	float			backlerp;
@@ -733,6 +743,9 @@ static void RB_SurfaceMesh(md3Surface_t *surface) {
 	int				indexes;
 	int				Bob, Doug;
 	int				numVerts;
+#ifdef Q3_PERF
+	unsigned		pc0 = ps2_count();
+#endif
 
 	if (  backEnd.currentEntity->e.oldframe == backEnd.currentEntity->e.frame ) {
 		backlerp = 0;
@@ -763,6 +776,11 @@ static void RB_SurfaceMesh(md3Surface_t *surface) {
 	}
 
 	tess.numVertexes += surface->numVerts;
+#ifdef Q3_PERF
+	ps2_perf[0]++, ps2_perf[1] += surface->numVerts, ps2_perf[2] += surface->numTriangles;
+	ps2_perf[3] += ps2_count() - pc0;
+	ps2_perf_mesh = 1;
+#endif
 
 }
 

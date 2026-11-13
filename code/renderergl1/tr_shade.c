@@ -1703,6 +1703,14 @@ void RB_EndSurface( void ) {
 	if (input->numIndexes == 0) {
 		return;
 	}
+#ifdef Q3_PERF
+	extern unsigned long long ps2_perf[10];
+	extern int ps2_perf_mesh;
+	unsigned pc0;
+	__asm__ volatile( "mfc0 %0, $9" : "=r"( pc0 ) );
+	int pmesh = ps2_perf_mesh, pverts = tess.numVertexes, pidx = tess.numIndexes;
+	ps2_perf_mesh = 0;
+#endif
 
 	if (input->indexes[SHADER_MAX_INDEXES-1] != 0) {
 		ri.Error (ERR_DROP, "RB_EndSurface() - SHADER_MAX_INDEXES hit");
@@ -1745,6 +1753,17 @@ void RB_EndSurface( void ) {
 	}
 	// clear shader so we can tell we don't have any unclosed surfaces
 	tess.numIndexes = 0;
+#ifdef Q3_PERF
+	{
+		unsigned pc1;
+		__asm__ volatile( "mfc0 %0, $9" : "=r"( pc1 ) );
+		if ( pmesh ) {
+			ps2_perf[4]++, ps2_perf[5] += pc1 - pc0;
+		}
+		ps2_perf[6]++, ps2_perf[7] += pc1 - pc0;
+		ps2_perf[8] += pverts, ps2_perf[9] += (unsigned long long)pidx * tess.numPasses;
+	}
+#endif
 
 	GLimp_LogComment( "----------\n" );
 }
