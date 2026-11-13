@@ -404,7 +404,35 @@ int main(int argc, char **argv) {
 	NET_Init();
 
 	for (u32 frame = 0;; frame++) {
+#ifdef Q3_PERF
+		/* the EE's performance counters over the profile's frames: a pair of
+		   events a frame, by turns (EE Core User's Manual, table 7-1) */
+		static const u8 ev[3][2] = {{6, 6}, {12, 4}, {5, 5}};
+		static u64 sum[3][2], cyc[3];
+		static u32 nf[3];
+		/* only over the profile's frames, which are short: a counter that
+		   reaches 2^31 raises an exception (a map load is long enough) */
+		u32 pc0 = mx_count();
+		int counting = PS2_PROF && frame >= PS2_PROF;
+		if (counting) {
+			mx_pcr0_write(0), mx_pcr1_write(0);
+			mx_pccr_write(0x80000000u | (u32)ev[frame % 3][0] << 5 | 0x1Eu | (u32)ev[frame % 3][1] << 15 | 0x7800u);
+		}
+#endif
 		Com_Frame();
+#ifdef Q3_PERF
+		if (counting) {
+			mx_pccr_write(0);
+			sum[frame % 3][0] += mx_pcr0(), sum[frame % 3][1] += mx_pcr1();
+			cyc[frame % 3] += mx_count() - pc0, nf[frame % 3]++;
+		}
+		if (PS2_FRAMES && frame + 2 == PS2_FRAMES)
+			mx_printf("perf: a frame: I-cache misses %u, D-cache misses %u (%u cycles); instructions %u, "
+			          "TLB misses %u (%u cycles); ITLB misses %u, DTLB misses %u\n",
+			          (u32)(sum[0][0] / nf[0]), (u32)(sum[0][1] / nf[0]), (u32)(cyc[0] / nf[0]),
+			          (u32)(sum[1][0] / nf[1]), (u32)(sum[1][1] / nf[1]), (u32)(cyc[1] / nf[1]),
+			          (u32)(sum[2][0] / nf[2]), (u32)(sum[2][1] / nf[2]));
+#endif
 		if (frame % 60 == 0)
 			mx_printf("ps2: frame %u at %d ms\n", frame, Sys_Milliseconds());
 		if (PS2_FRAMES && frame + 2 == PS2_FRAMES)
