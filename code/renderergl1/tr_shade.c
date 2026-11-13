@@ -1305,6 +1305,325 @@ static qboolean RB_PS2_Stages( shaderCommands_t *input, int *stage ) {
 	}
 	return qfalse;
 }
+
+/*
+==================
+PS2: MD3 surfaces drawn by VU1
+
+An entity's MD3 surface whose shader's stages need only the texture
+coordinates of the file or tcGen environment, and a colour that is constant
+or the entity's light (PS2_ModelShader) is not built in tess: VU1 takes the two frames'
+vertices as the file has them (four shorts: x, y, z and the normal's two
+angles), blends and lights them (code/ps2/q3model.hlsl), and libgl gathers
+them by the surface's strips, made here once (glDrawElements with a
+program of its own inputs: nothing is culled or clipped on the EE). So a
+surface is drawn so only when its frames' bounds are beyond the near plane
+and well inside the guard band; both faces of its triangles are drawn (the
+first stage writes depth).
+==================
+*/
+#define PS2_MODEL_SLOTS 2048	// a power of two
+#define PS2_RESTART 0xFFFF
+typedef struct {
+	const md3Surface_t	*surf;
+	unsigned short		*strip;		// its triangles as strips, PS2_RESTART between
+	int					num;		// 0: it cannot be drawn so
+	float				lodBias;	// log2 of texture repeats a unit
+} ps2Model_t;
+static ps2Model_t ps2_modelMap[PS2_MODEL_SLOTS];
+
+void RB_PS2_ModelReset( void ) {
+	Com_Memset( ps2_modelMap, 0, sizeof( ps2_modelMap ) );
+}
+
+static qboolean PS2_ModelShader( shader_t *sh ) {
+	const char *why = NULL;
+	int i;
+
+	if ( sh->ps2Model ) {
+		return sh->ps2Model == 1;
+	}
+	sh->ps2Model = 2;
+	if ( sh->isSky || sh->sort == SS_PORTAL || sh->numDeforms || sh->polygonOffset ) {
+		why = "sky, portal, deform or polygon offset";
+	}
+	for ( i = 0; !why && i < MAX_SHADER_STAGES; i++ ) {
+		shaderStage_t *st = sh->stages[i];
+		if ( !st || !st->active ) {
+			break;
+		}
+		if ( st->bundle[1].image[0] || st->bundle[0].isVideoMap ) {
+			why = "two textures or a video";
+		} else if ( st->bundle[0].tcGen != TCGEN_TEXTURE && st->bundle[0].tcGen != TCGEN_ENVIRONMENT_MAPPED ) {
+			why = "tcGen";
+		} else if ( i == 0 && ( ( st->stateBits & ( GLS_SRCBLEND_BITS | GLS_DSTBLEND_BITS ) ) ||
+			!( st->stateBits & GLS_DEPTHMASK_TRUE ) ) ) {
+			// the first stage covers what is behind it: both faces are drawn
+			why = "first stage blended";
+		}
+		switch ( st->rgbGen ) {
+		case CGEN_LIGHTING_DIFFUSE: case CGEN_IDENTITY: case CGEN_IDENTITY_LIGHTING: case CGEN_CONST:
+		case CGEN_ENTITY: case CGEN_ONE_MINUS_ENTITY: case CGEN_WAVEFORM:
+			break;
+		default:
+			why = why ? why : "rgbGen";
+		}
+		switch ( st->alphaGen ) {
+		case AGEN_IDENTITY: case AGEN_SKIP: case AGEN_CONST: case AGEN_ENTITY:
+		case AGEN_ONE_MINUS_ENTITY: case AGEN_WAVEFORM:
+			break;
+		default:
+			why = why ? why : "alphaGen";
+		}
+	}
+	if ( !why && i == 0 ) {
+		why = "no stage";
+	}
+	if ( why ) {
+		ri.Printf( PRINT_DEVELOPER, "ps2: models of %s not by VU1: %s\n", sh->name, why );
+		return qfalse;
+	}
+	sh->ps2Model = 1;
+	return qtrue;
+}
+
+/* the surface's triangles as strips: a triangle goes on the strip when it
+   has its last two vertices (in either order: nothing is culled); a new
+   strip starts with the vertex the next triangle does not have */
+static void PS2_ModelStrips( ps2Model_t *m ) {
+	const md3Surface_t *surf = m->surf;
+	const int *tri = (const int *)( (const byte *)surf + surf->ofsTriangles );
+	const float *st = (const float *)( (const byte *)surf + surf->ofsSt );
+	const short *xyz = (const short *)( (const byte *)surf + surf->ofsXyzNormals );
+	int nt = surf->numTriangles, t, n = 0, l1 = -1, l2 = -1;
+	unsigned short *out;
+	float at = 0, ao = 0;
+
+	m->num = 0;
+	if ( nt < 1 || surf->numVerts > 65000 ) {
+		return;
+	}
+	out = ri.Hunk_Alloc( nt * 4 * sizeof( unsigned short ), h_low );
+	for ( t = 0; t < nt; t++ ) {
+		int a = tri[3 * t], b = tri[3 * t + 1], c = tri[3 * t + 2];
+		int h1 = a == l1 || b == l1 || c == l1, h2 = a == l2 || b == l2 || c == l2;
+
+		if ( h1 && h2 ) {
+			int x = a != l1 && a != l2 ? a : b != l1 && b != l2 ? b : c;
+			out[n++] = x;
+			l1 = l2, l2 = x;
+		} else {
+			// the two vertices the next triangle shares last
+			if ( t + 1 < nt ) {
+				const int *q = &tri[3 * t + 3];
+				int sa = a == q[0] || a == q[1] || a == q[2];
+				int sb = b == q[0] || b == q[1] || b == q[2];
+				int sc = c == q[0] || c == q[1] || c == q[2];
+				if ( sa + sb + sc == 2 ) {
+					int u = !sa ? a : !sb ? b : c;
+					int v = !sa ? b : !sb ? c : a, w = !sa ? c : !sb ? a : b;
+					a = u, b = v, c = w;
+				}
+			}
+			if ( n ) {
+				out[n++] = PS2_RESTART;
+			}
+			out[n++] = a, out[n++] = b, out[n++] = c;
+			l1 = b, l2 = c;
+		}
+		// texture area over surface area (frame 0), for the mipmap level
+		{
+			const short *pa = &xyz[4 * tri[3 * t]], *pb = &xyz[4 * tri[3 * t + 1]], *pc = &xyz[4 * tri[3 * t + 2]];
+			const float *ta = &st[2 * tri[3 * t]], *tb = &st[2 * tri[3 * t + 1]], *tc = &st[2 * tri[3 * t + 2]];
+			float ux = ( pb[0] - pa[0] ) * MD3_XYZ_SCALE, uy = ( pb[1] - pa[1] ) * MD3_XYZ_SCALE, uz = ( pb[2] - pa[2] ) * MD3_XYZ_SCALE;
+			float vx = ( pc[0] - pa[0] ) * MD3_XYZ_SCALE, vy = ( pc[1] - pa[1] ) * MD3_XYZ_SCALE, vz = ( pc[2] - pa[2] ) * MD3_XYZ_SCALE;
+			float mx = uy * vz - uz * vy, my = uz * vx - ux * vz, mz = ux * vy - uy * vx;
+			float x = ( tb[0] - ta[0] ) * ( tc[1] - ta[1] ) - ( tc[0] - ta[0] ) * ( tb[1] - ta[1] );
+			ao += sqrt( mx * mx + my * my + mz * mz );
+			at += x < 0 ? -x : x;
+		}
+	}
+	m->strip = out;
+	m->num = n;
+	m->lodBias = ao > 1e-6f && at > 1e-9f ? 0.5f * log( at / ao ) / 0.69314718f : 0;
+}
+
+static ps2Model_t *PS2_ModelOf( const md3Surface_t *surf ) {
+	unsigned h = ( (unsigned)(intptr_t)surf >> 4 ) * 2654435761u;
+	int k;
+
+	for ( k = 0; k < PS2_MODEL_SLOTS; k++ ) {
+		ps2Model_t *m = &ps2_modelMap[( h + k ) & ( PS2_MODEL_SLOTS - 1 )];
+		if ( m->surf == surf ) {
+			return m;
+		}
+		if ( !m->surf ) {
+			m->surf = surf;
+			PS2_ModelStrips( m );
+			return m;
+		}
+	}
+	return NULL;
+}
+
+/* the frames' boxes beyond the near plane and well inside the guard band
+   (three times the view's width and height from its middle) */
+static qboolean PS2_ModelInside( const md3Frame_t *fa, const md3Frame_t *fb ) {
+	const float *mm = backEnd.or.modelMatrix;
+	static float fovx, fovy, tx, ty;
+	float lo[3], hi[3], znear = r_znear->value + 0.5f;
+	int i;
+
+	if ( fovx != backEnd.viewParms.fovX || fovy != backEnd.viewParms.fovY ) {
+		fovx = backEnd.viewParms.fovX, fovy = backEnd.viewParms.fovY;
+		tx = 3 * tan( fovx * ( M_PI / 360.0f ) ), ty = 3 * tan( fovy * ( M_PI / 360.0f ) );
+	}
+	for ( i = 0; i < 3; i++ ) {
+		lo[i] = fa->bounds[0][i] < fb->bounds[0][i] ? fa->bounds[0][i] : fb->bounds[0][i];
+		hi[i] = fa->bounds[1][i] > fb->bounds[1][i] ? fa->bounds[1][i] : fb->bounds[1][i];
+	}
+	for ( i = 0; i < 8; i++ ) {
+		float x = i & 1 ? hi[0] : lo[0], y = i & 2 ? hi[1] : lo[1], z = i & 4 ? hi[2] : lo[2];
+		float ex = mm[0] * x + mm[4] * y + mm[8] * z + mm[12];
+		float ey = mm[1] * x + mm[5] * y + mm[9] * z + mm[13];
+		float dist = -( mm[2] * x + mm[6] * y + mm[10] * z + mm[14] );
+		if ( dist < znear || fabs( ex ) > tx * dist || fabs( ey ) > ty * dist ) {
+			return qfalse;
+		}
+	}
+	return qtrue;
+}
+
+/* a stage's colours for q3model.hlsl: amb + dirc * N.L; qfalse: not so */
+static qboolean PS2_ModelColors( shaderStage_t *pStage, float *amb, float *dirc ) {
+	trRefEntity_t *ent = backEnd.currentEntity;
+	float mul[4], add[4];
+	byte c[4];
+	int i;
+
+	if ( pStage->rgbGen == CGEN_LIGHTING_DIFFUSE ) {
+		for ( i = 0; i < 3; i++ ) {
+			amb[i] = ent->ambientLight[i], dirc[i] = ent->directedLight[i];
+		}
+		amb[3] = 255, dirc[3] = 0;
+		switch ( pStage->alphaGen ) {
+		case AGEN_CONST: amb[3] = pStage->constantColor[3]; break;
+		case AGEN_ENTITY: RB_CalcAlphaFromEntity( c ); amb[3] = c[3]; break;
+		case AGEN_ONE_MINUS_ENTITY: RB_CalcAlphaFromOneMinusEntity( c ); amb[3] = c[3]; break;
+		case AGEN_WAVEFORM: RB_CalcWaveAlpha( &pStage->alphaWave, c ); amb[3] = c[3]; break;
+		default: break;
+		}
+		return qtrue;
+	}
+	// a colour for all vertices (they have none of their own)
+	if ( !PS2_StageColors( pStage, qfalse, mul, add ) || mul[0] || mul[1] || mul[2] || mul[3] ) {
+		return qfalse;
+	}
+	for ( i = 0; i < 4; i++ ) {
+		amb[i] = add[i], dirc[i] = 0;
+	}
+	return qtrue;
+}
+
+#ifdef Q3_PERF
+/* MD3 surfaces by what became of them: [0] drawn by VU1 ([4] their strips'
+   vertices), not so for [1] the shader, [2] the bounds, [3] a stage's
+   colours or texture matrix */
+unsigned ps2_perfModel[5];
+#define PS2_MODEL_COUNT( k ) ps2_perfModel[k]++
+#else
+#define PS2_MODEL_COUNT( k )
+#endif
+
+qboolean RB_PS2_DrawModel( md3Surface_t *surf, shader_t *shader, int fogNum ) {
+	trRefEntity_t *ent = backEnd.currentEntity;
+	shader_t *sh = shader->remappedShader ? shader->remappedShader : shader;
+	model_t *mod;
+	md3Header_t *head;
+	const md3Frame_t *frames;
+	const short *xyzNew, *xyzOld;
+	ps2Model_t *m;
+	float backlerp, tm[MAX_SHADER_STAGES][6], amb[MAX_SHADER_STAGES][4], dirc[MAX_SHADER_STAGES][4];
+	qboolean hasTm[MAX_SHADER_STAGES];
+	int stage, numStages, frame = ent->e.frame, oldframe = ent->e.oldframe;
+
+	if ( fogNum || r_greyscale->value || r_showtris->integer || r_shownormals->integer ||
+		!PS2_ModelShader( sh ) ) {
+		PS2_MODEL_COUNT( 1 );
+		return qfalse;
+	}
+	mod = R_GetModelByHandle( ent->e.hModel );
+	if ( !mod || mod->type != MOD_MESH || !( head = mod->md3[0] ) ) {
+		return qfalse;
+	}
+	if ( frame < 0 || oldframe < 0 || frame >= surf->numFrames || oldframe >= surf->numFrames ||
+		frame >= head->numFrames || oldframe >= head->numFrames ) {
+		return qfalse;
+	}
+	backlerp = oldframe == frame ? 0 : ent->e.backlerp;
+	frames = (const md3Frame_t *)( (const byte *)head + head->ofsFrames );
+	if ( !PS2_ModelInside( &frames[frame], &frames[oldframe] ) ) {
+		PS2_MODEL_COUNT( 2 );
+		return qfalse;
+	}
+	m = PS2_ModelOf( surf );
+	if ( !m || !m->num ) {
+		return qfalse;
+	}
+	// what tess has of this batch goes first; then the stages' colours and
+	// texture matrices, before anything is drawn
+	if ( tess.numIndexes ) {
+		RB_EndSurface();
+		RB_BeginSurface( shader, fogNum );
+	}
+	for ( numStages = 0; numStages < MAX_SHADER_STAGES; numStages++ ) {
+		shaderStage_t *pStage = tess.xstages[numStages];
+		if ( !pStage ) {
+			break;
+		}
+		if ( !PS2_ModelColors( pStage, amb[numStages], dirc[numStages] ) ) {
+			PS2_MODEL_COUNT( 3 );
+			return qfalse;
+		}
+		hasTm[numStages] = pStage->bundle[0].numTexMods != 0;
+		if ( hasTm[numStages] && !PS2_TexModMatrix( pStage, 0, tm[numStages] ) ) {
+			PS2_MODEL_COUNT( 3 );
+			return qfalse;
+		}
+	}
+
+	xyzNew = (const short *)( (const byte *)surf + surf->ofsXyzNormals ) + frame * surf->numVerts * 4;
+	xyzOld = backlerp ? (const short *)( (const byte *)surf + surf->ofsXyzNormals ) + oldframe * surf->numVerts * 4 : xyzNew;
+	GL_PS2_ModelBegin( backlerp, MD3_XYZ_SCALE, ent->lightDir );
+	glVertexAttribPointer( 0, 4, GL_SHORT, GL_FALSE, 8, xyzNew );
+	glVertexAttribPointer( 1, 4, GL_SHORT, GL_FALSE, 8, xyzOld );
+	glVertexAttribPointer( 2, 2, GL_FLOAT, GL_FALSE, 8, (const byte *)surf + surf->ofsSt );
+	qglTexEnvf( GL_TEXTURE_FILTER_CONTROL, GL_TEXTURE_LOD_BIAS, m->lodBias );
+	qglLockArraysEXT( 0, surf->numVerts );
+	for ( stage = 0; stage < numStages; stage++ ) {
+		shaderStage_t *pStage = tess.xstages[stage];
+
+		GL_PS2_ModelStage( amb[stage], dirc[stage],
+			pStage->bundle[0].tcGen == TCGEN_ENVIRONMENT_MAPPED ? backEnd.or.viewOrigin : NULL );
+		RB_PS2_TexMatrix( hasTm[stage] ? tm[stage] : NULL );
+		R_BindAnimatedImage( &pStage->bundle[0] );
+		GL_State( pStage->stateBits );
+		GL_PS2_Shift( tr.overbrightBits );
+		qglDrawElements( GL_TRIANGLE_STRIP, m->num, GL_UNSIGNED_SHORT, m->strip );
+	}
+	qglUnlockArraysEXT();
+	qglTexEnvf( GL_TEXTURE_FILTER_CONTROL, GL_TEXTURE_LOD_BIAS, 0 );
+	GL_PS2_ModelEnd();
+	RB_PS2_TexMatrix( NULL );
+#ifdef Q3_PERF
+	ps2_perfModel[0]++, ps2_perfModel[4] += m->num;
+#endif
+	backEnd.pc.c_shaders++;
+	backEnd.pc.c_vertexes += surf->numVerts;
+	backEnd.pc.c_indexes += surf->numTriangles * 3;
+	backEnd.pc.c_totalIndexes += surf->numTriangles * 3 * numStages;
+	return qtrue;
+}
 #endif
 
 static void RB_IterateStagesGeneric( shaderCommands_t *input )

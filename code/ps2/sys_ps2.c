@@ -435,6 +435,12 @@ int main(int argc, char **argv) {
 				u32 nfr = frame - PS2_PROF, v[10];
 				for (int i = 0; i < 10; i++)
 					v[i] = (u32)((ps2_perf[i] - at[i]) / nfr);
+				{
+					extern unsigned ps2_perfModel[5];
+					mx_printf("perf: MD3 surfaces since the start: %u by VU1 (%u strip vertices), not: %u shader, "
+					          "%u bounds, %u stage\n", ps2_perfModel[0], ps2_perfModel[4], ps2_perfModel[1],
+					          ps2_perfModel[2], ps2_perfModel[3]);
+				}
 				mx_printf("perf: a frame: MD3 surfaces %u, vertices %u, triangles %u, %u cycles making them; "
 				          "%u batches of them, %u cycles drawing those; all: %u batches, %u cycles, %u vertices, "
 				          "%u indexes times passes\n", v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7], v[8], v[9]);

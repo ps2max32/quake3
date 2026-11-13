@@ -640,6 +640,11 @@ static qboolean RB_PS2_DrawSurface( drawSurf_t *drawSurf, shader_t *shader, int 
 	surfaceType_t st = *drawSurf->surface;
 	int id, *slot;
 
+	// an entity's MD3 surface: by VU1 when it can be
+	if ( st == SF_MD3 && ps2_models && shader && entityNum != REFENTITYNUM_WORLD && !dlighted ) {
+		RB_PS2_FlushLists();
+		return RB_PS2_DrawModel( (md3Surface_t *)drawSurf->surface, shader, fogNum );
+	}
 	if ( entityNum != REFENTITYNUM_WORLD || fogNum || dlighted || !shader ||
 		( st != SF_FACE && st != SF_GRID && st != SF_TRIANGLES ) ||
 		!RB_PS2_StaticShader( shader ) ) {

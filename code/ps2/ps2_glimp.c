@@ -82,6 +82,72 @@ static void stage_program_init(void) {
 	stage_add = glGetUniformLocation(prog, "cadd");
 }
 
+/* MD3 models on VU1 (q3model.hlsl; tr_shade.c RB_PS2_DrawModel): the program
+   with the frames' blend and the light's direction, then each stage's
+   colours */
+void APIENTRY glUniform4f(GLint loc, GLfloat x, GLfloat y, GLfloat z, GLfloat w);
+void APIENTRY glEnableVertexAttribArray(GLuint index);
+extern const struct mxgl_vu1_binary q3model_vu1;
+int ps2_models;
+static GLuint model_prog;
+static GLint model_blend, model_ldir, model_amb, model_dirc, model_env;
+
+static void model_program_init(void) {
+	ps2_models = 0;
+	int want = ri.Cvar_Get("r_ps2models", "1", CVAR_ARCHIVE | CVAR_LATCH)->integer;
+	if (!want)
+		return;
+	if (!model_prog) {
+		GLuint sh = glCreateShader(GL_VERTEX_SHADER), prog = glCreateProgram();
+		GLint ok = 0;
+		glShaderBinary(1, &sh, GL_PS2_VU1_BINARY, &q3model_vu1, sizeof q3model_vu1);
+		glAttachShader(prog, sh);
+		glLinkProgram(prog);
+		glGetProgramiv(prog, GL_LINK_STATUS, &ok);
+		if (!ok) {
+			ri.Printf(PRINT_WARNING, "ps2: the model program did not link\n");
+			return;
+		}
+		model_prog = prog;
+		model_blend = glGetUniformLocation(prog, "blend");
+		model_ldir = glGetUniformLocation(prog, "ldir");
+		model_amb = glGetUniformLocation(prog, "amb");
+		model_dirc = glGetUniformLocation(prog, "dirc");
+		model_env = glGetUniformLocation(prog, "env");
+	}
+	/* the models' arrays and strips: generic attributes 0 to 2, and an index
+	   that ends a strip (only the draws of programs like this one look at
+	   these) */
+	glEnableVertexAttribArray(0);
+	glEnableVertexAttribArray(1);
+	glEnableVertexAttribArray(2);
+	glEnable(GL_PRIMITIVE_RESTART_FIXED_INDEX);
+	ps2_models = want; /* 2: drawn in magenta (to see which are) */
+}
+
+/* scale: the vertices' unit */
+void GL_PS2_ModelBegin(float backlerp, float scale, const float *ldir) {
+	glUseProgram(model_prog);
+	glUniform4f(model_blend, backlerp, scale, 0, 0);
+	glUniform4f(model_ldir, ldir[0], ldir[1], ldir[2], 0);
+}
+/* a stage: its colours, and env: NULL the file's texture coordinates, else
+   tcGen environment with the viewer there (in the vertices' space) */
+void GL_PS2_ModelStage(const float *amb, const float *dirc, const float *env) {
+	static const float tint[4] = {255, 0, 255, 255};
+	if (ps2_models == 2)
+		amb = tint;
+	glUniform4fv(model_amb, 1, amb);
+	glUniform4fv(model_dirc, 1, dirc);
+	if (env)
+		glUniform4f(model_env, env[0], env[1], env[2], 1);
+	else
+		glUniform4f(model_env, 0, 0, 0, 0);
+}
+void GL_PS2_ModelEnd(void) {
+	glUseProgram(0);
+}
+
 /* the draws after: colour = vertex colour * mul + add (q3stage.hlsl), or
    as they are (mul NULL); qfalse if there is no program */
 qboolean GL_PS2_StageProgram(const float *mul, const float *add) {
@@ -164,6 +230,7 @@ void GLimp_Init(qboolean fixedFunction) {
 	                 !(flags & MXGL_BEAM);
 	mxgl_color_light(ps2_colorlight);
 	stage_program_init();
+	model_program_init();
 	/* the textures' top levels left out only while GS memory overflows or
 	   the swap file is read (-1: MXGL_TEX_AUTO), or that many always */
 	mxgl_texture_quality(ri.Cvar_Get("r_ps2texquality", "-1", CVAR_ARCHIVE)->integer);

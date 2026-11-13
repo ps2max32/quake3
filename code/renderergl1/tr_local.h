@@ -385,6 +385,7 @@ typedef struct shader_s {
 	struct	shader_s	*next;
 #ifdef __PS2__
   int ps2Static;  // 0 not known yet, 1 the same every frame (display lists), 2 not
+  int ps2Model;   // 0 not known yet, 1 its MD3 surfaces can be drawn by VU1 (RB_PS2_DrawModel), 2 not
 #endif
 } shader_t;
 
@@ -1142,6 +1143,16 @@ void	GL_TexEnv( int env );
 #ifdef __PS2__
 void	GL_PS2_Shift( int shift );
 qboolean	GL_PS2_StageProgram( const float *mul, const float *add );
+extern int	ps2_models;		// r_ps2models and the program is there
+void	GL_PS2_ModelBegin( float backlerp, float scale, const float *ldir );
+void	GL_PS2_ModelStage( const float *amb, const float *dirc, const float *env );
+void	GL_PS2_ModelEnd( void );
+qboolean	RB_PS2_DrawModel( md3Surface_t *surf, shader_t *shader, int fogNum );
+void	RB_PS2_ModelReset( void );
+// libgl's GL 2.0 calls for programs with inputs of their own
+void APIENTRY glVertexAttribPointer( GLuint index, GLint size, GLenum type, GLboolean normalized,
+	GLsizei stride, const GLvoid *ptr );
+void APIENTRY glEnableVertexAttribArray( GLuint index );
 extern qboolean ps2_listCompiling;
 void	RB_PS2_TexMatrix( const float *m );
 #endif

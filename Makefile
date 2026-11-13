@@ -25,15 +25,21 @@ MXGL     ?= $(PS2MAX)/libs/libgl
 # beam racing's records: a frame of Quake III's stream is up to ~350 KB
 # (demo four; three quarters of a record), more than libgl's default
 MXGL_REC_BYTES ?= 524288
+# the frames' vertices: demo four's heaviest frame takes 266 KB of the default 512 KB's
+# positions part (300 KB); the models' streams (q3model.hlsl) come on top
+MXGL_ARENA_BYTES ?= 655360
 # the stages' colours on VU1 (code/ps2/q3stage.hlsl, glShaderBinary)
 HLSL_DIRS  += $(HERE)/code/ps2
-MXGL_PROGS := q3stage
+MXGL_PROGS := q3stage q3model
 # with clipping on VU1 (libs/libgl, MXGL_VU1CLIP=1): q3stagec.vsm, the same by hand
 ifeq ($(MXGL_VU1CLIP),1)
 MXGL_VSM_DIR   := $(HERE)/code/ps2
 MXGL_VSM_PROGS := q3stagec
 endif
 include $(MXGL)/mk/mxgl.mk
+# q3model.hlsl keeps more values than VU1 has registers (twelve uniforms and
+# the vertex's): four quadwords of data memory for the compiler's spills
+$(OUT)/hlsl/q3model.vu.ll: VU_OPT_FLAGS += -vu-spill-qw=4
 # the program in VM (ld/maxsdk-vm.ld), started by mxlink; MX_MEMORY=phys:
 # all of it in physical memory (32 MiB, no VM in PCSX2's recompiler)
 MX_MEMORY ?= vm

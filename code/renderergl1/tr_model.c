@@ -898,6 +898,10 @@ R_ModelInit
 void R_ModelInit( void ) {
 	model_t		*mod;
 
+#ifdef __PS2__
+	RB_PS2_ModelReset();	// the surfaces' strips went with the hunk
+#endif
+
 	// leave a space for NULL model
 	tr.numModels = 0;
 
