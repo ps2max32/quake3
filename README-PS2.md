@@ -9,6 +9,8 @@ make run                                 copies the retail baseq3/pak*.pk3 (Q3DA
                                          build/pcsx2-test/baseq3 and runs it in PCSX2
 make pak                                 build/pcsx2-test/baseq3/ps2tex.pk3: the textures
                                          as 8-bit paletted ones (tools/ps2pak.py)
+                                         and ps2snd.pk3: the sounds as SPU ADPCM
+                                         (tools/ps2snd.py)
 ```
 
 `FRAMES=n` ends the program after n frames with a picture (`host:quake3.tga`) and the test end
@@ -16,14 +18,14 @@ marker; `ARGS` is added to the command line.
 
 | Part | How |
 |---|---|
-| Renderer | renderergl1 on `libs/libgl` (OpenGL 1.1 subset on the GS, shared with `apps/quake1` and `quake2`); `code/ps2/ps2_glimp.c` points the `qgl*` at it. The TV's mode (NTSC 640 x 448, PAL 640 x 512) or 1080i, beam racing, 16 or 24-bit colour (below), mipmaps, trilinear; the world's static surfaces are display lists (DMA chains the frame calls) |
+| Renderer | renderergl1 on `libs/libgl` (OpenGL 1.1 subset on the GS, shared with `apps/quake1` and `quake2`); `code/ps2/ps2_glimp.c` points the `qgl*` at it. The TV's mode (NTSC 640 x 448, PAL 640 x 512) or 1080i, beam racing, 16 or 24-bit colour (below), mipmaps, trilinear; the world's static surfaces are display lists (DMA chains the frame calls), those of one shader called together (`glCallLists`: one set of GS state a pass) |
 | Textures | `make pak` (`tools/ps2pak.py`, Python with numpy and Pillow): each texture under `textures/` and `models/` with its own 256-colour palette (16 when that is exact) and its mipmaps, as a `.p8` in `ps2tex.pk3`; `tr_image.c` takes a mipmapped image's `.p8` before the original and uploads it with `glCompressedTexImage2D` (`GL_OES_compressed_paletted_texture`: T8 and a CLUT in GS memory, a byte a texel). `r_picmip 1` (128 x 128); without the pak (16 bits a texel) use `r_picmip 2` |
 | Lighting | lightmaps (`r_vertexLight 0`) as brightness textures the GS multiplies by (`Cd * As`), the surface tinted by the vertex light's hue; overbright (`r_overBrightBits 1`) by the GS's 2x modulate |
 | Game code | game, cgame and q3_ui built natively and linked in, each with its symbols made local but `vmMain`/`dllEntry` (`<module>_vmMain`); `Sys_LoadGameDll` returns them |
 | Files | stdio on the IOP file server (`host:`), `code/ps2/ps2_file.c`; `fs_basepath host:` |
 | Input | pad 0: d-pad arrows, sticks move/look, R1 attack, X jump, O crouch, square/triangle weapons, START menu, L3 + R3 (both sticks pressed) the counters on/off |
 | Memory | maxsdk's virtual memory (`mx_vm_config` in `code/ps2/sys_ps2.c`), paged to `host:quake3.swp`: built into VM (`MX_MEMORY=vm`, the default; started by `mxload.elf host:quake3.elf`, as `make run` does) the program's code, data and bss are in VM too, only maxsdk, libc and libgl (`MX_CORE_OBJS`) in core; `malloc` in up to 128 MiB: hunk 56 MiB, zone 16 MiB (`Q3_MEM` in the `Makefile`; ioquake3's 128 and 48 do not fit), sounds `com_soundMegs` as ioquake3; no core heap: libgl's pinned memory (what the GS reads by DMA: arenas, display lists, the textures' smaller levels) is taken from the frames as needed (the counters' `PIN GL` shows it: about 4.8 MB on q3dm7), the textures' two larger levels are pageable (drawn from the smaller ones while the pager brings them in); stack 1 MiB. In PCSX2 only on the EE interpreter (`PCSX2_EE=interp`) |
-| Sound | ioquake3's mixer at 22050 Hz 16-bit stereo into a ring, sent to maxsdk's PCM stream (`mx/snd.h`, audsrv) by `code/ps2/snd_ps2.c` as far as the mixer has painted; `s_mixPreStep 0` (each mix starts where the sending stopped) and `s_mixahead 0.14` (more than the stream's ring) |
+| Sound | the SPU2's voices (`s_ps2hw 1`, the default; `code/ps2/snd_ps2.c`): ioquake3's channels (who plays what, the volumes of each side, the looping sounds merged) go to maxsdk's sound channels (`mx/snd.h`, mxsnd on the IOP) once a frame, in place of the mixer. A sound is SPU ADPCM at its own rate, kept in pageable memory and copied into SPU RAM (1.8 MiB) when it first plays; the sounds used longest ago leave it when it is full. `make pak` makes `ps2snd.pk3` (`tools/ps2snd.py`): each `sound/` .wav as an `.adp`, taken before the .wav, so nothing is encoded on the PS2 (without it about 60 ms a second of sound, at load). The music is streamed as it is into mxsnd's PCM stream. `s_ps2hw 0`: ioquake3's mixer at 22050 Hz 16-bit stereo into that stream (`s_mixPreStep 0`, `s_mixahead 0.14`) |
 
 Not done yet: cinematics (stubbed), network play; lightmap colour comes from
 the vertex light.

@@ -614,6 +614,25 @@ static void RB_PS2_ResetLists( void ) {
 	ps2_listWorld = tr.world;
 }
 
+/* The lists of the surfaces drawn one after the other with one shader are
+   called together (glCallLists): GL draws them pass by pass when it can,
+   with one set of state for each pass instead of one for each surface. */
+#define PS2_PENDING 256
+static GLushort ps2_pending[PS2_PENDING];
+static int ps2_numPending;
+
+static void RB_PS2_FlushLists( void ) {
+	if ( !ps2_numPending ) {
+		return;
+	}
+	RB_PS2_TexMatrix( NULL );	// a list's draws take the matrix of the call
+	// the state after them as before (glState's)
+	glPushAttrib( GL_ALL_ATTRIB_BITS );
+	glCallLists( ps2_numPending, GL_UNSIGNED_SHORT, ps2_pending );
+	glPopAttrib();
+	ps2_numPending = 0;
+}
+
 /* draws the world surface as a display list (made now if it has none);
    qfalse: it is not one, add it to tess */
 static qboolean RB_PS2_DrawSurface( drawSurf_t *drawSurf, shader_t *shader, int fogNum,
@@ -624,10 +643,12 @@ static qboolean RB_PS2_DrawSurface( drawSurf_t *drawSurf, shader_t *shader, int 
 	if ( entityNum != REFENTITYNUM_WORLD || fogNum || dlighted || !shader ||
 		( st != SF_FACE && st != SF_GRID && st != SF_TRIANGLES ) ||
 		!RB_PS2_StaticShader( shader ) ) {
+		RB_PS2_FlushLists();
 		return qfalse;
 	}
 	id = RB_PS2_ListOf( drawSurf->surface, &slot );
 	if ( id < 0 ) {
+		RB_PS2_FlushLists();
 		return qfalse;
 	}
 	// what tess has of this batch goes first
@@ -636,6 +657,7 @@ static qboolean RB_PS2_DrawSurface( drawSurf_t *drawSurf, shader_t *shader, int 
 		RB_BeginSurface( shader, fogNum );
 	}
 	if ( !id ) {
+		RB_PS2_FlushLists();
 		// make it: the stage iterator's draws of this surface alone
 		if ( ps2_nextList >= 4096 ) {
 			*slot = -1;
@@ -656,11 +678,10 @@ static qboolean RB_PS2_DrawSurface( drawSurf_t *drawSurf, shader_t *shader, int 
 		*slot = qglGetError() == GL_NO_ERROR ? ps2_nextList++ : -1;
 		return qtrue;
 	}
-	RB_PS2_TexMatrix( NULL );
-	// the state after it as before (glState's)
-	glPushAttrib( GL_ALL_ATTRIB_BITS );
-	glCallList( id );
-	glPopAttrib();
+	if ( ps2_numPending == PS2_PENDING ) {
+		RB_PS2_FlushLists();
+	}
+	ps2_pending[ps2_numPending++] = id;
 	return qtrue;
 }
 #endif
@@ -710,6 +731,9 @@ void RB_RenderDrawSurfList( drawSurf_t *drawSurfs, int numDrawSurfs ) {
 			continue;
 		}
 		oldSort = (int)drawSurf->sort;
+#ifdef __PS2__
+		RB_PS2_FlushLists();	// before the shader or the matrix changes
+#endif
 		R_DecomposeSort( drawSurf->sort, &entityNum, &shader, &fogNum, &dlighted );
 
 		//
@@ -836,6 +860,9 @@ void RB_RenderDrawSurfList( drawSurf_t *drawSurfs, int numDrawSurfs ) {
 
 	backEnd.refdef.floatTime = originalTime;
 
+#ifdef __PS2__
+	RB_PS2_FlushLists();
+#endif
 	// draw the contents of the last shader batch
 	if (oldShader != NULL) {
 		RB_EndSurface();

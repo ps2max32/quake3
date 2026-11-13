@@ -5,7 +5,8 @@
 #                        build/pcsx2-test/baseq3 (Q3DATA: the retail
 #                        baseq3 directory, copied there once)
 #   make pak             build/pcsx2-test/baseq3/ps2tex.pk3: the textures
-#                        as 8-bit paletted ones (tools/ps2pak.py)
+#                        as 8-bit paletted ones (tools/ps2pak.py), and
+#                        ps2snd.pk3: the sounds as SPU ADPCM (tools/ps2snd.py)
 #
 # The engine (qcommon, server, client, botlib, renderergl1) is linked with
 # the game modules (game, cgame, q3_ui) built natively: each module is
@@ -170,10 +171,13 @@ endif
 
 # the textures as 8-bit paletted ones (tools/ps2pak.py; the renderer takes a
 # mipmapped image's .p8 before the original): a pk3 next to the paks
-pak: $(RUNDIR)/baseq3/ps2tex.pk3
+pak: $(RUNDIR)/baseq3/ps2tex.pk3 $(RUNDIR)/baseq3/ps2snd.pk3
 $(RUNDIR)/baseq3/ps2tex.pk3: $(HERE)/tools/ps2pak.py
 	@mkdir -p $(RUNDIR)/baseq3
 	python3 $(HERE)/tools/ps2pak.py $@ "$(Q3DATA)"
+$(RUNDIR)/baseq3/ps2snd.pk3: $(HERE)/tools/ps2snd.py
+	@mkdir -p $(RUNDIR)/baseq3
+	python3 $(HERE)/tools/ps2snd.py $@ "$(Q3DATA)"
 
 clean:
 	rm -rf $(OUT)

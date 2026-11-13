@@ -60,6 +60,14 @@ typedef struct sfx_s {
 	char 			soundName[MAX_QPATH];
 	int				lastTimeUsed;
 	struct sfx_s	*next;
+#ifdef __PS2__
+	// the SPU2's voices play it (code/ps2/snd_ps2.c): its ADPCM in SPU RAM,
+	// played once [0] and looping [1] (struct mx_snd_sample), at ps2Rate Hz
+	unsigned		ps2Sample[2][4];
+	int				ps2Rate;
+	byte			*ps2Adpcm;		// its ADPCM (malloc), copied into SPU RAM when it plays
+	int				ps2Bytes;
+#endif
 } sfx_t;
 
 typedef struct {
@@ -213,6 +221,17 @@ extern cvar_t *s_doppler;
 extern cvar_t *s_testsound;
 
 qboolean S_LoadSound( sfx_t *sfx );
+#ifdef __PS2__
+// the sounds on the SPU2's voices instead of the mixer (s_ps2hw, snd_ps2.c)
+extern int ps2_sndhw;
+extern int s_soundtime;
+void S_ChannelFree( channel_t *v );
+qboolean S_PS2_LoadSound( sfx_t *sfx );
+void S_PS2_Update( void );
+void S_PS2_StopAll( void );
+int S_PS2_StreamRoom( int rate, int width, int channels );
+void S_PS2_RawSamples( int samples, int width, int channels, const byte *data, float volume );
+#endif
 
 void		SND_free(sndBuffer *v);
 sndBuffer*	SND_malloc( void );

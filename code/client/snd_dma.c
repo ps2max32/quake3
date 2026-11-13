@@ -363,6 +363,12 @@ sfxHandle_t	S_Base_RegisterSound( const char *name, qboolean compressed ) {
 		return 0;
 	}
 
+#ifdef __PS2__
+	// in SPU RAM (soundData stays NULL); one that was dropped from it loads again
+	if ( ps2_sndhw && sfx->inMemory ) {
+		return sfx->defaultSound ? 0 : sfx - s_knownSfx;
+	}
+#endif
 	if ( sfx->soundData ) {
 		if ( sfx->defaultSound ) {
 			Com_Printf( S_COLOR_YELLOW "WARNING: could not find %s - using default\n", sfx->soundName );
@@ -700,6 +706,12 @@ void S_Base_ClearSoundBuffer( void ) {
 
 	Com_Memset(s_rawend, '\0', sizeof (s_rawend));
 
+#ifdef __PS2__
+	if ( ps2_sndhw ) {
+		S_PS2_StopAll();
+		return;
+	}
+#endif
 	if (dma.samplebits == 8)
 		clear = 0x80;
 	else
@@ -992,6 +1004,16 @@ void S_Base_RawSamples( int stream, int samples, int rate, int width, int numCha
 		return;
 	}
 
+#ifdef __PS2__
+	// the music (stream 0) as it is, into the PCM stream
+	if ( ps2_sndhw ) {
+		if ( stream == 0 ) {
+			S_PS2_RawSamples( samples, width, numChannels, data,
+				s_muted->integer ? 0.0f : volume * s_volume->value );
+		}
+		return;
+	}
+#endif
 	rawsamples = s_rawsamples[stream];
 
 	if ( s_muted->integer ) {
@@ -1303,6 +1325,12 @@ void S_Update_(void) {
 
 	thisTime = Com_Milliseconds();
 
+#ifdef __PS2__
+	if ( ps2_sndhw ) {
+		S_PS2_Update();
+		return;
+	}
+#endif
 	// Updates s_soundtime
 	S_GetSoundtime();
 
@@ -1443,6 +1471,33 @@ void S_UpdateBackgroundTrack( void ) {
 	if ( s_musicVolume->value <= 0 ) {
 		return;
 	}
+
+#ifdef __PS2__
+	// as much as the PCM stream has room for now
+	if ( ps2_sndhw ) {
+		int frame = s_backgroundStream->info.width * s_backgroundStream->info.channels;
+
+		fileBytes = S_PS2_StreamRoom( s_backgroundStream->info.rate, s_backgroundStream->info.width,
+			s_backgroundStream->info.channels );
+		if ( fileBytes > (int)sizeof( raw ) ) {
+			fileBytes = sizeof( raw );
+		}
+		fileBytes -= fileBytes % frame;
+		if ( fileBytes <= 0 ) {
+			return;
+		}
+		r = S_CodecReadStream( s_backgroundStream, fileBytes, raw );
+		if ( r > 0 ) {
+			S_Base_RawSamples( 0, r / frame, s_backgroundStream->info.rate, s_backgroundStream->info.width,
+				s_backgroundStream->info.channels, raw, s_musicVolume->value, -1 );
+		} else if ( s_backgroundLoop[0] ) {
+			S_OpenBackgroundStream( s_backgroundLoop );
+		} else {
+			S_Base_StopBackgroundTrack();
+		}
+		return;
+	}
+#endif
 
 	// see how many samples should be copied into the raw buffer
 	if ( s_rawend[0] < s_soundtime ) {

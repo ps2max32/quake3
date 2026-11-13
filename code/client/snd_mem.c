@@ -91,6 +91,11 @@ void SND_setup(void) {
 	cv = Cvar_Get( "com_soundMegs", DEF_COMSOUNDMEGS, CVAR_LATCH | CVAR_ARCHIVE );
 
 	scs = (cv->integer*1536);
+#ifdef __PS2__
+	if ( ps2_sndhw ) {
+		scs = 16;	// the samples are in SPU RAM
+	}
+#endif
 
 	buffer = malloc(scs*sizeof(sndBuffer) );
 	// allocate the stack based hunk allocator
@@ -238,6 +243,11 @@ qboolean S_LoadSound( sfx_t *sfx )
 	snd_info_t	info;
 //	int		size;
 
+#ifdef __PS2__
+	if ( ps2_sndhw ) {
+		return S_PS2_LoadSound( sfx );
+	}
+#endif
 	// load it in
 	data = S_CodecLoad(sfx->soundName, &info);
 	if(!data)
