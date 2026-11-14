@@ -3,5 +3,5 @@
 # ps2max32/docker from a ps2max tree: the ones it was built and tested with.
 LLVM_REF=b0afe6262a44b4902b9eb53b9f1c98fa02744fe0
 MAXSDK_REF=86f7b73c908a71273ffb5a9ef3d04c798676956f
-LIBGL_REF=2d12562b1abe483361ad93ffa7bd48cc3c89d0c9
+LIBGL_REF=659d2f95183518e713b484b2ca6532c3ed0b8d11
 ZLIB_REF=5a82f71ed1dfc0bec044d9702463dbdf84ea3b71
