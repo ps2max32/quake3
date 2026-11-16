@@ -13,14 +13,20 @@
 # linked into one object whose symbols are local except its vmMain and
 # dllEntry, renamed <module>_vmMain and <module>_dllEntry, so the three
 # copies of q_shared.c and bg_*.c do not clash (code/ps2/sys_ps2.c finds
-# them in Sys_LoadGameDll). The renderer draws through libs/libgl: an
+# them in Sys_LoadGameDll).
+#
+# REN: the renderer. gl1 (the default): renderergl1 through libs/libgl, an
 # OpenGL 1.1 subset on the GS (code/ps2/ps2_glimp.c sets the qgl* to it).
+# ps2: code/renderer_ps2, the PS2's own on maxsdk (PLAN-PS2.md; it draws
+# nothing yet), built in $(OUT)-ps2.
 
 HERE     := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
 PS2MAX   ?= $(abspath $(HERE)/../..)
 MAXSDK   ?= $(PS2MAX)/libs/maxsdk
-OUT      ?= $(PS2MAX)/build/apps/quake3
+REN      ?= gl1
+OUT      ?= $(PS2MAX)/build/apps/quake3$(if $(filter-out gl1,$(REN)),-$(REN))
 all: $(OUT)/quake3.elf
+ifeq ($(REN),gl1)
 MXGL     ?= $(PS2MAX)/libs/libgl
 # beam racing's records: a frame of Quake III's stream is up to ~350 KB
 # (demo four; three quarters of a record), more than libgl's default
@@ -40,12 +46,18 @@ include $(MXGL)/mk/mxgl.mk
 # q3model.hlsl keeps more values than VU1 has registers (twelve uniforms and
 # the vertex's): four quadwords of data memory for the compiler's spills
 $(OUT)/hlsl/q3model.vu.ll: VU_OPT_FLAGS += -vu-spill-qw=4
+REN_CFLAGS := -I$(MXGL_INC) $(MXGL_DEFS)
+else
+REN_CFLAGS := -DPS2_REN_PS2
+endif
 # the program in VM (ld/maxsdk-vm.ld), started by mxlink; MX_MEMORY=phys:
 # all of it in physical memory (32 MiB, no VM in PCSX2's recompiler)
 MX_MEMORY ?= vm
 include $(MAXSDK)/mk/maxsdk.mk
 # in VM: Quake III in VM, libgl in core
+ifeq ($(REN),gl1)
 MX_CORE_OBJS = $(MXGL_OBJS)
+endif
 
 PICOLIBC ?= $(PS2MAX)/build/libs/picolibc/install
 LIBMXC    = $(MAXSDK_OUT)/libmxc.a
@@ -69,7 +81,7 @@ Q3CFLAGS  = $(filter-out -ffreestanding -Wall -Wextra -Wno-unused-parameter -std
             -std=gnu99 -w -MMD -mvu0 -ffast-math -fapprox-func -cl-single-precision-constant -nostdlibinc -isystem $(PICOLIBC)/include -D__PS2__ -DNDEBUG \
             -DPRODUCT_VERSION=\"1.36-ps2\" -DUSE_INTERNAL_JPEG -DNO_GZIP \
             -DUSE_INTERNAL_SDL_HEADERS $(Q3_MEM) \
-            -I$(JPEG) -I$(ZLIB) -I$(SDLINC) -I$(C)/ps2 -I$(OUT)/ps2 -I$(MXGL_INC) $(MXGL_DEFS) -include $(C)/ps2/ps2_stdio.h -include $(C)/ps2/ps2_math.h
+            -I$(JPEG) -I$(ZLIB) -I$(SDLINC) -I$(C)/ps2 -I$(OUT)/ps2 $(REN_CFLAGS) -include $(C)/ps2/ps2_stdio.h -include $(C)/ps2/ps2_math.h
 
 QCOMMON  := cm_load cm_patch cm_polylib cm_test cm_trace cmd common cvar files md4 md5 msg \
             net_chan huffman q_math q_shared unzip ioapi vm vm_interpreted
@@ -81,7 +93,14 @@ CLIENT   := cl_cgame cl_console cl_input cl_keys cl_main cl_net_chan cl_parse cl
 RCOMMON  := tr_font tr_image_bmp tr_image_jpg tr_image_pcx tr_image_png tr_image_pvr \
             tr_image_tga tr_noise puff
 RGL1     := $(filter-out tr_altivec,$(basename $(notdir $(wildcard $(C)/renderergl1/*.c))))
+RPS2     := $(basename $(notdir $(wildcard $(C)/renderer_ps2/*.c)))
 PS2SRC   := $(basename $(notdir $(wildcard $(C)/ps2/*.c)))
+ifeq ($(REN),gl1)
+REN_OBJS := $(patsubst %,$(OUT)/renderercommon/%.o,$(RCOMMON)) $(patsubst %,$(OUT)/renderergl1/%.o,$(RGL1))
+else
+REN_OBJS := $(patsubst %,$(OUT)/renderer_ps2/%.o,$(RPS2))
+PS2SRC   := $(filter-out ps2_glimp,$(PS2SRC))
+endif
 JPEGSRC  := $(basename $(notdir $(wildcard $(JPEG)/j*.c)))
 ZLIBSRC  := $(basename $(notdir $(wildcard $(ZLIB)/*.c)))
 
@@ -89,8 +108,7 @@ ENGINE_OBJS := $(patsubst %,$(OUT)/qcommon/%.o,$(QCOMMON)) \
                $(patsubst %,$(OUT)/server/%.o,$(SERVER)) \
                $(patsubst %,$(OUT)/botlib/%.o,$(BOTLIB)) \
                $(patsubst %,$(OUT)/client/%.o,$(CLIENT)) \
-               $(patsubst %,$(OUT)/renderercommon/%.o,$(RCOMMON)) \
-               $(patsubst %,$(OUT)/renderergl1/%.o,$(RGL1)) \
+               $(REN_OBJS) \
                $(patsubst %,$(OUT)/ps2/%.o,$(PS2SRC)) \
                $(patsubst %,$(OUT)/jpeg/%.o,$(JPEGSRC)) \
                $(patsubst %,$(OUT)/zlib/%.o,$(ZLIBSRC))
@@ -107,6 +125,7 @@ $(eval $(call srcdir,botlib,$(C)/botlib,-DBOTLIB))
 $(eval $(call srcdir,client,$(C)/client,-DBOTLIB))
 $(eval $(call srcdir,renderercommon,$(C)/renderercommon,))
 $(eval $(call srcdir,renderergl1,$(C)/renderergl1,))
+$(eval $(call srcdir,renderer_ps2,$(C)/renderer_ps2,))
 $(eval $(call srcdir,ps2,$(C)/ps2,-DBOTLIB))
 $(eval $(call srcdir,jpeg,$(JPEG),))
 $(eval $(call srcdir,zlib,$(ZLIB),))
@@ -151,11 +170,16 @@ MODULES := $(OUT)/qagame.o $(OUT)/cgame.o $(OUT)/ui.o
 # FRAMES: end after that many frames with a picture (host:quake3.tga);
 # ARGS: more of the command line (e.g. ARGS="+map q3dm1"); GLSHOT: the
 # same picture at that rendered frame (loading screens included); PROF=n:
-# a profile (mx/prof.h, tools/prof.py) of the frames from n to FRAMES. They go into
-# $(OUT)/ps2/runcfg.h, rewritten only when they change.
+# a profile (mx/prof.h, tools/prof.py) of the frames from n to FRAMES, or
+# without FRAMES of a timedemo's frames from its frame n to the end of the
+# run; PERF=1: the EE's performance counters over the same frames;
+# AUTOQUIT=ms: the run ends after that long whatever happens. They go into
+# $(OUT)/ps2/runcfg.h, rewritten only when they change. A timedemo that
+# quits by itself: ARGS="+set timedemo 1 +set nextdemo quit +demo four";
+# every run ends with the timedemo frames' cycles (code/ps2/sys_ps2.c).
 RUNCFG := $(OUT)/ps2/runcfg.h
-$(shell mkdir -p $(OUT)/ps2; printf '#define PS2_FRAMES %s\n#define PS2_ARGS "%s"\n#define PS2_GLSHOT %s\n#define PS2_PROF %s\n' \
-  '$(or $(FRAMES),0)' '$(ARGS)' '$(or $(GLSHOT),0)' '$(or $(PROF),0)' > $(RUNCFG).new; \
+$(shell mkdir -p $(OUT)/ps2; printf '#define PS2_FRAMES %s\n#define PS2_ARGS "%s"\n#define PS2_GLSHOT %s\n#define PS2_PROF %s\n#define PS2_PERF %s\n#define PS2_AUTOQUIT %s\n' \
+  '$(or $(FRAMES),0)' '$(ARGS)' '$(or $(GLSHOT),0)' '$(or $(PROF),0)' '$(or $(PERF),0)' '$(or $(AUTOQUIT),0)' > $(RUNCFG).new; \
   cmp -s $(RUNCFG).new $(RUNCFG) || mv $(RUNCFG).new $(RUNCFG); rm -f $(RUNCFG).new)
 
 $(OUT)/quake3.elf: $(ENGINE_OBJS) $(MODULES) $(MXGL_OBJS) $(HLSL_OBJS) $(MX_LIB) $(MX_CRT0) $(MX_LD) $(LIBC_LIBS)

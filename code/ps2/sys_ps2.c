@@ -6,6 +6,7 @@
 #include <string.h>
 
 #include <mx/mx.h>
+#include <mx/hires.h>
 #include <mx/pad.h>
 #include <mx/vm.h>
 
@@ -13,10 +14,15 @@
 #include "../qcommon/qcommon.h"
 #include "../client/keycodes.h"
 #include <mx/prof.h>
-#include <mxgl.h>
 
 void mx_exit(int status) __attribute__((noreturn));
 int ps2_listdir(const char *dir, void (*fn)(const char *name, int is_dir, void *ctx), void *ctx);
+/* the renderer's (ps2_glimp.c for renderergl1, renderer_ps2/rp_main.c): a
+   picture of the screen as a TGA file, and its counts at the end of a run */
+int ps2_ren_screenshot(const char *path);
+void ps2_ren_report(void);
+int ps2_demo_frame(void);
+static void ps2_run_report(void);
 
 /* frames to run before the program ends by itself (0: never), and the
    picture taken then (PS2_SHOT); set by the Makefile */
@@ -29,6 +35,12 @@ int ps2_listdir(const char *dir, void (*fn)(const char *name, int is_dir, void *
 #endif
 #ifndef PS2_ARGS
 #define PS2_ARGS ""
+#endif
+#ifndef PS2_AUTOQUIT
+#define PS2_AUTOQUIT 0
+#endif
+#ifndef PS2_PERF
+#define PS2_PERF 0
 #endif
 
 /* ---- time ----------------------------------------------------------------- */
@@ -135,6 +147,7 @@ void QDECL Sys_Error(const char *error, ...) {
 
 void Sys_Quit(void) {
 	mx_printf("Sys_Quit\n");
+	ps2_run_report();
 	mx_exit(0);
 }
 
@@ -378,6 +391,138 @@ const struct mx_vm_config mx_vm_config = {
 	.trace = Q3_VM_TRACE,
 };
 
+/* ---- measuring a run -------------------------------------------------------- */
+
+/* A timedemo's frame k is the demo at k * 50 ms in every build, so its
+   frames compare between builds: the cycles of each frame's Com_Frame, the
+   EE's performance counters (PERF=1: a pair of events a frame, by turns:
+   EE Core User's Manual, table 7-1), the VM's counts and the profile
+   (PROF=n) are taken over the measured frames: with FRAMES the loop's
+   frames from PROF on, without it the timedemo's from its frame PROF on
+   (all but the first without PROF). */
+#if defined(Q3_PERF) && !PS2_PERF
+#undef PS2_PERF
+#define PS2_PERF 1
+#endif
+#define DEMO_MAX 4096
+#define FIELD_60 4920116u /* cycles of a 59.94 Hz field (maxsdk's docs/gif-gs.md) */
+#define FIELD_50 (MX_EE_HZ / 50)
+static u32 demo_cyc[DEMO_MAX];
+static int demo_first, demo_last;
+static int prof_on, measuring;
+static struct mx_vm_stats vm_at;
+static const u8 perf_ev[3][2] = {{6, 6}, {12, 4}, {5, 5}};
+static u64 perf_sum[3][2], perf_cyc[3];
+static u32 perf_nf[3];
+
+static int cmp_u32(const void *a, const void *b) {
+	u32 x = *(const u32 *)a, y = *(const u32 *)b;
+	return x < y ? -1 : x > y;
+}
+
+static u32 cyc_us(u32 c) { return (u32)((u64)c * 1000 / (MX_EE_HZ / 1000)); }
+
+/* beam racing's counts */
+static void ps2_beam_report(void) {
+	if (mx_hires_stats.fields)
+		mx_printf("ps2: beam: fields %u, passes %u, late %u, records shown %u, held %u; longest pass "
+		          "%u/%u/%u us, largest record %u KB, %u frames cut off (too large)\n", mx_hires_stats.fields,
+		          mx_hires_stats.passes, mx_hires_stats.late, mx_hires_stats.shown, mx_hires_stats.held,
+		          mx_hires_stats.pass_us[0], mx_hires_stats.pass_us[1], mx_hires_stats.pass_us[2],
+		          mx_hires_stats.rec_max / 1024, mx_hires_stats.rec_full);
+}
+
+/* A run nobody watches must end and say where it was (AUTOQUIT builds): a
+   thread above the game's looks once a second whether the main loop still
+   comes by. A map load is one long frame, so it waits a minute; then it
+   profiles the next five seconds (where the game hangs: spinning shows as
+   its addresses, waiting as the kernel's idle thread), prints that and
+   ends the program. It cannot help when interrupts are off. */
+#include <mx/thread.h>
+static volatile u32 wd_beat;
+static u8 wd_stack[16384] MX_CORE_BSS MX_ALIGNED(16);
+static void watchdog(void *arg) {
+	u32 last = wd_beat;
+	int still = 0;
+	for (;;) {
+		mx_sleep_us(1000000);
+		if (wd_beat != last) {
+			last = wd_beat, still = 0;
+			continue;
+		}
+		if (++still == 60) {
+			mx_printf("ps2: watchdog: frame %u for 60 s; where it is, the next 5 s:\n", last);
+			mx_prof_stop();
+			mx_prof_start(1000);
+		}
+		if (still == 65) {
+			mx_prof_stop();
+			mx_prof_report(40);
+			mx_printf("ps2: watchdog: ending the run\n");
+			mx_exit(3);
+		}
+	}
+}
+
+/* at the end of a run, however it ends (FRAMES, the quit command, AUTOQUIT) */
+static void ps2_run_report(void) {
+	static int done;
+	static u32 sorted[DEMO_MAX];
+	if (done)
+		return;
+	done = 1;
+	if (prof_on) {
+		mx_prof_stop();
+		mx_vm_trace_mark(2);
+		mx_prof_report(4000);
+	}
+	if (Q3_VM_TRACE)
+		mx_printf("ps2: VM trace quake3.trc: %d events\n", mx_vm_trace_save("quake3.trc"));
+	int n = demo_first ? demo_last - demo_first + 1 : 0;
+	if (n > 1) {
+		u64 sum = 0;
+		int over60 = 0, over50 = 0;
+		for (int i = 0; i < n; i++) {
+			u32 c = demo_cyc[demo_first + i];
+			sorted[i] = c, sum += c;
+			over60 += c > FIELD_60, over50 += c > FIELD_50;
+		}
+		qsort(sorted, n, sizeof sorted[0], cmp_u32);
+		u32 avg = (u32)(sum / n), fps10 = (u32)((u64)MX_EE_HZ * 10 / (avg ? avg : 1));
+		mx_printf("ps2: timedemo frames %d-%d: a frame %u cycles (%u us, %u.%u fps); median %u us, 95 %% %u us, "
+		          "99 %% %u us, longest %u us; %d of %d frames over a 59.94 Hz field, %d over a 50 Hz field\n",
+		          demo_first, demo_last, avg, cyc_us(avg), fps10 / 10, fps10 % 10, cyc_us(sorted[n / 2]),
+		          cyc_us(sorted[n * 95 / 100]), cyc_us(sorted[n * 99 / 100]), cyc_us(sorted[n - 1]), over60, n, over50);
+		struct mx_vm_stats v;
+		mx_vm_stats(&v);
+		mx_printf("ps2: VM in those frames: a frame %u TLB refills (%u of code); in all %u swap ins (%u ms), "
+		          "%u swap outs (%u ms), %u pages from files (%u ms), %u pages dropped; %u of %u frames pinned\n",
+		          (v.refills - vm_at.refills) / n, (v.refills_i - vm_at.refills_i) / n, v.swap_ins - vm_at.swap_ins,
+		          (v.us_swap_in - vm_at.us_swap_in) / 1000, v.swap_outs - vm_at.swap_outs,
+		          (v.us_swap_out - vm_at.us_swap_out) / 1000, v.file_ins - vm_at.file_ins,
+		          (v.us_file_in - vm_at.us_file_in) / 1000, v.drops - vm_at.drops, v.pinned_frames, v.frames);
+		/* every frame's cycles, for the frames that are over */
+		char *text = malloc(n * 24 + 64);
+		FILE *f = text ? fopen("quake3.frames", "w") : NULL;
+		if (f) {
+			int len = 0;
+			for (int i = 0; i < n; i++)
+				len += sprintf(text + len, "%d %u\n", demo_first + i, demo_cyc[demo_first + i]);
+			fwrite(text, 1, len, f);
+			fclose(f);
+		}
+	}
+	if (PS2_PERF && perf_nf[0] && perf_nf[1] && perf_nf[2])
+		mx_printf("perf: a frame: I-cache misses %u, D-cache misses %u (%u cycles); instructions %u, "
+		          "TLB misses %u (%u cycles); ITLB misses %u, DTLB misses %u\n",
+		          (u32)(perf_sum[0][0] / perf_nf[0]), (u32)(perf_sum[0][1] / perf_nf[0]),
+		          (u32)(perf_cyc[0] / perf_nf[0]), (u32)(perf_sum[1][0] / perf_nf[1]),
+		          (u32)(perf_sum[1][1] / perf_nf[1]), (u32)(perf_cyc[1] / perf_nf[1]),
+		          (u32)(perf_sum[2][0] / perf_nf[2]), (u32)(perf_sum[2][1] / perf_nf[2]));
+	ps2_ren_report();
+	ps2_beam_report();
+}
+
 int main(int argc, char **argv) {
 	mx_printf("Quake 3 (ioquake3) on maxsdk: virtual memory %s\n", mx_vm_active() ? "on" : "off");
 	Sys_Milliseconds();
@@ -402,31 +547,55 @@ int main(int argc, char **argv) {
 	}
 	Com_Init(cmdline);
 	NET_Init();
+	if (PS2_AUTOQUIT)
+		mx_thread_start(watchdog, NULL, wd_stack, sizeof wd_stack, mx_thread_prio(mx_thread_self()) - 1);
 
 	for (u32 frame = 0;; frame++) {
-#ifdef Q3_PERF
-		/* the EE's performance counters over the profile's frames: a pair of
-		   events a frame, by turns (EE Core User's Manual, table 7-1) */
-		static const u8 ev[3][2] = {{6, 6}, {12, 4}, {5, 5}};
-		static u64 sum[3][2], cyc[3];
-		static u32 nf[3];
-		/* only over the profile's frames, which are short: a counter that
+		wd_beat = frame;
+		int df0 = ps2_demo_frame();
+		int window = PS2_FRAMES ? PS2_PROF && frame >= PS2_PROF : df0 && df0 + 1 >= PS2_PROF;
+		if (Q3_VM_TRACE && (PS2_FRAMES ? PS2_PROF && frame + 100 == PS2_PROF : df0 == 1))
+			mx_vm_trace_restart();
+		if (window && !measuring) {
+			measuring = 1;
+			mx_vm_stats(&vm_at);
+			if (PS2_PROF) {
+				mx_vm_trace_mark(1);
+				mx_prof_start(2000);
+				prof_on = 1;
+			}
+		}
+		/* the counters only over measured frames, which are short: one that
 		   reaches 2^31 raises an exception (a map load is long enough) */
-		u32 pc0 = mx_count();
-		int counting = PS2_PROF && frame >= PS2_PROF;
-		if (counting) {
+		if (PS2_PERF && window) {
 			mx_pcr0_write(0), mx_pcr1_write(0);
-			mx_pccr_write(0x80000000u | (u32)ev[frame % 3][0] << 5 | 0x1Eu | (u32)ev[frame % 3][1] << 15 | 0x7800u);
+			mx_pccr_write(0x80000000u | (u32)perf_ev[frame % 3][0] << 5 | 0x1Eu |
+			              (u32)perf_ev[frame % 3][1] << 15 | 0x7800u);
 		}
-#endif
+		u32 c0 = mx_count();
 		Com_Frame();
-#ifdef Q3_PERF
-		if (counting) {
+		u32 cyc = mx_count() - c0;
+		if (PS2_PERF && window) {
 			mx_pccr_write(0);
-			sum[frame % 3][0] += mx_pcr0(), sum[frame % 3][1] += mx_pcr1();
-			cyc[frame % 3] += mx_count() - pc0, nf[frame % 3]++;
+			perf_sum[frame % 3][0] += mx_pcr0(), perf_sum[frame % 3][1] += mx_pcr1();
+			perf_cyc[frame % 3] += cyc, perf_nf[frame % 3]++;
 		}
+		int df1 = ps2_demo_frame();
+		if (window && df1 == df0 + 1 && df1 < DEMO_MAX) {
+			demo_cyc[df1] = cyc;
+			if (!demo_first)
+				demo_first = df1;
+			demo_last = df1;
+		}
+		/* a run nobody watches ends anyway (a demo that did not start leaves
+		   the game in its menu) */
+		if (PS2_AUTOQUIT && Sys_Milliseconds() > PS2_AUTOQUIT) {
+			mx_printf("ps2: AUTOQUIT: %d ms, quitting\n", Sys_Milliseconds());
+			Sys_Quit();
+		}
+#if defined(Q3_PERF) && !defined(PS2_REN_PS2)
 		{
+			/* renderergl1's own counts (tr_surface.c, tr_shade.c) */
 			extern unsigned long long ps2_perf[10];
 			static unsigned long long at[10];
 			if (PS2_PROF && frame == PS2_PROF)
@@ -446,33 +615,14 @@ int main(int argc, char **argv) {
 				          "%u indexes times passes\n", v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7], v[8], v[9]);
 			}
 		}
-		if (PS2_FRAMES && frame + 2 == PS2_FRAMES)
-			mx_printf("perf: a frame: I-cache misses %u, D-cache misses %u (%u cycles); instructions %u, "
-			          "TLB misses %u (%u cycles); ITLB misses %u, DTLB misses %u\n",
-			          (u32)(sum[0][0] / nf[0]), (u32)(sum[0][1] / nf[0]), (u32)(cyc[0] / nf[0]),
-			          (u32)(sum[1][0] / nf[1]), (u32)(sum[1][1] / nf[1]), (u32)(cyc[1] / nf[1]),
-			          (u32)(sum[2][0] / nf[2]), (u32)(sum[2][1] / nf[2]));
 #endif
 		if (frame % 60 == 0)
 			mx_printf("ps2: frame %u at %d ms\n", frame, Sys_Milliseconds());
 		if (PS2_FRAMES && frame + 2 == PS2_FRAMES)
 			Cbuf_AddText("meminfo\n");
-		if (Q3_VM_TRACE && PS2_PROF && frame + 100 == PS2_PROF)
-			mx_vm_trace_restart();
-		if (PS2_PROF && frame == PS2_PROF) {
-			mx_vm_trace_mark(1);
-			mx_prof_start(2000);
-		}
 		if (PS2_FRAMES && frame + 1 == PS2_FRAMES) {
-			if (PS2_PROF) {
-				mx_prof_stop();
-				mx_vm_trace_mark(2);
-				mx_prof_report(4000);
-			}
-			if (Q3_VM_TRACE)
-				mx_printf("ps2: VM trace quake3.trc: %d events\n",
-				          mx_vm_trace_save("quake3.trc"));
-			int r = mxgl_screenshot(PS2_SHOT);
+			ps2_run_report();
+			int r = ps2_ren_screenshot(PS2_SHOT);
 			mx_printf("ps2: %u frames, picture %s: %d\n", frame + 1, PS2_SHOT, r);
 			mx_exit(0);
 		}
@@ -504,3 +654,8 @@ void CL_PlayCinematic_f(void) {}
 void SCR_DrawCinematic(void) {}
 void SCR_RunCinematic(void) {}
 void SCR_StopCinematic(void) {}
+
+/* the timedemo's frame (1 the first), 0: no timedemo is playing */
+int ps2_demo_frame(void) {
+	return clc.demoplaying && cl_timedemo && cl_timedemo->integer ? clc.timeDemoFrames : 0;
+}

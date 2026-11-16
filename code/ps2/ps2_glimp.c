@@ -288,6 +288,10 @@ void GLimp_EndFrame(void) {
 	}
 }
 
+/* sys_ps2.c's: the screen as a TGA file; nothing to report at the end */
+int ps2_ren_screenshot(const char *path) { return mxgl_screenshot(path); }
+void ps2_ren_report(void) {}
+
 void GLimp_LogComment(char *comment) {}
 void GLimp_Minimize(void) {}
 void GLimp_SetGamma(unsigned char red[256], unsigned char green[256], unsigned char blue[256]) {}
