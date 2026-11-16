@@ -49,6 +49,8 @@ $(OUT)/hlsl/q3model.vu.ll: VU_OPT_FLAGS += -vu-spill-qw=4
 REN_CFLAGS := -I$(MXGL_INC) $(MXGL_DEFS)
 else
 REN_CFLAGS := -DPS2_REN_PS2
+# its VU1 programs (tools/ps2vu.py writes code/renderer_ps2/vu/q3vu.vsm)
+VSM_DIRS   += $(HERE)/code/renderer_ps2/vu
 endif
 # the program in VM (ld/maxsdk-vm.ld), started by mxlink; MX_MEMORY=phys:
 # all of it in physical memory (32 MiB, no VM in PCSX2's recompiler)
@@ -182,8 +184,9 @@ $(shell mkdir -p $(OUT)/ps2; printf '#define PS2_FRAMES %s\n#define PS2_ARGS "%s
   '$(or $(FRAMES),0)' '$(ARGS)' '$(or $(GLSHOT),0)' '$(or $(PROF),0)' '$(or $(PERF),0)' '$(or $(AUTOQUIT),0)' > $(RUNCFG).new; \
   cmp -s $(RUNCFG).new $(RUNCFG) || mv $(RUNCFG).new $(RUNCFG); rm -f $(RUNCFG).new)
 
-$(OUT)/quake3.elf: $(ENGINE_OBJS) $(MODULES) $(MXGL_OBJS) $(HLSL_OBJS) $(MX_LIB) $(MX_CRT0) $(MX_LD) $(LIBC_LIBS)
-	$(call link,$@,--defsym=__mx_stack_size=0x100000 $(MX_CRT0) $(ENGINE_OBJS) $(MODULES) $(MXGL_OBJS) $(HLSL_OBJS) $(LIBC_LIBS))
+REN_VU := $(if $(filter-out gl1,$(REN)),$(VU_OBJS))
+$(OUT)/quake3.elf: $(ENGINE_OBJS) $(MODULES) $(MXGL_OBJS) $(REN_VU) $(HLSL_OBJS) $(MX_LIB) $(MX_CRT0) $(MX_LD) $(LIBC_LIBS)
+	$(call link,$@,--defsym=__mx_stack_size=0x100000 $(MX_CRT0) $(ENGINE_OBJS) $(MODULES) $(MXGL_OBJS) $(REN_VU) $(HLSL_OBJS) $(LIBC_LIBS))
 
 # ---- running --------------------------------------------------------------------
 Q3DATA   ?= /mnt/truenas_data_exthdd/spellen/PC/Quake III Arena/baseq3

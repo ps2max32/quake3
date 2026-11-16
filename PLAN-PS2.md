@@ -109,6 +109,55 @@ with its 3D icons on), both builds with the same measuring code
   requests.
 - The game side alone does not swap and pins 103 frames (3.2 MB).
 
+### Phase 1, first results (2026-11-16)
+
+`tools/q3view` flies the timedemo's 1259 cameras through q3dm6 with
+`code/renderer_ps2/rp_world.c`, a frame a field, in 1080i beam racing (three
+strips, the whole record in every pass), on a PS2 (SCPH-90006). The world
+only: no sky, models or effects. Triangles across the near plane or the
+guard band are left out for now, not cut.
+
+| A frame (a field) | Measured |
+|---|---|
+| The EE building it | 0.38 M cycles (1.29 ms), the longest 2.5 ms; 0.17 M before the chunks by direction |
+| Stream | 856 quadwords (the largest record 28 KB; libgl's 290 KB) |
+| Groups seen from the cluster / in view | 247 / 98 of 565 |
+| Chunks drawn / facing away | 290 / 125 |
+| Strip vertices to VU1 | 5,564 (17,344 at most) in 295 batches |
+| A pass without drawing (XYZ3) | 0.9 ms: 2.7 ms a field for the three; the longest field 5.6 ms |
+| The three passes with drawing | 8.6 ms a field, the longest 15.1 ms; 237 of 3778 passes late |
+
+- The frame rate is the field rate: the EE has 15 ms of a field left.
+- VIF1, VU1 and the GIF take about 50 EE cycles a vertex for both passes
+  with these small batches (19 vertices on average); the loops alone 11 to
+  15. Without the chunks by direction it was 35 at 59 vertices a batch.
+- The GS's rasterising is what fills a pass, and it is the hidden pixels:
+  the overdraw (a picture made with `rp_debug` 128) is 3.4, 4.2 and 9.0
+  triangles a pixel at cameras 100, 600 and 1000, after the chunks that face
+  away are left out. A pixel costs about 0.17 EE cycles whether its depth
+  test passes or not (the same run without textures: 0.8 ms a field less;
+  without the lightmap pass: 0.7 ms less), so drawing front to back gains
+  nothing and a depth-only first pass costs more than it saves.
+- Leaving out a triangle that faces away is needed for the picture too:
+  Quake's surfaces have one side, and the GS draws both.
+- Two CLUTs by turns do not work: the GS has one CLUT buffer for both
+  contexts. A texture's CLUT now has the lightmaps' brightness ramp in its
+  alpha, and the lightmap (T8) is drawn with its texture's CLUT.
+
+What follows from it:
+
+1. Phase 2 (maxsdk's passes) is needed as planned, both parts: a strip's own
+   record (the three replays are 2.7 ms a field), and more strips whose
+   passes may start early (the mean is 8.6 ms of a 16.7 ms field, but a strip
+   has 5.5 ms and the strips are not alike).
+2. Hidden pixels are the cost to take away: triangles facing away in curves
+   and models culled per triangle on VU1 (by the triangle's plane, kept with
+   the vertex that ends it), and visibility tighter than the BSP's PVS (the
+   groups really seen from a cluster, found on the PC by drawing from points
+   in it; or occluders on the EE).
+3. The front end's 0.38 M cycles is plain C over every chunk's cone: a flat
+   chunk's test is one dot product, to be made so (and on VU0).
+
 ## 3. Why the earlier attempts stalled
 
 | Attempt | Result | Why |

@@ -41,3 +41,6 @@ profile
 *.opensdf
 *.suo
 /.vs
+
+# Python
+__pycache__/

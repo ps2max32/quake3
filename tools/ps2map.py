@@ -16,8 +16,12 @@ What is made of the BSP:
   stays inside the guard band longer. Triangles whose texture repeats more
   than 3.5 times are halved too: texture coordinates are 4.12 fixed point.
 - Surfaces of one shader, lightmap page and fog are gathered and cut by
-  place into chunks of about --chunk strip vertices, each drawn or left out
-  as a whole: its bounds, and the PVS clusters it is seen from.
+  place into groups of about --chunk strip vertices within --extent units:
+  a group is in a view or not by its bounds and by the PVS clusters it is
+  seen from. A group's triangles of one direction (a flat surface's normal;
+  of a curve's triangles the axis they face most) are a chunk, drawn or left
+  out as a whole: left out when all of it faces away, by the cone of its
+  normals (the GS draws both sides of a triangle).
 - A chunk's triangles become strips, cut into batches of at most BATCH
   vertices: what one VU1 buffer holds.
 - A lightmapped vertex's colour is the hue of the lightmap at it (its
@@ -27,28 +31,35 @@ What is made of the BSP:
 File layout (little-endian; "off" are bytes from the file's start):
 
   head (128 bytes):
-    u32 magic "PMAP", version 1
+    u32 magic "PMAP", version 2
     u32 nmat, ntex, nchunk, nmodel, nlightmap, ncluster, vis_bytes
     u32 nplane, nnode, nleaf
     u32 off_mat, off_tex, off_chunk, off_model, off_lightmap, off_vis,
         off_plane, off_node, off_leaf, off_data, size
     f32 pos_scale          world units a position unit
     u32 batch              BATCH
+    u32 ngroup, off_group
   material (96 bytes): char name[64]; s16 tex (-1: none); u16 flags (MAT_*);
     u8 blend (BLEND_*), alpha (ALPHA_*), cull (CULL_*), pad; u32 surf, cont
-    (the BSP's flags); pad to 96
+    (the BSP's flags); f32 texels (of its texture's first level a world
+    unit, for the mipmap level); pad to 96
   texture (64 bytes): char name[40]; u16 w, h; u8 levels, psm (0x13 T8,
-    0x14 T4), alpha (1: its palette has alpha), pad; u32 off_clut (256 or 16
-    RGBA entries in the GS's order, alpha 0x80 opaque); u32 off_level[3]
+    0x14 T4), alpha (1: its palette has alpha of its own, 0x80 opaque; 0: a
+    T8's alpha is the lightmaps' brightness, gs_texture), pad; u32 off_clut
+    (256 or 16 RGBA entries in the GS's order); u32 off_level[3]
     (the first three; the next follow each the one before, each padded to 16
     bytes)
   chunk (48 bytes): f32 mins[3]; u16 mat; s16 lightmap (-1: none);
     f32 maxs[3]; u16 nverts; u8 flags (CH_*), fog; u32 off_data; u16 qwc
-    (quadwords the DMAC sends for it, tags included), nbatch; u32 pad
-  model (32 bytes): f32 mins[3], maxs[3]; u32 first_chunk, nchunk (model 0 is
+    (quadwords the DMAC sends for it, tags included), nbatch; s8 cone[3] (the
+    axis of its triangles' normals, length 127); u8 sine (of the widest
+    angle between a normal and the axis, in 1/255; 255: no cone); u32 pad
+  group (32 bytes): f32 mins[3]; u32 first_chunk; f32 maxs[3]; u32 nchunk (its
+    chunks are of one material and lightmap page)
+  model (32 bytes): f32 mins[3], maxs[3]; u32 first_group, ngroup (model 0 is
     the world; the others the map's doors and platforms)
   lightmap: 128 x 128 bytes a page (brightness: the largest of R, G, B)
-  vis: ncluster rows of vis_bytes: bit c of row k set: the world's chunk c is
+  vis: ncluster rows of vis_bytes: bit g of row k set: the world's group g is
     seen from cluster k
   plane (16 bytes): f32 normal[3], dist;  node (12 bytes): s32 plane,
     child[2] (negative: -(leaf + 1));  leaf (4 bytes): s16 cluster, area
@@ -271,7 +282,7 @@ GL_PALETTE4_RGB8, GL_PALETTE4_RGBA8, GL_PALETTE8_RGB8, GL_PALETTE8_RGBA8 = 0x8B9
 
 
 def load_p8(blob):
-    """-> (w, h, psm, has_alpha, clut bytes, [level bytes]) or None"""
+    """-> dict(w, h, four, alpha, pal (n x 4, alpha as stored), levels [uint8 arrays]) or None"""
     if blob is None or blob[:4] != b"P8T1":
         return None
     width, height, pw, ph, w0, h0, levels, _pad, fmt = struct.unpack_from("<8HI", blob, 4)
@@ -279,17 +290,10 @@ def load_p8(blob):
     has_a = fmt in (GL_PALETTE4_RGBA8, GL_PALETTE8_RGBA8)
     ncol, bpe = (16 if four else 256), (4 if has_a else 3)
     p = 24
-    pal = np.frombuffer(blob, np.uint8, ncol * bpe, p).reshape(ncol, bpe)
+    src = np.frombuffer(blob, np.uint8, ncol * bpe, p).reshape(ncol, bpe)
     p += ncol * bpe
-    clut = np.zeros((ncol, 4), np.uint8)
-    clut[:, :3] = pal[:, :3]
-    clut[:, 3] = ((pal[:, 3].astype(np.uint16) + 1) >> 1) if has_a else 0x80
-    if not four:
-        # CSM1: entries 8-15 and 16-23 of every 32 change places
-        idx = np.arange(256)
-        blk = idx & 0x18
-        idx = np.where(blk == 0x08, idx + 8, np.where(blk == 0x10, idx - 8, idx))
-        clut = clut[idx]
+    pal = np.full((ncol, 4), 255, np.uint8)
+    pal[:, :bpe] = src
     lv = []
     w, h = w0, h0
     for _ in range(levels):
@@ -297,13 +301,49 @@ def load_p8(blob):
         d = np.frombuffer(blob, np.uint8, nbytes, p)
         p += nbytes
         if w >= 8 and h >= 8 and len(lv) < 7:
-            if four:
-                d = (d >> 4) | ((d & 15) << 4)  # the GS: the first texel in the low bits
-            lv.append(d.tobytes())
+            lv.append(d)
         w, h = max(w // 2, 1), max(h // 2, 1)
     if not lv:
         return None
-    return w0, h0, (0x14 if four else 0x13), int(has_a and bool((pal[:, 3] < 255).any())), clut.tobytes(), lv
+    return dict(w=w0, h=h0, four=four, alpha=bool(has_a and (pal[:, 3] < 255).any()), pal=pal, levels=lv)
+
+
+def gs_texture(t, eight):
+    """a texture of load_p8 as the GS takes it: (psm, clut bytes, [level bytes]). eight: as
+    T8 also when it has 16 colours. A texture without alpha of its own gets the lightmaps'
+    brightness in its CLUT's alpha: entry i's is the blend factor of brightness i (Cd * As,
+    0x80 is 1.0: twice the lightmap's value, the map's overbright range), so a surface's
+    lightmap (T8) is drawn with the CLUT of its texture: the GS has one CLUT buffer, and two
+    CLUTs by turns would be loaded at every batch. The texture's own pass takes no alpha
+    from it (TEX0.TCC 0)."""
+    four = t["four"] and not eight
+    ncol = 16 if four else 256
+    clut = np.zeros((ncol, 4), np.uint8)
+    n = len(t["pal"])
+    clut[:n, :3] = t["pal"][:, :3]
+    if t["alpha"]:
+        clut[:n, 3] = (t["pal"][:, 3].astype(np.uint16) + 1) >> 1
+    elif four:
+        clut[:, 3] = 0x80
+    else:
+        clut[:, 3] = np.minimum(np.arange(256) * 2, 255)
+    if not four:
+        # CSM1: entries 8-15 and 16-23 of every 32 change places
+        idx = np.arange(256)
+        blk = idx & 0x18
+        clut = clut[np.where(blk == 0x08, idx + 8, np.where(blk == 0x10, idx - 8, idx))]
+    lv = []
+    for k, d in enumerate(t["levels"]):
+        if t["four"] and eight:
+            w, h = max(t["w"] >> k, 1), max(t["h"] >> k, 1)
+            e = np.empty(len(d) * 2, np.uint8)
+            e[0::2], e[1::2] = d >> 4, d & 15   # the pak: the first texel in the high bits
+            lv.append(e[:w * h].tobytes())
+        elif four:
+            lv.append(((d >> 4) | ((d & 15) << 4)).astype(np.uint8).tobytes())  # the GS: in the low bits
+        else:
+            lv.append(d.tobytes())
+    return (0x14 if four else 0x13), clut.tobytes(), lv
 
 
 # ---- the BSP ------------------------------------------------------------------------------
@@ -543,6 +583,7 @@ def build(args):
 
     # materials: a shader of the BSP with or without a lightmap
     mats, mat_index, textures, tex_index = [], {}, [], {}
+    need8 = set()   # textures drawn with a lightmap
 
     def texture(name):
         if name is None:
@@ -566,8 +607,15 @@ def build(args):
             flags |= MAT_SKY
         if surf & SURF_NODRAW:
             flags |= MAT_NODRAW
+        ti = texture(tex)
+        if flags & MAT_LIGHTMAP and ti >= 0:
+            if textures[ti][1]["alpha"] or alpha != ALPHA_NONE:
+                # its CLUT's alpha is its own: lit by the vertices
+                flags = (flags & ~MAT_LIGHTMAP) | MAT_VERTEX
+            else:
+                need8.add(ti)
         mat_index[key] = len(mats)
-        mats.append(dict(name=name, tex=texture(tex), texname=tex, flags=flags, blend=blend, alpha=alpha, cull=cull,
+        mats.append(dict(name=name, tex=ti, texname=tex, flags=flags, blend=blend, alpha=alpha, cull=cull,
                          surf=surf, cont=cont))
         return mat_index[key]
 
@@ -601,7 +649,16 @@ def build(args):
         stats["surfaces"] += 1
         stats["tris_in"] += len(tris)
         verts, tris = split_long(verts, tris, args.edge, 3.5)
-        g = groups.setdefault((surf_model[si], mi, lm if m["flags"] & MAT_LIGHTMAP else -1, fog), [])
+        if m["tex"] >= 0:
+            tw, th = textures[m["tex"]][1]["w"], textures[m["tex"]][1]["h"]
+            for t in tris:
+                a, b, c = verts[t[0]], verts[t[1]], verts[t[2]]
+                n = np.cross(b[:3] - a[:3], c[:3] - a[:3])
+                axyz = 0.5 * math.sqrt(float(n @ n))
+                ast = 0.5 * abs((b[3] - a[3]) * (c[4] - a[4]) - (c[3] - a[3]) * (b[4] - a[4])) * tw * th
+                m["area"] = m.get("area", 0.0) + axyz
+                m["texels"] = m.get("texels", 0.0) + ast
+        gkey = (surf_model[si], mi, lm if m["flags"] & MAT_LIGHTMAP else -1, fog)
         clusters = surf_clusters.get(si, set())
         page = bsp.lightmaps[lm] if lm >= 0 and m["flags"] & MAT_LIGHTMAP else None
         for t in tris:
@@ -630,17 +687,40 @@ def build(args):
                         c = c * 255 / top
                     col = tuple(int(round(x)) for x in c) + (int(round(v[13] * 128 / 255)),)
                 out.append((p, st, lmst, col))
-            g.append((out, clusters, tuple(sum(v[k] for v in tv) / 3 for k in range(3))))
+            # the triangle's normal (the BSP's faces are wound clockwise seen from the front)
+            e1, e2 = np.subtract(qp[1], qp[0]), np.subtract(qp[2], qp[0])
+            nrm = np.cross(e2, e1).astype(np.float64)
+            ln = math.sqrt(float(nrm @ nrm))
+            nrm = nrm / ln if ln > 0 else np.zeros(3)
+            # a chunk is of one direction, so that it can be left out when it faces away: flat
+            # surfaces by their plane's normal, the others by the axis they face most
+            if stype == MST_PLANAR:
+                okey = tuple(int(round(x * 16)) for x in nrm)
+            else:
+                ax = int(np.argmax(np.abs(nrm)))
+                okey = (100 + ax * 2 + (nrm[ax] < 0),)
+            groups.setdefault(gkey, []).append(
+                (out, clusters, tuple(sum(v[k] for v in tv) / 3 for k in range(3)), nrm, okey))
 
-    # chunks: a group cut by place
-    chunks = []  # (model, mat, lm, fog, [tri])
+    # groups: the triangles of a material and lightmap page cut by place; chunks: a group's
+    # triangles of one direction
+    chunks = []  # (model, mat, lm, fog, [tri], group)
+    ngroup = 0
 
     def cut(model, mat, lm, fog, tris):
-        if len(tris) * 1.4 <= args.chunk:
-            chunks.append((model, mat, lm, fog, tris))
-            return
+        nonlocal ngroup
         c = np.array([t[2] for t in tris])
-        axis = int(np.argmax(c.max(0) - c.min(0)))
+        size = c.max(0) - c.min(0)
+        # small enough, and in one place: a group spread over the map is in every view
+        if len(tris) * 1.4 <= args.chunk and (size.max() <= args.extent or len(tris) <= args.least):
+            by = {}
+            for t in tris:
+                by.setdefault(t[4], []).append(t)
+            for okey in sorted(by):
+                chunks.append((model, mat, lm, fog, by[okey], ngroup))
+            ngroup += 1
+            return
+        axis = int(np.argmax(size))
         order = np.argsort(c[:, axis], kind="stable")
         half = len(tris) // 2
         cut(model, mat, lm, fog, [tris[i] for i in order[:half]])
@@ -649,15 +729,16 @@ def build(args):
     for (model, mat, lm, fog), tris in sorted(groups.items()):
         if tris:
             cut(model, mat, lm, fog, tris)
-    chunks.sort(key=lambda c: (c[0], c[1], c[2]))
 
     blob = bytearray()
     recs = []
     world_vis = []
-    for model, mat, lm, fog, tris in chunks:
+    for model, mat, lm, fog, tris, group in chunks:
         vid, vlist, itris = {}, [], []
         clusters = set()
-        for out, cl, _ in tris:
+        nsum = np.zeros(3)
+        for out, cl, _, nrm, _okey in tris:
+            nsum += nrm
             clusters |= cl
             ids = []
             for v in out:
@@ -714,22 +795,45 @@ def build(args):
         off = len(blob)
         blob += struct.pack("<IIQ", DMA_CNT << 28 | qwc, 0, 0) + body + struct.pack("<IIQ", DMA_RET << 28, 0, 0)
         p = np.array([v[0] for v in vlist], np.float64) / q
+        # the cone of its triangles' normals: the axis, and the sine of the widest angle to it
+        # (255: no cone, drawn always: two-sided, or its triangles face all ways)
+        ln = math.sqrt(float(nsum @ nsum))
+        cone = (0, 0, 0, 255)
+        if ln > 0 and mats[mat]["cull"] == CULL_FRONT:
+            axis = np.round(nsum / ln * 127)
+            an = axis / math.sqrt(float(axis @ axis))
+            cosw = min(float(t[3] @ an) for t in tris)
+            if cosw > 0.2:
+                sinw = math.sqrt(max(0.0, 1 - cosw * cosw)) + 0.01
+                cone = (int(axis[0]), int(axis[1]), int(axis[2]), min(254, int(math.ceil(sinw * 255))))
         recs.append(dict(mins=p.min(0), maxs=p.max(0), mat=mat, lm=lm, nverts=nv, flags=CH_LIGHTMAP if lit else 0,
-                         fog=fog & 255, off=off, qwc=qwc + 2, nbatch=len(batches), model=model))
+                         fog=fog & 255, off=off, qwc=qwc + 2, nbatch=len(batches), model=model, cone=cone,
+                         group=group))
         world_vis.append(clusters)
         stats["tris"] += len(itris)
         stats["verts"] += nv
         stats["strips"] += len(strips)
         stats["batches"] += len(batches)
 
-    # models: chunk ranges (the chunks are sorted by model)
+    # groups: bounds and chunk ranges (the chunks lie by group, the groups by model and material)
+    grecs = []
+    for i, r in enumerate(recs):
+        if not grecs or grecs[-1]["id"] != r["group"]:
+            grecs.append(dict(id=r["group"], model=r["model"], first=i, n=0, mins=r["mins"].copy(),
+                              maxs=r["maxs"].copy(), clusters=set()))
+        g = grecs[-1]
+        g["n"] += 1
+        g["mins"] = np.minimum(g["mins"], r["mins"])
+        g["maxs"] = np.maximum(g["maxs"], r["maxs"])
+        g["clusters"] |= world_vis[i]
+    # models: group ranges
     models = []
     for mi, m in enumerate(bsp.models):
-        ids = [i for i, r in enumerate(recs) if r["model"] == mi]
+        ids = [i for i, g in enumerate(grecs) if g["model"] == mi]
         models.append((m[0:3], m[3:6], ids[0] if ids else 0, len(ids)))
     nworld = models[0][3] if models else 0
 
-    # visibility: the chunks seen from each cluster
+    # visibility: the groups seen from each cluster
     ncl = bsp.nclusters
     vis_bytes = (nworld + 7) // 8
     vis_bytes += -vis_bytes % 4
@@ -737,11 +841,11 @@ def build(args):
     vis_bytes = vis.shape[1]
     if ncl:
         seen = np.unpackbits(bsp.vis, axis=1, bitorder="little")[:, :ncl].astype(bool)  # seen[k][c]
-        for ci in range(nworld):
+        for gi in range(nworld):
             cl = np.zeros(ncl, bool)
-            cl[list(world_vis[ci])] = True
+            cl[list(grecs[gi]["clusters"])] = True
             rows = (seen & cl[None, :]).any(1)
-            vis[rows, ci >> 3] |= 1 << (ci & 7)
+            vis[rows, gi >> 3] |= 1 << (gi & 7)
     else:
         vis[:] = 0xFF
 
@@ -750,12 +854,15 @@ def build(args):
         return b + b"\0" * (-len(b) % 16)
 
     sec = {}
-    sec["mat"] = b"".join(struct.pack("<64shHBBBBII16x", m["name"].encode()[:63], m["tex"], m["flags"], m["blend"],
-                                      m["alpha"], m["cull"], 0, m["surf"] & 0xFFFFFFFF, m["cont"] & 0xFFFFFFFF)
+    sec["mat"] = b"".join(struct.pack("<64shHBBBBIIf12x", m["name"].encode()[:63], m["tex"], m["flags"], m["blend"],
+                                      m["alpha"], m["cull"], 0, m["surf"] & 0xFFFFFFFF, m["cont"] & 0xFFFFFFFF,
+                                      math.sqrt(m["texels"] / m["area"]) if m.get("area") else 1.0)
                           for m in mats)
     texdata = bytearray()
     texrec = []
-    for name, (w, h, psm, has_a, clut, lv) in textures:
+    for ti, (name, t) in enumerate(textures):
+        w, h, has_a = t["w"], t["h"], int(t["alpha"])
+        psm, clut, lv = gs_texture(t, ti in need8)
         oc = len(texdata)
         texdata += pad16(clut)
         offs = []
@@ -767,8 +874,9 @@ def build(args):
     planes = bsp.planes.astype("<f4").tobytes()
     nodes = np.ascontiguousarray(bsp.nodes[:, 0:3]).astype("<i4").tobytes()
     leafs = np.ascontiguousarray(bsp.leafs[:, 0:2]).astype("<i2").tobytes()
-    order = ["mat", "tex", "chunk", "model", "lightmap", "vis", "plane", "node", "leaf", "texdata", "data"]
-    size = {"mat": len(sec["mat"]), "tex": 64 * len(textures), "chunk": 48 * len(recs), "model": 32 * len(models),
+    order = ["mat", "tex", "chunk", "group", "model", "lightmap", "vis", "plane", "node", "leaf", "texdata", "data"]
+    size = {"mat": len(sec["mat"]), "tex": 64 * len(textures), "chunk": 48 * len(recs), "group": 32 * len(grecs),
+            "model": 32 * len(models),
             "lightmap": len(lmdata), "vis": vis.size, "plane": len(planes), "node": len(nodes), "leaf": len(leafs),
             "texdata": len(texdata), "data": len(blob)}
     off, o = {}, 128
@@ -779,16 +887,18 @@ def build(args):
     sec["tex"] = b"".join(struct.pack("<40sHHBBBBI3I", n.encode()[:39], w, h, nl, psm, a, 0, off["texdata"] + oc,
                                       *[(off["texdata"] + x) for x in (offs + [0, 0, 0])[:3]])
                           for n, w, h, nl, psm, a, oc, offs in texrec)
-    sec["chunk"] = b"".join(struct.pack("<3fHh3fHBBIHHI4x", *r["mins"], r["mat"], r["lm"], *r["maxs"], r["nverts"],
-                                        r["flags"], r["fog"], off["data"] + r["off"], r["qwc"], r["nbatch"], 0)
+    sec["chunk"] = b"".join(struct.pack("<3fHh3fHBBIHH3bB4x", *r["mins"], r["mat"], r["lm"], *r["maxs"], r["nverts"],
+                                        r["flags"], r["fog"], off["data"] + r["off"], r["qwc"], r["nbatch"],
+                                        *r["cone"])
                             for r in recs)
+    sec["group"] = b"".join(struct.pack("<3fI3fI", *g["mins"], g["first"], *g["maxs"], g["n"]) for g in grecs)
     sec["model"] = b"".join(struct.pack("<6fII", *mn, *mx, f, n) for mn, mx, f, n in models)
     sec["lightmap"], sec["vis"], sec["plane"], sec["node"], sec["leaf"] = lmdata, vis.tobytes(), planes, nodes, leafs
     sec["texdata"], sec["data"] = bytes(texdata), bytes(blob)
-    head = struct.pack("<4sI7I3I11IfI", b"PMAP", 1, len(mats), len(textures), len(recs), len(models),
+    head = struct.pack("<4sI7I3I11IfIII", b"PMAP", 2, len(mats), len(textures), len(recs), len(models),
                        len(bsp.lightmaps), ncl, vis_bytes, len(bsp.planes), len(bsp.nodes), len(bsp.leafs),
                        off["mat"], off["tex"], off["chunk"], off["model"], off["lightmap"], off["vis"], off["plane"],
-                       off["node"], off["leaf"], off["data"], total, 1.0 / q, BATCH)
+                       off["node"], off["leaf"], off["data"], total, 1.0 / q, BATCH, len(grecs), off["group"])
     with open(args.out, "wb") as f:
         f.write(head + b"\0" * (128 - len(head)))
         for k in order:
@@ -799,19 +909,22 @@ def build(args):
         print(f"{args.map}: {total} bytes; positions 1/{q:g} unit; {stats['surfaces']} surfaces "
               f"({stats['patches']} curves, {stats['skipped']} left out), {stats['tris_in']} -> {stats['tris']} "
               f"triangles, {stats['verts']} strip vertices ({stats['verts'] / max(stats['tris'], 1):.2f} a triangle) "
-              f"in {stats['strips']} strips, {stats['batches']} batches, {len(recs)} chunks ({nworld} of the world); "
+              f"in {stats['strips']} strips, {stats['batches']} batches, {len(recs)} chunks in {len(grecs)} groups "
+              f"({nworld} of the world); "
               f"{len(mats)} materials, {len(textures)} textures ({len(texdata)} bytes), {len(bsp.lightmaps)} "
               f"lightmap pages, {ncl} clusters; chunk data {len(blob)} bytes")
         if missing:
             print("  textures not in the texture pak:", ", ".join(missing[:12]), "..." if len(missing) > 12 else "")
         nv = np.array([r["nverts"] for r in recs])
+        print(f"  chunks with a cone: {sum(1 for r in recs if r['cone'][3] < 255)}, flat ones "
+              f"{sum(1 for r in recs if r['cone'][3] <= 4)}")
         if len(nv):
             print(f"  a chunk: {nv.mean():.0f} vertices (the largest {nv.max()}), "
                   f"{np.mean([r['nbatch'] for r in recs]):.1f} batches")
         if ncl and nworld:
             per = np.unpackbits(vis, axis=1).sum(1)
             per = per[per > 0]
-            print(f"  chunks seen from a cluster: {per.mean():.0f} on average, {per.max()} at most")
+            print(f"  groups seen from a cluster: {per.mean():.0f} on average, {per.max()} at most")
 
 
 def main():
@@ -823,6 +936,8 @@ def main():
     ap.add_argument("--curve", type=float, default=4.0, help="a curve's chords stay within this of it")
     ap.add_argument("--edge", type=float, default=384.0, help="edges longer than this are halved")
     ap.add_argument("--chunk", type=int, default=200, help="strip vertices a chunk, about")
+    ap.add_argument("--extent", type=float, default=768.0, help="a chunk's triangles lie within this, unless few")
+    ap.add_argument("--least", type=int, default=6, help="a chunk of this many triangles is not cut for its extent")
     ap.add_argument("--stats", action="store_true")
     a = ap.parse_args()
     if a.tex is None:
