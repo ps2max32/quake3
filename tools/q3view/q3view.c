@@ -25,6 +25,8 @@ struct cam {
 };
 
 static u8 rec[4 * 128 * 1024] MX_CORE_BSS MX_ALIGNED(64);
+/* the strips' own records: four frames of up to 16 strips */
+static u8 srec[4 * 16 * 24 * 1024] MX_CORE_BSS MX_ALIGNED(64);
 
 static u32 num(const char *s) {
 	u32 v = 0;
@@ -57,18 +59,23 @@ int main(int argc, char **argv) {
 		count = ncam - first;
 	/* the DMAC reads the map where it lies */
 	int lk = mx_vm_lock(map, msize);
+	/* a seventh argument: the strips' lines (192: three strips; 64: nine; 0: three strips
+	   without records of their own, the whole frame in every pass) */
+	u32 lines = argc > 7 ? num(argv[7]) : 192;
+	mx_hires_strip_lines(lines);
 	if (mx_hires_init(&mx_video_1080i, 1920, 540, MX_GS_PSM_CT16S, rec, sizeof rec, (void *)0x70002000, 0x2000) < 0) {
 		mx_printf("q3view: no 1080i, or its buffer does not fit\n");
 		MX_TEST_END(1);
 		return 1;
 	}
+	u32 sbytes = lines ? mx_hires_strip_records(srec, sizeof srec) : 0;
 	if (rp_world_load(map, msize) < 0) {
 		mx_printf("q3view: %s is not a map of this version\n", mapname);
 		MX_TEST_END(1);
 		return 1;
 	}
-	mx_printf("q3view: %s %u bytes (lock %d), %u cameras, %u strips of beam racing\n", mapname, msize, lk, ncam,
-	          mx_hires_passes());
+	mx_printf("q3view: %s %u bytes (lock %d), %u cameras, %u strips of %u lines, their own records %u bytes\n", mapname,
+	          msize, lk, ncam, mx_hires_passes(), mx_hires_strip_height(), sbytes);
 	/* the textures, over a few frames */
 	int left;
 	do {
@@ -87,8 +94,7 @@ int main(int argc, char **argv) {
 	   since the frame before is that field's): its sum, how many took more
 	   than their 5.5 ms, and the fields whose three together took more than
 	   12 and 16 ms */
-	u64 pass_sum[MX_HIRES_PASSES] = {0};
-	u32 pass_over[MX_HIRES_PASSES] = {0}, field_sum = 0, field_12 = 0, field_16 = 0, field_max = 0;
+	u32 pass_long[MX_HIRES_PASSES] = {0}, field_12 = 0, field_16 = 0, field_max = 0;
 	struct rp_world_stats st, sum = {0}, max = {0};
 	u32 t_start = mx_gs.vsync, shot_at = ~0u;
 	for (u32 i = 0; i < count; i++) {
@@ -118,11 +124,11 @@ int main(int argc, char **argv) {
 		for (u32 k = 0; k < mx_hires_passes(); k++) {
 			u32 p = mx_hires_stats.pass_us[k];
 			mx_hires_stats.pass_us[k] = 0;
-			pass_sum[k] += p, pass_over[k] += p > 5500, f += p;
+			pass_long[k] = p > pass_long[k] ? p : pass_long[k], f += p;
 		}
-		field_sum += f, field_12 += f > 12000, field_16 += f > 16000, field_max = f > field_max ? f : field_max;
+		field_12 += f > 12000, field_16 += f > 16000, field_max = f > field_max ? f : field_max;
 #define ACC(f) sum.f += st.f, max.f = st.f > max.f ? st.f : max.f
-		ACC(seen), ACC(groups), ACC(drawn), ACC(clip), ACC(back), ACC(verts), ACC(batches), ACC(setups), ACC(qw);
+		ACC(seen), ACC(groups), ACC(drawn), ACC(clip), ACC(back), ACC(verts), ACC(sent), ACC(batches), ACC(setups), ACC(qw);
 		if (shot && (u32)cm->frame == shot) {
 			shot_at = i;
 			break;
@@ -138,18 +144,23 @@ int main(int argc, char **argv) {
 	          "waiting for a record %u us a frame\n", n, fields, (u32)(build / n), us((u32)(build / n)), us(build_max),
 	          over, us((u32)(wait / n)));
 	mx_printf("q3view: a frame: %u groups seen from the cluster, %u in view; chunks: %u drawn (%u across a plane), %u "
-	          "facing away; %u vertices in %u batches, %u set-ups, %u quadwords of stream; at most %u chunks, %u "
-	          "vertices, %u set-ups, %u quadwords\n", sum.seen / n, sum.groups / n, sum.drawn / n, sum.clip / n,
-	          sum.back / n, sum.verts / n, sum.batches / n, sum.setups / n, sum.qw / n, max.drawn, max.verts, max.setups,
-	          max.qw);
-	mx_printf("q3view: beam: fields %u, passes %u, late %u, records shown %u, held %u; largest record %u KB, %u cut off\n",
-	          mx_hires_stats.fields, mx_hires_stats.passes, mx_hires_stats.late, mx_hires_stats.shown,
-	          mx_hires_stats.held, mx_hires_stats.rec_max / 1024, mx_hires_stats.rec_full);
-	mx_printf("q3view: a strip's pass, us (over 5500):");
-	for (u32 k = 0; k < mx_hires_passes(); k++)
-		mx_printf(" %u (%u)", (u32)(pass_sum[k] / n), pass_over[k]);
-	mx_printf("; a field's passes together %u us, the longest %u, %u over 12 ms, %u over 16 ms\n", field_sum / n,
-	          field_max, field_12, field_16);
+	          "facing away; %u vertices, over all strips %u sent in %u batches, %u set-ups, %u quadwords of stream; at "
+	          "most %u chunks, %u vertices (%u sent), %u set-ups, %u quadwords\n", sum.seen / n, sum.groups / n,
+	          sum.drawn / n, sum.clip / n, sum.back / n, sum.verts / n, sum.sent / n, sum.batches / n, sum.setups / n,
+	          sum.qw / n, max.drawn, max.verts, max.sent, max.setups, max.qw);
+	mx_printf("q3view: beam: fields %u, passes %u, left out %u, still drawn when the beam came %u, records shown %u, "
+	          "held %u; largest record %u KB, a strip's %u KB, %u cut off\n", mx_hires_stats.fields,
+	          mx_hires_stats.passes, mx_hires_stats.late, mx_hires_stats.over, mx_hires_stats.shown, mx_hires_stats.held,
+	          mx_hires_stats.rec_max / 1024, mx_hires_stats.strip_max / 1024, mx_hires_stats.rec_full);
+	u32 all_us = 0, all_n = 0;
+	mx_printf("q3view: a strip's pass, us, mean (the longest):");
+	for (u32 k = 0; k < mx_hires_passes(); k++) {
+		u32 pn = mx_hires_stats.pass_n[k];
+		mx_printf(" %u (%u)", pn ? mx_hires_stats.pass_sum_us[k] / pn : 0, pass_long[k]);
+		all_us += mx_hires_stats.pass_sum_us[k], all_n += pn;
+	}
+	mx_printf("; a field's passes together %u us, the longest about %u, %u fields over 12 ms, %u over 16 ms\n",
+	          mx_hires_stats.fields ? all_us / mx_hires_stats.fields : 0, field_max, field_12, field_16);
 	int r = 0;
 	if (shot) {
 		r = mx_hires_save_tga("q3view.tga");

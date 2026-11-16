@@ -4,8 +4,10 @@
    A frame: the camera's PVS cluster gives the groups it can see; each one's
    bounds go against the frustum and the guard band; of a group in view the
    chunks that do not face away are sent, one CALL each into the frame's
-   stream, a VU1 program set-up when the material changes. No vertex is
-   touched and nothing is sorted: the groups lie in the file by material.
+   stream, a VU1 program set-up when the material changes. With beam
+   racing's strip records (mx_hires_strip) a chunk goes only into the
+   records of the strips its group's bounds touch on the screen. No vertex
+   is touched and nothing is sorted: the groups lie in the file by material.
 
    Not yet: the chunks across the near plane or the guard band are drawn
    with the programs that leave such triangles out (q3w2c, q3w1c) in place
@@ -287,7 +289,7 @@ int rp_world_upload(void) {
    lightmap pass, 4 every chunk with the programs that test nothing, 8 with
    those that test, 16 the GS draws nothing (the vertices as XYZ3: VIF1 and
    VU1 work as ever), 32 no textures, 64 chunks that face away drawn too,
-   128 a picture of the overdraw: every triangle adds 1/31 of its colour,
+   256 no strip records (everything in every pass), 128 a picture of the overdraw: every triangle adds 1/31 of its colour,
    without texture, lightmap or depth test (with a black clear: a pixel's
    largest channel times 31 / 255 is about the triangles drawn over it) */
 unsigned rp_debug;
@@ -383,7 +385,7 @@ static float cur_fx;
 /* the set-up of a material's program: the GIF tags of its passes into the
    context, its GS registers as a packet the set-up kicks; fast 0: the
    program that tests its vertices */
-static void material_setup(const struct pm_chunk *ch, int fast, int state) {
+static u64 *material_packet(u64 *c, const struct pm_chunk *ch, int fast, int state) {
 	const struct pm_mat *m = &pm.mat[ch->mat];
 	int lit = (ch->flags & CH_LIGHTMAP) && ch->lightmap >= 0 && ch->lightmap < MAX_LM && glm_ok[ch->lightmap] &&
 	          !(rp_debug & (2 | 128));
@@ -395,7 +397,6 @@ static void material_setup(const struct pm_chunk *ch, int fast, int state) {
 	int ctx = blend ? 1 : 0;
 	u64 ta = mx_giftag(0, 0, (s32)mx_gs_prim(MX_GS_PRIM_TRISTRIP, 1, tex, 0, blend, 0, 0, ctx, 0), MX_GIF_FLG_PACKED, 3);
 	u64 tb = mx_giftag(0, 0, (s32)mx_gs_prim(MX_GS_PRIM_TRISTRIP, 0, 1, 0, 1, 0, 0, 1, 0), MX_GIF_FLG_PACKED, 3);
-	u64 *c = mx_frame_reserve(24), *c0 = c;
 	if (state) {
 		c = mx_e_cnt(c, 0, mx_vif_flushe(), mx_vif_stcycl(1, 1));
 		c = mx_e_cnt(c, 2, mx_vif_nop(), mx_vif_unpack(MX_UNPACK_V4_32, Q3VU_CTX_TA, 2, 0));
@@ -448,13 +449,66 @@ static void material_setup(const struct pm_chunk *ch, int fast, int state) {
 		c = mx_e_cnt(c, 1, mx_vif_nop(), mx_vif_unpack(MX_UNPACK_V4_32, 0, 1, MX_UNPACK_FLG));
 		c = mx_e_giftag(c, 0, 1, -1, MX_GIF_FLG_PACKED, 1, MX_GIF_REG_AD);
 	}
-	c = mx_e_cnt(c, 0, mx_vif_nop(), mx_vif_mscal(entry));
-	cur_st->qw += (u32)(c - c0) / 2;
+	return mx_e_cnt(c, 0, mx_vif_nop(), mx_vif_mscal(entry));
+}
+
+/* A run's set-ups are made once a frame and copied into each strip's
+   record: [run][the program that tests][with the material's state] */
+#define SETUP_QW 24
+#define MAX_RUN 512
+static u64 setup_pkt[MAX_RUN][2][2][SETUP_QW * 2];
+static u8 setup_n[MAX_RUN][2][2];
+
+static void material_setup(u32 r, const struct pm_chunk *ch, int fast, int state) {
+	u8 *n = &setup_n[r][!fast][state];
+	u64 *pkt = setup_pkt[r][!fast][state];
+	if (!*n)
+		*n = (u8)((material_packet(pkt, ch, fast, state) - pkt) / 2);
+	u64 *c = mx_frame_reserve(*n);
+	for (u32 i = 0; i < 2u * *n; i++)
+		c[i] = pkt[i];
+	mx_frame_commit(c + 2 * *n);
+	cur_st->qw += *n;
 	cur_st->setups++;
-	mx_frame_commit(c);
 }
 
 #define RUN_MAX 256
+/* a frame's chunks in view */
+struct rp_item {
+	u16 chunk, mask; /* the strips it is drawn in */
+	u8 clip;         /* across a plane: the programs that test */
+};
+#define MAX_ITEM 4096
+static struct rp_item item[MAX_ITEM];
+static struct {
+	u16 first, n;
+} run[MAX_RUN];
+static u32 nitem, nrun;
+
+/* The strips of beam racing a box is drawn in: the lines its corners fall
+   on, a line more each way (the lower field is drawn half a line lower); a
+   box that reaches behind the near plane may be anywhere. */
+static struct {
+	const float *org, *F, *U;
+	float fy, half_h;
+	u32 nstrip, strip_h, all;
+} sm;
+static u32 strip_mask(const float *mins, const float *maxs, const struct plane *near) {
+	if (box_dist(near, mins, maxs, 0) < 0)
+		return sm.all;
+	float lo = 1e9f, hi = -1e9f;
+	for (int c8 = 0; c8 < 8; c8++) {
+		float d[3] = {(c8 & 1 ? maxs[0] : mins[0]) - sm.org[0], (c8 & 2 ? maxs[1] : mins[1]) - sm.org[1],
+		              (c8 & 4 ? maxs[2] : mins[2]) - sm.org[2]};
+		float y = sm.half_h - sm.fy * dot3(sm.U, d) / dot3(sm.F, d);
+		lo = y < lo ? y : lo, hi = y > hi ? y : hi;
+	}
+	s32 k0 = lo < 1.5f ? 0 : (s32)(lo - 1.5f) / (s32)sm.strip_h, k1 = hi < 0 ? -1 : (s32)(hi + 1.5f) / (s32)sm.strip_h;
+	if (k1 >= (s32)sm.nstrip)
+		k1 = (s32)sm.nstrip - 1;
+	return k1 < k0 ? 0 : ((2u << k1) - 1) & ~((1u << k0) - 1);
+}
+
 static void calls(const u16 *ids, u32 n) {
 	while (n) {
 		u32 k = n > 96 ? 96 : n;
@@ -462,7 +516,7 @@ static void calls(const u16 *ids, u32 n) {
 		for (u32 i = 0; i < k; i++) {
 			const struct pm_chunk *ch = &pm.chunk[ids[i]];
 			c = mx_e_call(c, pm.base + ch->off_data, 0, 0, 0);
-			cur_st->verts += ch->nverts, cur_st->batches += ch->nbatch;
+			cur_st->sent += ch->nverts, cur_st->batches += ch->nbatch;
 		}
 		mx_frame_commit(c);
 		cur_st->qw += k;
@@ -532,36 +586,27 @@ void rp_world_draw(const struct rp_cam *cam, struct rp_world_stats *st) {
 	st->cluster = cluster;
 	const u8 *row = cluster < h->ncluster ? pm.vis + cluster * h->vis_bytes : 0;
 	const struct pm_model *world = &pm.model[0];
-	static u16 fast[RUN_MAX], clip[RUN_MAX];
-	/* the opaque materials, then the blended ones */
+	/* what is in view: the chunks, each with the strips of beam racing its
+	   group's bounds touch on the screen, in runs of one material and
+	   lightmap page (the opaque materials, then the blended ones) */
+	u32 nstrip = mx_hires_passes(), strip_h = mx_hires_strip_height();
+	int binned = nstrip && strip_h && mx_hires_strip_record_bytes() && !(rp_debug & 256);
+	u32 all = nstrip >= 32 ? ~0u : (1u << nstrip) - 1;
+	sm.org = org, sm.F = F, sm.U = U, sm.fy = fy, sm.half_h = (float)mx_gs.h * 0.5f;
+	sm.nstrip = nstrip, sm.strip_h = strip_h, sm.all = all;
+	nitem = nrun = 0;
 	for (int pass = 0; pass < 2; pass++) {
 		u32 g = world->first_group, end = world->first_group + world->ngroup;
 		while (g < end) {
 			const struct pm_chunk *c0 = &pm.chunk[pm.group[g].first_chunk];
-			u32 nf = 0, nc = 0;
-			int blended = pm.mat[c0->mat].blend != BLEND_NONE, set = 0;
+			int blended = pm.mat[c0->mat].blend != BLEND_NONE;
+			u32 first = nitem;
 			/* the run of groups of one material and lightmap page */
-			for (;; g++) {
+			for (; g < end; g++) {
 				const struct pm_group *gr = &pm.group[g];
-				int more = g < end && pm.chunk[gr->first_chunk].mat == c0->mat &&
-				           pm.chunk[gr->first_chunk].lightmap == c0->lightmap;
-				/* the lists full, or the run over: sent */
-				if (!more || nf + gr->nchunk > RUN_MAX || nc + gr->nchunk > RUN_MAX) {
-					if (nf) {
-						material_setup(c0, 1, 1);
-						calls(fast, nf);
-						set = 1;
-					}
-					if (nc) {
-						material_setup(c0, 0, !set || !nf);
-						calls(clip, nc);
-						set = 1;
-					}
-					nf = nc = 0;
-					if (!more)
-						break;
-				}
-				if (blended != pass || gr->nchunk > RUN_MAX)
+				if (pm.chunk[gr->first_chunk].mat != c0->mat || pm.chunk[gr->first_chunk].lightmap != c0->lightmap)
+					break;
+				if (blended != pass || nitem + gr->nchunk > MAX_ITEM)
 					continue;
 				if (row && !(row[g >> 3] >> (g & 7) & 1))
 					continue;
@@ -597,12 +642,49 @@ void rp_world_draw(const struct rp_cam *cam, struct rp_world_stats *st) {
 						}
 					}
 					st->drawn++;
-					if (cross)
-						st->clip++, clip[nc++] = (u16)j;
-					else
-						fast[nf++] = (u16)j;
+					st->clip += (u32)cross;
+					st->verts += ch->nverts;
+					item[nitem].chunk = (u16)j, item[nitem].clip = (u8)cross;
+					item[nitem].mask = (u16)(binned ? strip_mask(ch->mins, ch->maxs, &fr[0]) : all);
+					nitem++;
 				}
+			}
+			if (nitem > first && nrun < MAX_RUN) {
+				run[nrun].first = (u16)first, run[nrun].n = (u16)(nitem - first);
+				setup_n[nrun][0][0] = setup_n[nrun][0][1] = setup_n[nrun][1][0] = setup_n[nrun][1][1] = 0;
+				nrun++;
 			}
 		}
 	}
+	/* sent: every strip's own record gets the chunks that touch it (without
+	   strip records: all of them into the main record, once) */
+	static u16 list[2][RUN_MAX];
+	for (u32 k = 0; k < (binned ? nstrip : 1); k++) {
+		u32 bit = binned ? 1u << k : all;
+		if (binned)
+			mx_hires_strip((int)k);
+		for (u32 r = 0; r < nrun; r++) {
+			const struct rp_item *it = &item[run[r].first];
+			const struct pm_chunk *c0 = &pm.chunk[it->chunk];
+			u32 n[2] = {0, 0};
+			int set = 0;
+			for (u32 i = 0; i <= run[r].n; i++) {
+				/* a list full, or the run over: sent */
+				if (i == run[r].n || n[0] == RUN_MAX || n[1] == RUN_MAX) {
+					for (int v = 0; v < 2; v++)
+						if (n[v]) {
+							material_setup(r, c0, !v, !set);
+							calls(list[v], n[v]);
+							set = 1, n[v] = 0;
+						}
+					if (i == run[r].n)
+						break;
+				}
+				if (it[i].mask & bit)
+					list[it[i].clip][n[it[i].clip]++] = it[i].chunk;
+			}
+		}
+	}
+	if (binned)
+		mx_hires_strip(-1);
 }

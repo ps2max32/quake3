@@ -17,7 +17,8 @@ struct rp_world_stats {
 	u32 cluster;                 /* the camera's (0xFFFFFFFF: outside) */
 	u32 seen, groups;            /* groups the cluster sees; of those in the frustum */
 	u32 drawn, clip, back;       /* their chunks: drawn; of those across a plane; facing away (not drawn) */
-	u32 verts, batches;          /* strip vertices and VU1 batches sent */
+	u32 verts;                   /* strip vertices of the chunks drawn */
+	u32 sent, batches;           /* strip vertices and VU1 batches sent, over all strips of beam racing */
 	u32 setups;                  /* program set-ups (a material, or the other program for it) */
 	u32 qw;                      /* quadwords written into the frame's stream */
 };

@@ -158,6 +158,36 @@ What follows from it:
 3. The front end's 0.38 M cycles is plain C over every chunk's cone: a flat
    chunk's test is one dot product, to be made so (and on VU0).
 
+### Phase 2, first results (2026-11-16)
+
+maxsdk's passes are queued now (a pass may start as soon as the beam has
+left its Z strip and the pass before is done; it is left out only when it
+has not started when the beam comes to its strip), and a strip has a record
+of its own (`mx_hires_strip`): the renderer puts a chunk into the records of
+the strips its bounds touch on the screen. The same flight (q3dm6, the
+world only, 1259 fields, a PS2):
+
+| Passes | Left out | Still drawn when the beam came | A field's passes | The EE a frame |
+|---|---|---|---|---|
+| Before: three strips, kicked at fixed lines, the whole record each | 237 | not counted | about 8.6 ms | 0.38 M |
+| Three strips queued, the whole record each | 17 | 426 | 9.4 ms | 0.49 M |
+| Three strips queued, a record a strip | 0 | 241 | 8.5 ms (the longest 17.5) | 0.76 M |
+| Nine strips of 64 lines queued, a record a strip | 65 | 457 | 10.6 ms | 1.33 M |
+
+- Three strips with their own records are the choice: no pass is left out
+  (a strip left out shows the Z of the pass before: the worst glitch). A
+  chunk is in 1.8 strips on average (5,564 vertices drawn, 10,128 sent a
+  field); nine strips put it in 4.5 and cost more than they give.
+- 241 passes of 3777 still end after the beam has come: the fields whose
+  drawing is more than a field's time (31 over 16 ms, 183 over 12 ms). That
+  is the overdraw of section "Phase 1, first results", and the next thing
+  to take away.
+- The front end went from 0.38 M to 0.76 M cycles: the strips of each chunk
+  (eight corners projected) and a stream a strip. To be made cheaper with
+  the cone tests (VU0, a flat chunk's plane).
+- A VIF1/VU1/GIF pass costs about 28 EE cycles a vertex and 360 a batch
+  (from two runs with 59 and 19 vertices a batch).
+
 ## 3. Why the earlier attempts stalled
 
 | Attempt | Result | Why |
