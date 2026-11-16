@@ -131,13 +131,20 @@ guard band are left out for now, not cut.
 - VIF1, VU1 and the GIF take about 50 EE cycles a vertex for both passes
   with these small batches (19 vertices on average); the loops alone 11 to
   15. Without the chunks by direction it was 35 at 59 vertices a batch.
-- The GS's rasterising is what fills a pass, and it is the hidden pixels:
-  the overdraw (a picture made with `rp_debug` 128) is 3.4, 4.2 and 9.0
-  triangles a pixel at cameras 100, 600 and 1000, after the chunks that face
-  away are left out. A pixel costs about 0.17 EE cycles whether its depth
-  test passes or not (the same run without textures: 0.8 ms a field less;
-  without the lightmap pass: 0.7 ms less), so drawing front to back gains
-  nothing and a depth-only first pass costs more than it saves.
+- The GS's rasterising is what fills a pass. It is not hidden pixels: the
+  overdraw is 0.9 to 1.3 triangles a pixel in a picture made with
+  `rp_debug` 128 (cameras 100, 600, 1000) and 1.1 to 1.9 when the same chunks
+  are rasterised on the PC; leaving out every group without a visible pixel
+  would take 5 to 10 % of that, so occluders are not worth their cost (tried
+  with the map's solid boxes: 5 groups of 90 hidden a frame).
+- What a pixel costs (maxsdk's `probe/p41_scissor.c`, triangles the size of
+  the screen, Z test and write): 0.32 EE cycles flat, 0.34 textured
+  bilinear, and nothing when the scissor leaves it out. So a pass over the
+  whole 1920 x 540 field is about 0.33 M cycles, 1.1 ms; texture and lightmap
+  hardly matter (the same run without textures: 0.8 ms a field less;
+  without the lightmap pass: 0.7 ms less); and the world's three (the
+  passes' clear, the texture, the lightmap, each over 1 to 1.5 screens) are
+  4 to 5 ms a field.
 - Leaving out a triangle that faces away is needed for the picture too:
   Quake's surfaces have one side, and the GS draws both.
 - Two CLUTs by turns do not work: the GS has one CLUT buffer for both
@@ -150,11 +157,11 @@ What follows from it:
    record (the three replays are 2.7 ms a field), and more strips whose
    passes may start early (the mean is 8.6 ms of a 16.7 ms field, but a strip
    has 5.5 ms and the strips are not alike).
-2. Hidden pixels are the cost to take away: triangles facing away in curves
-   and models culled per triangle on VU1 (by the triangle's plane, kept with
-   the vertex that ends it), and visibility tighter than the BSP's PVS (the
-   groups really seen from a cluster, found on the PC by drawing from points
-   in it; or occluders on the EE).
+2. A screen of pixels costs 1.1 ms a pass whatever is done, so what is drawn
+   over the world (sky, models, effects, the HUD) has about six screens of
+   fill a field. Triangles that face away in curves and models are still to
+   be culled per triangle on VU1 (by the triangle's plane, kept with the
+   vertex that ends it): for the picture, and for the pixels.
 3. The front end's 0.38 M cycles is plain C over every chunk's cone: a flat
    chunk's test is one dot product, to be made so (and on VU0).
 
@@ -178,10 +185,20 @@ world only, 1259 fields, a PS2):
   (a strip left out shows the Z of the pass before: the worst glitch). A
   chunk is in 1.8 strips on average (5,564 vertices drawn, 10,128 sent a
   field); nine strips put it in 4.5 and cost more than they give.
-- 241 passes of 3777 still end after the beam has come: the fields whose
-  drawing is more than a field's time (31 over 16 ms, 183 over 12 ms). That
-  is the overdraw of section "Phase 1, first results", and the next thing
-  to take away.
+- The 241 passes that still ended after the beam had come were stray
+  triangles, on the PS2 only (its picture, read back, against PCSX2's): the
+  programs wrote a vertex's ADC in the same word as FTOI4 wrote its X, Y and
+  Z into the same register (VU1 drops the lower instruction's result then),
+  and a buffer was unpacked into while the GIF still read it (the GS is slow
+  over a large triangle; a VIF FLUSH before each batch's start waits). With
+  both put right the PS2's picture is PCSX2's (mean difference 0.5 of 255:
+  the dither), and the same flight is:
+
+| Passes | Left out | Still drawn when the beam came | A field's passes | The EE a frame |
+|---|---|---|---|---|
+| Three strips queued, the whole record each | 0 | 28 | 7.9 ms (the longest 15.3) | 0.44 M |
+| Three strips queued, a record a strip | 0 | 8 | 6.9 ms (the longest 13.8; 29 fields over 12 ms) | 0.66 M |
+| The same, the GS drawing nothing | 0 | 0 | 2.2 ms (the longest 3.9) | |
 - The front end went from 0.38 M to 0.76 M cycles: the strips of each chunk
   (eight corners projected) and a stream a strip. To be made cheaper with
   the cone tests (VU0, a flat chunk's plane).

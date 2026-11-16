@@ -95,6 +95,12 @@ int main(int argc, char **argv) {
 	   than their 5.5 ms, and the fields whose three together took more than
 	   12 and 16 ms */
 	u32 pass_long[MX_HIRES_PASSES] = {0}, field_12 = 0, field_16 = 0, field_max = 0;
+#define TOP 8
+	struct {
+		u32 us, cam;
+		struct rp_world_stats st;
+	} top[TOP] = {{0}};
+	struct rp_world_stats prev_st = {0};
 	struct rp_world_stats st, sum = {0}, max = {0};
 	u32 t_start = mx_gs.vsync, shot_at = ~0u;
 	for (u32 i = 0; i < count; i++) {
@@ -127,6 +133,17 @@ int main(int argc, char **argv) {
 			pass_long[k] = p > pass_long[k] ? p : pass_long[k], f += p;
 		}
 		field_12 += f > 12000, field_16 += f > 16000, field_max = f > field_max ? f : field_max;
+		/* the heaviest fields: the passes' times read here are of the frame
+		   before this one */
+		if (i) {
+			int at = -1;
+			for (int k = 0; k < TOP; k++)
+				if (f > top[k].us && (at < 0 || top[k].us < top[at].us))
+					at = k;
+			if (at >= 0)
+				top[at].us = f, top[at].cam = (u32)cams[first + i - 1].frame, top[at].st = prev_st;
+		}
+		prev_st = st;
 #define ACC(f) sum.f += st.f, max.f = st.f > max.f ? st.f : max.f
 		ACC(seen), ACC(groups), ACC(drawn), ACC(clip), ACC(back), ACC(verts), ACC(sent), ACC(batches), ACC(setups), ACC(qw);
 		if (shot && (u32)cm->frame == shot) {
@@ -161,6 +178,11 @@ int main(int argc, char **argv) {
 	}
 	mx_printf("; a field's passes together %u us, the longest about %u, %u fields over 12 ms, %u over 16 ms\n",
 	          mx_hires_stats.fields ? all_us / mx_hires_stats.fields : 0, field_max, field_12, field_16);
+	for (int k = 0; k < TOP; k++)
+		if (top[k].us)
+			mx_printf("q3view: a heavy field: camera %u: passes %u us; %u chunks (%u across a plane), %u vertices, %u "
+			          "sent in %u batches, %u set-ups\n", top[k].cam, top[k].us, top[k].st.drawn, top[k].st.clip,
+			          top[k].st.verts, top[k].st.sent, top[k].st.batches, top[k].st.setups);
 	int r = 0;
 	if (shot) {
 		r = mx_hires_save_tga("q3view.tga");

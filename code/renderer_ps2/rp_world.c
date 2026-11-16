@@ -289,6 +289,7 @@ int rp_world_upload(void) {
    lightmap pass, 4 every chunk with the programs that test nothing, 8 with
    those that test, 16 the GS draws nothing (the vertices as XYZ3: VIF1 and
    VU1 work as ever), 32 no textures, 64 chunks that face away drawn too,
+   1024 no CLUT is loaded (TEX0.CLD 0: wrong colours), 2048 none for the lightmap,
    256 no strip records (everything in every pass), 128 a picture of the overdraw: every triangle adds 1/31 of its colour,
    without texture, lightmap or depth test (with a black clear: a pixel's
    largest channel times 31 / 255 is about the triangles drawn over it) */
@@ -413,7 +414,10 @@ static u64 *material_packet(u64 *c, const struct pm_chunk *ch, int fast, int sta
 			u64 t1 = rp_debug & 1 ? mx_gs_tex1(1, 0, 1, 1, 0, 0, 0) : mx_tex_tex1(t, 1, t->levels > 1 ? 4 : 1, 0, k);
 			/* a texture without alpha of its own: its CLUT's alpha is the
 			   lightmaps' (tools/ps2map.py, gs_texture), not read here (TCC 0) */
-			c = mx_tex_e_regs(c, t, ctx, mx_tex_tex0(t, pm.tex[m->tex].alpha, 0), t1);
+			u64 t0 = mx_tex_tex0(t, pm.tex[m->tex].alpha, 0);
+			if (rp_debug & 1024)
+				t0 &= ~((u64)7 << 61);
+			c = mx_tex_e_regs(c, t, ctx, t0, t1);
 			n += 4;
 		}
 		if (lit) {
@@ -423,7 +427,7 @@ static u64 *material_packet(u64 *c, const struct pm_chunk *ch, int fast, int sta
 			if (tex)
 				t.cbp = gtex[m->tex].cbp;
 			c = mx_e_ad(c, MX_GS_REG_TEX1_1 + 1, mx_gs_tex1(1, 0, 1, 1, 0, 0, 0));
-			c = mx_e_ad(c, MX_GS_REG_TEX0_2, mx_tex_tex0(&t, 1, 1));
+			c = mx_e_ad(c, MX_GS_REG_TEX0_2, mx_tex_tex0(&t, 1, 1) & ~(rp_debug & (1024 | 2048) ? (u64)7 << 61 : 0));
 			n += 2;
 		}
 		u32 atst = m->alpha == ALPHA_GT0 ? 6 : m->alpha == ALPHA_LT128 ? 1 : 5;
@@ -449,7 +453,9 @@ static u64 *material_packet(u64 *c, const struct pm_chunk *ch, int fast, int sta
 		c = mx_e_cnt(c, 1, mx_vif_nop(), mx_vif_unpack(MX_UNPACK_V4_32, 0, 1, MX_UNPACK_FLG));
 		c = mx_e_giftag(c, 0, 1, -1, MX_GIF_FLG_PACKED, 1, MX_GIF_REG_AD);
 	}
-	return mx_e_cnt(c, 0, mx_vif_nop(), mx_vif_mscal(entry));
+	/* the batch before has left its buffer (FLUSH: its transfers to the GS
+	   are done) before a program runs while the VIF fills that buffer again */
+	return mx_e_cnt(c, 0, mx_vif_flush(), mx_vif_mscal(entry));
 }
 
 /* A run's set-ups are made once a frame and copied into each strip's

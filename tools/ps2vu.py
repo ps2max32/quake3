@@ -136,6 +136,15 @@ def schedule(vs, kern, iis, verbose):
             if m and int(m.group(2)) >= 1000 + FAR - pad:
                 continue
             rest.append(e)
+        # vusched keeps an upper and a lower instruction of a word from writing one register
+        # (VU1 drops the lower one's result: lq.w and mfir.w put ADC into the register FTOI4
+        # writes X, Y and Z of); the same over the registers as allocated, where two groups
+        # may share one
+        for up, low in words:
+            mu = re.match(r"\S+ (vf\d\d)", up)
+            ml = re.match(r"(?:lq|mfir|move|mr32|mfp)\S* (vf\d\d)", low)
+            if mu and ml and mu.group(1) == ml.group(1):
+                rest.append(f"upper and lower write {mu.group(1)} in one word")
         if stalls or rest:
             if verbose:
                 print(f"  {kern.name} II {ii}: {stalls} stalls, {len(rest)} errors: {rest[:3]}")
