@@ -31,7 +31,7 @@ What is made of the BSP:
 File layout (little-endian; "off" are bytes from the file's start):
 
   head (128 bytes):
-    u32 magic "PMAP", version 3
+    u32 magic "PMAP", version 4
     u32 nmat, ntex, nchunk, nmodel, nlightmap, ncluster, vis_bytes
     u32 nplane, nnode, nleaf
     u32 off_mat, off_tex, off_chunk, off_model, off_lightmap, off_vis,
@@ -76,14 +76,17 @@ buffer of VU1's double buffering, VU_* below, shared with the programs):
                                         the programs that set ADC themselves),
                                         0x4000 its triangle is wound the other
                                         way
-    UNPACK V3-16  n -> VU_B + 0 + 3 i   lightmap s, t and 4096 (CH_LIGHTMAP)
-    ITOP n, FLUSH, MSCNT
+    UNPACK V3-16  n -> VU_IB + 0 + 3 i  lightmap s, t and 4096 (CH_LIGHTMAP)
+    ITOP n, MSCNT
 
-The FLUSH lets the batch before finish its transfers to the GS before this
-one's program starts: the batch after this is unpacked into that batch's
-buffer while this program runs, and the GIF may still be reading it (the GS
-takes its time over a large triangle). Without it the PS2 draws stray
-triangles where an emulator draws none.
+Nothing waits between batches, so VU1 works while the GS draws: the batch
+after this is unpacked into the buffer of the batch before while this
+program runs, and the GIF may still be reading that batch's last packet (the
+GS takes its time over a large triangle). So the VIF writes nothing where a
+program's last packet lies: that one (VU_B: the lightmap pass, or the one
+pass of a surface without) is written by the program alone. The texture
+pass's, in place over what the VIF wrote, has left before its program ends
+(the next XGKICK waits for it).
 """
 import argparse
 import math
@@ -95,9 +98,10 @@ import zipfile
 import numpy as np
 
 # ---- shared with the VU1 programs (code/renderer_ps2) ---------------------------
-BATCH = 70      # vertices a batch at most
+BATCH = 46      # vertices a batch at most
 VU_A = 18       # the texture pass's first vertex in a buffer (after the pad and its GIF tag)
-VU_B = 247      # the lightmap pass's
+VU_B = 175      # the lightmap pass's packet: written by the programs alone
+VU_IB = 331     # the lightmap's texture coordinates
 W_NONE = 0xA000  # a position's w: the vertex ends no triangle (bit 15 is the GS's ADC; bit 13 says
                  # it to the programs that cut, which set ADC themselves)
 W_REV = 0x4000   # its triangle is wound the other way
@@ -799,8 +803,8 @@ def build(args):
             body += vif(UNPACK_V4_16, n, 0x8000 | (VU_A + 2)) + d
             if lit:
                 d = b"".join(struct.pack("<3h", v[2][0], v[2][1], 4096) for v, _ in b)
-                body += vif(UNPACK_V3_16, n, 0x8000 | VU_B) + d + b"\0" * (-len(d) % 4)
-            body += vif(VIF_ITOP, 0, n) + vif(VIF_FLUSH) + vif(VIF_MSCNT)
+                body += vif(UNPACK_V3_16, n, 0x8000 | VU_IB) + d + b"\0" * (-len(d) % 4)
+            body += vif(VIF_ITOP, 0, n) + vif(VIF_MSCNT)
         body += b"\0" * (-len(body) % 16)
         qwc = len(body) // 16
         off = len(blob)
@@ -906,7 +910,7 @@ def build(args):
     sec["model"] = b"".join(struct.pack("<6fII", *mn, *mx, f, n) for mn, mx, f, n in models)
     sec["lightmap"], sec["vis"], sec["plane"], sec["node"], sec["leaf"] = lmdata, vis.tobytes(), planes, nodes, leafs
     sec["texdata"], sec["data"] = bytes(texdata), bytes(blob)
-    head = struct.pack("<4sI7I3I11IfIII", b"PMAP", 3, len(mats), len(textures), len(recs), len(models),
+    head = struct.pack("<4sI7I3I11IfIII", b"PMAP", 4, len(mats), len(textures), len(recs), len(models),
                        len(bsp.lightmaps), ncl, vis_bytes, len(bsp.planes), len(bsp.nodes), len(bsp.leafs),
                        off["mat"], off["tex"], off["chunk"], off["model"], off["lightmap"], off["vis"], off["plane"],
                        off["node"], off["leaf"], off["data"], total, 1.0 / q, BATCH, len(grecs), off["group"])

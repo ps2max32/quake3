@@ -257,13 +257,32 @@ are drawn and the textures are a cache:
   (the picture of it): about 0.6 EE cycles a pixel flat and 0.9 textured,
   two to three times the probe's screen-size triangle. MIPMAP levels change
   nothing here.
-- **VU1 and the GS take turns**: the times add (3.9 + 8.1 = 12.0). The
-  FLUSH before each batch makes VU1 wait for the GS. A batch that is not
-  written in place (the VIF's vertices in one part of the buffer, the
-  packets in another) needs no FLUSH: the next batch's unpack then cannot
-  touch a packet still being sent, and VU1 works while the GS draws. That
-  is the next change to the programs: batches of about 44 vertices, and the
-  heavy fields at about 9 ms in place of 12.
+- **It is not the pixels.** The same triangles over a quarter of the
+  pixels (the view drawn half as wide and high): 10.4 ms in place of 11.9.
+  And it is not VU1 waiting for the GS: without the FLUSH before each batch
+  (a program's last packet now lies where the VIF writes nothing, so the
+  next batch's unpack cannot touch a packet still being sent; batches of 46
+  vertices, map file version 4) the times are the same to a tenth of a
+  millisecond. Nor triangles outside a pass's strip: the programs leave
+  those out now (a test of each vertex against the strip's lines), which
+  costs VU1 0.14 ms and saves the GS 0.25.
+- **A fit over the flight's 1258 fields** (each field's vertices sent
+  against its passes' time):
+
+  | | A field, whatever is in it | A vertex sent |
+  |---|---|---|
+  | Nothing drawn (XYZ3) | 1.8 ms: the clear of the three strips (1.1 ms) and the programs' upload | 40 cycles |
+  | One flat pass | 2.9 ms | 55 cycles |
+  | Texture and lightmap | 5.1 ms | 105 cycles |
+
+  So a field of the world is about 1.8 ms that are always there, 3.3 ms of
+  pixels (two textured layers) and 105 EE cycles for every vertex sent: 40
+  to get it through VIF1, VU1 and the GIF, 65 for the GS to set up its
+  triangle twice. The world sends 8,000 vertices a field on average and
+  13,000 in the heavy ones, 1.84 times what it draws (a chunk in every
+  strip it touches) and 1.96 for a triangle (a BSP face's vertices are its
+  own: its lightmap coordinates). What is left to cut there: curves in
+  fewer triangles when they are far, and the clear.
 
 Left of phase 3: the stages after a shader's first (11,000 skipped in the
 run), the map's doors and platforms, the sky, beams and lightning, marks,

@@ -162,7 +162,7 @@ void rp_world_free(void) {
 int rp_world_load(const void *p, u32 size) {
 	const struct pm_head *h = p;
 	rp_world_free();
-	if (size < sizeof *h || h->magic != PM_MAGIC || h->version != 3 || h->size > size || h->batch != Q3VU_BATCH)
+	if (size < sizeof *h || h->magic != PM_MAGIC || h->version != 4 || h->size > size || h->batch != Q3VU_BATCH)
 		return -1;
 	pm.base = p, pm.h = h;
 	pm.mat = (const void *)(pm.base + h->off_mat);

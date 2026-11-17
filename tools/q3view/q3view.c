@@ -190,6 +190,11 @@ int main(int argc, char **argv) {
 		struct fstats st;
 	} top[TOP] = {{0}};
 	struct fstats prev_st = {0};
+#define MAXROW 1300
+	static struct rowt {
+		u32 sent, batches, setups, chunks, clip, us;
+	} row[MAXROW];
+	u32 nrow = 0;
 	struct fstats st, sum = {0}, max = {0};
 	u32 t_start = mx_gs.vsync, shot_at = ~0u;
 	/* rp_debug 4096: where the EE's time goes */
@@ -235,6 +240,10 @@ int main(int argc, char **argv) {
 			if (at >= 0)
 				top[at].us = f, top[at].cam = (u32)cams[first + i - 1].frame, top[at].st = prev_st;
 		}
+		/* rp_debug 65536: each field's counts and the time of its passes, printed
+		   at the end (q3row lines) for a fit on the PC */
+		if (i && nrow < MAXROW)
+			row[nrow++] = (struct rowt){prev_st.sent, prev_st.batches, prev_st.setups, prev_st.drawn, prev_st.clip, f};
 		prev_st = st;
 #define ACC(f) sum.f += st.f, max.f = st.f > max.f ? st.f : max.f
 		ACC(seen), ACC(groups), ACC(drawn), ACC(clip), ACC(back), ACC(verts), ACC(sent), ACC(batches), ACC(setups), ACC(qw);
@@ -281,6 +290,10 @@ int main(int argc, char **argv) {
 			mx_printf("q3view: a heavy field: camera %u: passes %u us; %u chunks (%u across a plane), %u vertices, %u "
 			          "sent in %u batches, %u set-ups\n", top[k].cam, top[k].us, top[k].st.drawn, top[k].st.clip,
 			          top[k].st.verts, top[k].st.sent, top[k].st.batches, top[k].st.setups);
+	if (rp_debug & 65536)
+		for (u32 k = 0; k < nrow; k++)
+			mx_printf("q3row,%u,%u,%u,%u,%u,%u\n", row[k].sent, row[k].batches, row[k].setups, row[k].chunks, row[k].clip,
+			          row[k].us);
 	int r = 0;
 	if (shot) {
 		r = mx_hires_save_tga("q3view.tga");

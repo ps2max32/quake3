@@ -11,14 +11,26 @@ OFFSET Q3VU_BUF). A buffer, from its start:
 
     0 ..          a set-up's GS registers (an A+D packet, kicked by the set-up)
     VU_A - 1      the first pass's GIF tag, written by the program
-    VU_A + 3 i    vertex i of the first pass: ST, RGBAQ, XYZ2 in place (the VIF
-                  put the texture coordinates, the colour and the position
-                  there: tools/ps2map.py)
-    VU_B - 1      the second pass's GIF tag
-    VU_B + 3 i    vertex i of the second pass: the lightmap's coordinates in,
-                  ST out; RGBAQ: the GS does not read it (a decal; it only
-                  takes Q at it), so the programs that cut keep the vertex's
-                  position before the divide there; XYZ2 as the first pass's
+    VU_A + 3 i    vertex i as the VIF wrote it (the texture coordinates, the
+                  colour and the position: tools/ps2map.py); the first pass's
+                  ST, RGBAQ, XYZ2 in place when there are two passes
+    VU_B - 1      the last pass's GIF tag
+    VU_B + 3 i    vertex i of the last pass, written by the program alone:
+                  the lightmap's ST; RGBAQ: the GS does not read it (a decal;
+                  it only takes Q at it), so the programs that cut keep the
+                  vertex's position before the divide there; XYZ2 as the
+                  first pass's. With one pass: that pass
+    VU_IB + 3 i   the lightmap's coordinates as the VIF wrote them
+
+No batch waits for the one before, so VU1 works while the GS draws. The VIF
+unpacks batch k + 2 into the buffer of batch k as soon as program k + 1 has
+started, and the GIF may still be sending batch k's last packet then: so
+that packet lies where the VIF writes nothing (VU_B). The packet before it
+has left by then: its program's last XGKICK waited for it. q3w1c alone
+draws its one pass in place and waits for it to leave (an XGKICK of the
+packet that sets nothing): what it leaves out is cut from that place.
+q3m's packet and what the VIF writes for it lie elsewhere than these: between
+a run of q3m's and one of the others the stream waits (a FLUSH, rp_list.c).
 
 Each program has a set-up entry (MSCAL: the context into registers, the GS
 registers kicked) and ends before its batch entry, so every batch after it is
@@ -29,6 +41,11 @@ Programs:
     w2   texture and lightmap from one vertex: the vertex is transformed once
          and written twice (the lightmap in GS context 2)
     w1   one pass
+         Both leave out (ADC) a triangle whose three vertices are all above
+         or all below a window of the picture's lines (the context's SS, SN:
+         the strip of beam racing a pass draws): the GS takes about 40 EE
+         cycles to set up a flat triangle and 70 a textured one, drawn or
+         not, and a chunk is in the records of every strip it touches.
     w2c, w1c   the same for chunks across the near plane or the guard band:
          each vertex is tested against the guard band and the depth planes
          (CLIPW of the position scaled into that volume) and a triangle with
@@ -71,14 +88,17 @@ import ps2map  # noqa: E402  the buffer's layout is shared with the map tool
 
 STRIDE = 3
 FAR = ps2map.VU_B - ps2map.VU_A   # a slot of the second pass, from the first's
+FARI = ps2map.VU_IB - ps2map.VU_A # and of the lightmap's coordinates as the VIF wrote them
 CTX_QW = 72
 BUF_QW = 476
-# the context: the matrix, the clip test's scale and offset (a frame's); a material's GIF tags
+# the context: the matrix, the clip test's scale and offset (a view's); SS, SN: the same for
+# the window of lines a pass draws (y * SS + w * SN within -w .. w is inside); a material's GIF tags
 # (strips; TA3, TB3: single triangles, for q3clip); NOP: a packet that sets nothing; then
 # q3clip's room: PL the six planes, CO the corners' attributes (position, texture ST, colour,
 # lightmap ST: three each), WA and WB the polygon (9 vertices), R0 and R1 a triangle's
 # packets, SAVE integers
-CTX = {"C0": 0, "C1": 1, "C2": 2, "C3": 3, "CS": 4, "CN": 5, "TA": 6, "TB": 7, "TA3": 8, "TB3": 9, "NOP": 10}
+CTX = {"C0": 0, "C1": 1, "C2": 2, "C3": 3, "CS": 4, "CN": 5, "TA": 6, "TB": 7, "TA3": 8, "TB3": 9, "NOP": 10,
+       "SS": 69, "SN": 70}
 ROOM = {"PL": 12, "CO": 18, "WA": 30, "WB": 39, "R0": 48, "R1": 58, "SAVE": 68}
 # q3m's buffer: the packet (its tag before it), the entries, the vertices; its uniforms where
 # its set-up finds them (q3clip's polygon room: free while no triangle is cut)
@@ -92,7 +112,7 @@ CLIP_VF = set(range(1, 10)) | set(range(12, 26))
 def kernels(vs):
     Op, Kernel = vs.Op, vs.Kernel
 
-    def pos(clip, two):
+    def pos(clip, two, c=0):
         ops = [
             Op("lqpos", "L", "lq.xyz {V}, {off}({p})", ("V", "xyz"), mem=("lq", 2)),
             Op("itof", "U", "itof0.xyz {F}, {V}", ("F", "xyz"), [("V", "xyz")]),
@@ -122,27 +142,53 @@ def kernels(vs):
                 Op("sqp", "L", "sq.xyzw {P}, {off}({p})", None, [("P", "xyzw")], mem=("sq", FAR + 1)),
             ]
         else:
-            ops.append(Op("lqadc", "L", "lq.w {O}, {off}({p})", ("O", "w"), mem=("lq", 2)))
-        ops.append(Op("sqpos", "L", "sq.xyzw {O}, {off}({p})", None, [("O", "xyzw")], mem=("sq", 2)))
-        if two:
+            # all three of a triangle's vertices below the window (+y: bits 2, 8, 14 of the
+            # clip flags) or all above it (-y: 3, 9, 15): ADC
+            r, q = ("vi02", "vi11") if c == 0 else ("vi03", "vi12")
+            ops += [
+                Op("sa", "U", "mulaw.xy ACC, {SN}, {P}w", ("ACC", ""), [("P", "w")]),
+                Op("sb", "U", "madd.xy {PS}, {P}, {SS}", ("PS", "xy"), [("ACC", ""), ("P", "xy")]),
+                Op("clip", "U", "clipw.xyz {PS}xyz, {P}w", ("CF", ""), [("PS", "xy"), ("P", "w")], lat=vs.CLIP_LAT),
+                Op("fa", "L", "fcor vi01, 0xffbefb", ("VI:fc", "a"), [("CF", "")], lat=1),
+                Op("ma", "L", f"iaddiu {r}, vi01, 0x7fff", (f"VI:r{c}", ""), [("VI:fc", "a")], lat=1),
+                Op("fb", "L", "fcor vi01, 0xff7df7", ("VI:fc", "b"), [("CF", ""), (f"VI:r{c}", "")], lat=1),
+                Op("mb", "L", f"iadd {r}, {r}, vi01", (f"VI:s{c}", ""), [("VI:fc", "b"), (f"VI:r{c}", "")], lat=1),
+                Op("lsf", "L", f"ilw.w {q}, {{off}}({{p}})", (f"VI:f{c}", ""), mem=("lq", 2), lat=1),
+                Op("or", "L", f"ior {r}, {r}, {q}", (f"VI:w{c}", ""), [(f"VI:s{c}", ""), (f"VI:f{c}", "")], lat=1),
+                Op("mfir", "L", f"mfir.w {{O}}, {r}", ("O", "w"), [(f"VI:w{c}", "")]),
+            ]
+        # the position: in place and in the last pass's packet; one pass that is not cut: there alone
+        if two or clip:
+            ops.append(Op("sqpos", "L", "sq.xyzw {O}, {off}({p})", None, [("O", "xyzw")], mem=("sq", 2)))
+        if two or not clip:
             ops.append(Op("sqposb", "L", "sq.xyzw {O}, {off}({p})", None, [("O", "xyzw")], mem=("sq", FAR + 2)))
         return ops
 
-    def st(tag, slot):
+    def st(tag, src, dst):
         return [
-            Op("lqst" + tag, "L", "lq.xyz {S%s}, {off}({p})" % tag, ("S" + tag, "xyz"), mem=("lq", slot)),
+            Op("lqst" + tag, "L", "lq.xyz {S%s}, {off}({p})" % tag, ("S" + tag, "xyz"), mem=("lq", src)),
             Op("itofst" + tag, "U", "itof12.xyz {I%s}, {S%s}" % (tag, tag), ("I" + tag, "xyz"), [("S" + tag, "xyz")]),
             Op("mulst" + tag, "U", "mulq.xyz {M%s}, {I%s}, Q" % (tag, tag), ("M" + tag, "xyz"),
                [("I" + tag, "xyz"), ("Q", "")]),
-            Op("sqst" + tag, "L", "sq.xyz {M%s}, {off}({p})" % tag, None, [("M" + tag, "xyz")], mem=("sq", slot)),
+            Op("sqst" + tag, "L", "sq.xyz {M%s}, {off}({p})" % tag, None, [("M" + tag, "xyz")], mem=("sq", dst)),
         ]
+
+    # one pass, not in place: the colour goes with it
+    col = [Op("lqcol", "L", "lq.xyzw {K}, {off}({p})", ("K", "xyzw"), mem=("lq", 1)),
+           Op("sqcol", "L", "sq.xyzw {K}, {off}({p})", None, [("K", "xyzw")], mem=("sq", FAR + 1))]
 
     mvp = [(g, CTX[g]) for g in ("C0", "C1", "C2", "C3")]
     clipu = [(g, CTX[g]) for g in ("CS", "CN")]
+    stripu = [(g, CTX[g]) for g in ("SS", "SN")]
 
     def k(name, clip, two, u):
-        ops = lambda c: pos(clip, two) + st("a", 0) + (st("b", FAR) if two else [])
-        return Kernel(name, ops, u, 0, STRIDE, mvp + (clipu if clip else []), {})
+        if two:
+            ops = lambda c: pos(clip, two, c) + st("a", 0, 0) + st("b", FARI, FAR)
+        elif clip:
+            ops = lambda c: pos(clip, two, c) + st("a", 0, 0)
+        else:
+            ops = lambda c: pos(clip, two, c) + st("a", 0, FAR) + col
+        return Kernel(name, ops, u, 0, STRIDE, mvp + (clipu if clip else stripu), {})
 
     def model():
         ops = [
@@ -184,8 +230,8 @@ def kernels(vs):
     # name, the kernel, the IIs to try
     return [
         (model(), range(21, 40)),
-        (k("q3w2", False, True, 2), range(20, 33)),
-        (k("q3w1", False, False, 2), range(14, 25)),
+        (k("q3w2", False, True, 2), range(24, 44)),
+        (k("q3w1", False, False, 2), range(20, 40)),
         (k("q3w2c", True, True, 1), range(14, 25)),
         (k("q3w1c", True, False, 1), range(12, 23)),
     ]
@@ -286,14 +332,16 @@ def program(vs, kern, s, regs, words, two, clip):
     out.append(("label", name + "_loop"))
     for up, low in words:
         out.append((up, low))
+    # one pass that is not cut: its packet is the last pass's place
+    first = A if two or clip else B
     lo(f"mfir.x {ta}, vi10")
     if two:
         lo(f"mfir.x {tb}, vi10")
-    lo(f"iaddiu vi07, vi08, {A - 1}")
+    lo(f"iaddiu vi07, vi08, {first - 1}")
     if two:
         lo(f"iaddiu vi06, vi08, {B - 1}")
     lo("nop")
-    lo(f"sq.xyzw {ta}, {A - 1}(vi08)")
+    lo(f"sq.xyzw {ta}, {first - 1}(vi08)")
     if two:
         lo(f"sq.xyzw {tb}, {B - 1}(vi08)")
     lo("nop")
@@ -311,6 +359,10 @@ def program(vs, kern, s, regs, words, two, clip):
         lo("bal vi15, q3clip")
         lo(f"iaddiu vi14, vi00, {1 if two else 0}")
         out.append(("label", name + "_whole"))
+        if not two:
+            # its pass, in place where the VIF writes, has left before the program ends
+            lo(f"iaddiu vi01, vi00, {CTX['NOP']}")
+            lo("xgkick vi01")
     lo("nop", e=True)
     lo("nop")
     lo(f"b {name}_batch")
@@ -598,8 +650,10 @@ def main():
     A, B, n = ps2map.VU_A, ps2map.VU_B, ps2map.BATCH
     # what the loops store outside their vertices must miss everything else
     assert worst_pad <= A - 1, f"pad {worst_pad}: VU_A too low"
+    IB = ps2map.VU_IB
     assert A + STRIDE * n + max(worst_slop, worst_pad) <= B - 1, "the first pass's slop reaches the second's tag"
-    assert B + STRIDE * n + worst_slop <= BUF_QW, "the second pass's slop leaves the buffer"
+    assert B + STRIDE * n + worst_slop <= IB, "the last pass's slop reaches the lightmap's coordinates"
+    assert IB + STRIDE * n <= BUF_QW, "the lightmap's coordinates leave the buffer"
     assert CTX_QW + 2 * BUF_QW <= 1024 and word <= 2048
     h = ["/* Generated by tools/ps2vu.py -- do not edit. The PS2 renderer's VU1 programs (q3vu.vsm):",
          "   entries (instruction words from q3vu_vu) and VU1's data memory (quadwords). */",
@@ -614,6 +668,7 @@ def main():
           f"#define Q3VU_M_VERTS {M_VERTS} /* a piece's vertices at most */",
           f"#define Q3VU_M_ENTRIES {M_ENTRIES} /* and its entries */"]
     h += [f"#define Q3VU_BASE {CTX_QW}", f"#define Q3VU_BUF {BUF_QW}", f"#define Q3VU_A {A}", f"#define Q3VU_B {B}",
+          f"#define Q3VU_IB {IB}",
           f"#define Q3VU_BATCH {n}",
           f"#define Q3VU_REGS_QW {A - 1} /* a set-up's packet at most */",
           "", "#endif", ""]

@@ -9,7 +9,15 @@
    registers as a packet the set-up's program kicks). So VIF1, VU1 and the
    GS see a strip's draws in a pass, not the frame's. Matrices, set-ups and
    the draws built for a frame lie in memory of this file's (rp_dyn), kept
-   until the frame is done. */
+   until the frame is done.
+
+   Nothing in a strip's stream waits for the GS (tools/ps2vu.py: a program's
+   last packet lies where the VIF writes nothing), but: a set-up waits for
+   the program before it (FLUSHE: it writes the context, and its packet's
+   place is the set-up before's, which has left when that program has
+   kicked); and between a run of the models' program and one of the others
+   the stream waits for all that was sent (a FLUSH: their buffers are laid
+   out differently). */
 
 #include <mx/frame.h>
 #include <mx/gif.h>
@@ -143,7 +151,15 @@ void rp_view_rect(const struct rp_cam *cam, float x, float y, float w, float h) 
 	v->serial++;
 }
 
-void rp_view_set(const struct rp_cam *cam) { rp_view_rect(cam, 0, 0, (float)mx_gs.w, (float)mx_gs.h); }
+void rp_view_set(const struct rp_cam *cam) {
+	float W = (float)mx_gs.w, H = (float)mx_gs.h;
+	/* rp_debug 16384: the same triangles over a quarter of the pixels (what of
+	   a pass's time is the triangles', what the pixels') */
+	if (rp_debug & 16384)
+		rp_view_rect(cam, W * 0.25f, H * 0.25f, W * 0.5f, H * 0.5f);
+	else
+		rp_view_rect(cam, 0, 0, W, H);
+}
 
 /* The lines its corners fall on, a line more each way (the lower field is
    drawn half a line lower). */
@@ -372,9 +388,7 @@ static const void *setup_chain(const struct rp_state *s, int cut, int state) {
 		c = mx_e_cnt(c, 1, mx_vif_nop(), mx_vif_unpack(MX_UNPACK_V4_32, 0, 1, MX_UNPACK_FLG));
 		c = mx_e_giftag(c, 0, 1, -1, MX_GIF_FLG_PACKED, 1, MX_GIF_REG_AD);
 	}
-	/* the batch before has left its buffer (FLUSH: its transfers to the GS
-	   are done) before a program runs while the VIF fills that buffer again */
-	c = mx_e_cnt(c, 0, mx_vif_flush(), mx_vif_mscal(entry));
+	c = mx_e_cnt(c, 0, mx_vif_nop(), mx_vif_mscal(entry));
 	c = mx_e_ret(c, 0, 0, 0);
 	rp_dyn_end(c);
 	return c0;
@@ -445,7 +459,9 @@ void rp_list_init(void) {
 void rp_list_begin(void) {
 	dyn_frame();
 	nrun = ndraw = 0;
-	u64 *c = mx_frame_reserve(1);
+	/* what the pass before sent has left VU1's memory */
+	u64 *c = mx_frame_reserve(2);
+	c = mx_e_cnt(c, 0, mx_vif_flush(), mx_vif_nop());
 	c = mx_e_cnt(c, 0, mx_vif_base(Q3VU_BASE), mx_vif_offset(Q3VU_BUF));
 	mx_frame_commit(c);
 	mx_frame_mpg(q3vu_vu, (u32)(q3vu_vu_end - q3vu_vu), 0);
@@ -482,9 +498,36 @@ void rp_list_end(void) {
 	static const void *list[2][LIST_MAX];
 	u32 nstrip = rp_view.nstrip;
 	rp_list_stats.runs += nrun, rp_list_stats.draws += ndraw;
+	/* the wait between runs of programs with other buffers */
+	u64 *fl = rp_dyn(2);
+	if (fl)
+		mx_e_ret(mx_e_cnt(fl, 0, mx_vif_flush(), mx_vif_nop()), 0, 0, 0);
 	for (u32 k = 0; k < (nstrip ? nstrip : 1); k++) {
 		u32 bit = 1u << k;
 		const void *matrix = 0;
+		int family = -1;
+		/* the window of lines this pass draws, for the programs that leave out
+		   the triangles outside it: y * SS + w * SN within -w .. w is inside (a
+		   line and a half more each way: the lower field is drawn half a line
+		   lower) */
+		float top = 2048.0f - (float)mx_gs.h * 0.5f, t = top - 1.5f, b = top + (float)mx_gs.h + 1.5f;
+		if (nstrip)
+			t = top + (float)(k * rp_view.strip_h) - 1.5f, b = top + (float)((k + 1) * rp_view.strip_h) + 1.5f;
+		float l = 2048.0f - (float)mx_gs.w * 0.5f - 1.0f, r = 2048.0f + (float)mx_gs.w * 0.5f + 1.0f;
+		if (rp_debug & 32768) /* a test of the window: the strip's middle third alone */
+			t += (b - t) / 3, b -= (b - t) / 2;
+		u64 *wn = rp_dyn(5);
+		if (!wn)
+			break;
+		{
+			u64 *c = wn;
+			c = mx_e_cnt(c, 0, mx_vif_flushe(), mx_vif_stcycl(1, 1));
+			c = mx_e_cnt(c, 2, mx_vif_nop(), mx_vif_unpack(MX_UNPACK_V4_32, Q3VU_CTX_SS, 2, 0));
+			c = mx_e_w4(c, fbits(2.0f / (r - l)), fbits(2.0f / (b - t)), 0, 0);
+			c = mx_e_w4(c, fbits(-(r + l) / (r - l)), fbits(-(b + t) / (b - t)), 0, 0);
+			mx_e_ret(c, 0, 0, 0);
+		}
+		int windowed = 0;
 		if (nstrip)
 			mx_hires_strip((int)k);
 		for (u32 r = 0; r < nrun; r++) {
@@ -498,8 +541,19 @@ void rp_list_end(void) {
 					for (int v = 0; v < 2; v++) {
 						if (!n[v])
 							continue;
-						const void *pre[2];
+						const void *pre[3];
 						u32 np = 0;
+						int fam = rn->s.prog == RP_PROG_MODEL;
+						if (rn->s.prog != RP_PROG_GS) {
+							if (family >= 0 && family != fam && fl)
+								pre[np++] = fl;
+							family = fam;
+						}
+						if (!windowed) {
+							const void *w1 = wn;
+							calls(&w1, 1);
+							windowed = 1;
+						}
 						if (rn->matrix && matrix != rn->matrix)
 							pre[np++] = matrix = rn->matrix;
 						if (!rn->setup[v][!set])

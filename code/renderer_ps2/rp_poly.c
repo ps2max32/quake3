@@ -73,7 +73,7 @@ static void poly_batch(void) {
 		n++;
 	}
 	/* the batch as VIF1 takes it: 32-bit words */
-	u32 stw = (n * 6 + 3) / 4, words = 1 + 1 + stw + 1 + n + 1 + n * 2 + 3;
+	u32 stw = (n * 6 + 3) / 4, words = 1 + 1 + stw + 1 + n + 1 + n * 2 + 2;
 	u32 qw = (words + 3) / 4;
 	u64 *c0 = rp_dyn(qw + 2);
 	if (!c0)
@@ -92,7 +92,6 @@ static void poly_batch(void) {
 	for (u32 i = 0; i < n * 2; i++)
 		*w++ = pp[i];
 	*w++ = mx_vif_itop(n);
-	*w++ = mx_vif_flush();
 	*w++ = mx_vif_mscnt();
 	while (w < end)
 		*w++ = mx_vif_nop();
