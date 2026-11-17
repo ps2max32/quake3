@@ -130,6 +130,8 @@ _Static_assert(sizeof(struct mx_snd_sample) == sizeof(((sfx_t *)0)->ps2Sample[0]
 #define SAMPLE(sfx, loop) ((struct mx_snd_sample *)(sfx)->ps2Sample[loop])
 
 #define HW_SFX 4096
+#define HW_PRELOAD (1280u << 10)   /* of SPU RAM's 1.8 MiB */
+#define HW_PRELOAD_ONE (48 << 10)
 static sfx_t *hw_all[HW_SFX];    /* the sounds with their ADPCM here */
 static sfx_t *hw_loaded[HW_SFX]; /* those with a sample in SPU RAM */
 static int hw_nall, hw_nloaded;
@@ -274,6 +276,12 @@ qboolean S_PS2_LoadSound(sfx_t *sfx)
 	sfx->soundCompressionMethod = 0;
 	hw_all[hw_nall++] = sfx;
 	hw_all_bytes += (unsigned)bytes;
+	/* into SPU RAM now, while the game loads: a copy takes the IOP 12 ms, a
+	   frame's worth when it is made at a sound's first play. The short ones
+	   (shots, steps, pain: played often and at once), as long as they leave
+	   room for the long ones that do get played */
+	if (bytes <= HW_PRELOAD_ONE && hw_bytes + (unsigned)bytes <= HW_PRELOAD)
+		hw_sample(sfx, 0);
 	return qtrue;
 }
 
