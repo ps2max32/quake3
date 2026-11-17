@@ -7,6 +7,7 @@
 
 #include <mx/mx.h>
 #include <mx/hires.h>
+#include <mx/mem.h>
 #include <mx/pad.h>
 #include <mx/vm.h>
 
@@ -526,6 +527,29 @@ static void ps2_run_report(void) {
 		          (u32)(perf_sum[1][1] / perf_nf[1]), (u32)(perf_cyc[1] / perf_nf[1]),
 		          (u32)(perf_sum[2][0] / perf_nf[2]), (u32)(perf_sum[2][1] / perf_nf[2]));
 	ps2_ren_report();
+#ifdef Q3_VM_CENSUS
+	{
+		/* what is in memory now: the pages resident of each 512 KiB of the
+		   program's VM, of the mapped files and of the heaps (for the symbols:
+		   the link map) */
+		static const struct {
+			u32 base, size;
+			const char *what;
+		} rg[] = {{0x08000000u, 0x08000000u, "vm"}, {0x40000000u, 0x04000000u, "files"}, {0x48000000u, 0x04000000u, "heaps"}};
+		for (unsigned r = 0; r < 3; r++) {
+			u32 tot = 0;
+			for (u32 a = rg[r].base; a < rg[r].base + rg[r].size; a += 0x80000) {
+				u32 n = 0;
+				for (u32 pg = a; pg < a + 0x80000; pg += 32768)
+					n += mx_mem_resident((const void *)(uintptr_t)pg, 32768) != 0;
+				if (n)
+					mx_printf("census: %s %08x %u\n", rg[r].what, a, n);
+				tot += n;
+			}
+			mx_printf("census: %s in all %u pages (%u KB)\n", rg[r].what, tot, tot * 32);
+		}
+	}
+#endif
 	ps2_beam_report();
 }
 

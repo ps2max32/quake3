@@ -1,7 +1,8 @@
 /* rp_model.c: the game's MD3 models (PLAN-PS2.md, 5.3 and 5.4).
 
-   A model is loaded as the engine has it (the file, in the hunk: cgame asks
-   for its tags and bounds), and its surfaces are made ready for VU1
+   A model is the engine's file where it lies in the file of models
+   (rp_bin.c: mapped, not loaded; cgame asks for its tags and bounds), and
+   its surfaces are made ready for VU1
    (tools/ps2vu.py, q3m): a surface is cut into pieces of at most
    Q3VU_M_VERTS vertices, each with its triangles as entries of a strip
    (three a triangle now: the first two end none). Of a piece there are its
@@ -10,7 +11,10 @@
    and its normals (three bytes, decoded from the file's two angles). A
    frame's block is made when a draw first reads it, in a cache of memory
    the DMAC reads (a model has hundreds of frames and a game shows few of
-   them at a time): over its limit the block longest not drawn goes.
+   them at a time): over its limit the block longest not drawn goes. A
+   frame whose vertices in the file are not in memory is asked for (the
+   pager reads them while the game goes on) and the surface is drawn with
+   the block it was drawn with last.
 
    A draw of a surface is a chain built for the frame: for each piece five
    REFs (texture coordinates, the new frame's normals and positions, the old
@@ -31,6 +35,7 @@
 #include <mx/mx.h>
 #include <mx/vif.h>
 
+#include "rp_bin.h"
 #include "rp_list.h"
 #include "rp_model.h"
 #include "rp_poly.h"
@@ -174,6 +179,7 @@ struct msurf {
 	u32 frame_bytes;    /* of a frame's block */
 	u16 (*pv)[Q3VU_M_VERTS]; /* a piece's vertices in the file */
 	u16 *block;         /* a frame's block in the cache + 1; 0: not made */
+	u16 last;           /* the block (+ 1) it was drawn with last */
 };
 #define RP_MODELS 1024
 static struct rmodel {
@@ -205,7 +211,7 @@ static struct skin {
 		char surf[MAX_QPATH];
 		qhandle_t shader;
 	} s[SKIN_SURFS];
-} *skins;
+} **skins; /* each its own piece of the hunk, of the surfaces it has */
 static int nskins;
 
 void rp_models_begin(void) {
@@ -319,7 +325,17 @@ static const u8 *frame_block(struct msurf *sf, int f) {
 	u32 now = mx_frame_number();
 	if (sf->block[f]) {
 		cache[sf->block[f] - 1].used = now;
+		sf->last = sf->block[f];
 		return cache[sf->block[f] - 1].mem;
+	}
+	/* the frame's vertices in the file: read now only when they are in
+	   memory; else the pager is asked and this draw goes without */
+	const md3Surface_t *s = sf->md3;
+	const md3XyzNormal_t *x = (const md3XyzNormal_t *)((const u8 *)s + s->ofsXyzNormals) + f * s->numVerts;
+	if (!mx_mem_resident(x, (u32)s->numVerts * sizeof *x)) {
+		mx_mem_prefetch(x, (u32)s->numVerts * sizeof *x);
+		rp_model_stats.paged++;
+		return NULL;
 	}
 	/* a place in the table, and room: the blocks longest not drawn go (none
 	   that a frame not yet done may read) */
@@ -342,14 +358,14 @@ static const u8 *frame_block(struct msurf *sf, int f) {
 		mx_heap_free(heap, o->mem);
 		cache_bytes -= o->sf->frame_bytes;
 		o->sf->block[o->frame] = 0;
+		if (o->sf->last == old + 1)
+			o->sf->last = 0;
 		o->mem = NULL;
 		at = old;
 		rp_model_stats.evicted++;
 	}
 	if (!blk)
 		return NULL;
-	const md3Surface_t *s = sf->md3;
-	const md3XyzNormal_t *x = (const md3XyzNormal_t *)((const u8 *)s + s->ofsXyzNormals) + f * s->numVerts;
 	memset(blk, 0, sf->frame_bytes);
 	for (int i = 0; i < sf->npiece; i++) {
 		const struct piece *p = &sf->piece[i];
@@ -370,7 +386,7 @@ static const u8 *frame_block(struct msurf *sf, int f) {
 	cache[at] = (struct fblock){sf, blk, now, (u16)f};
 	if (at == cache_hi)
 		cache_hi++;
-	sf->block[f] = (u16)(at + 1);
+	sf->block[f] = sf->last = (u16)(at + 1);
 	cache_bytes += sf->frame_bytes;
 	rp_model_stats.kb = (model_bytes + cache_bytes) / 1024;
 	rp_model_stats.made++;
@@ -391,23 +407,28 @@ qhandle_t rp_model_register(const char *name) {
 	m->md3 = NULL, m->surf = NULL;
 	if (name[0] == '*')
 		return h;
-	void *file;
-	long size = ri.FS_ReadFile(name, &file);
-	if (size <= 0 || !file)
-		return 0;
-	md3Header_t *hd = file;
-	if (size >= (long)sizeof *hd && hd->ident == MD3_IDENT && hd->version == MD3_VERSION && hd->numFrames > 0 &&
-	    hd->numSurfaces <= MD3_MAX_SURFACES) {
-		m->md3 = ri.Hunk_Alloc((int)size, h_low);
-		memcpy(m->md3, file, size);
-	}
-	ri.FS_FreeFile(file);
+	/* the file where it lies in the file of models (rp_bin.c): no copy */
+	char base[MAX_QPATH];
+	COM_StripExtension(name, base, sizeof base);
+	Q_strlwr(base);
+	for (char *c = base; *c; c++)
+		if (*c == '\\')
+			*c = '/';
+	const struct rp_bin_entry *be = rp_bin_find(&rp_bin_mdl, base);
+	md3Header_t *hd = be ? (md3Header_t *)(rp_bin_mdl.base + be->off) : NULL;
+	if (hd && be->size >= sizeof *hd && hd->ident == MD3_IDENT && hd->version == MD3_VERSION && hd->numFrames > 0 &&
+	    hd->numSurfaces <= MD3_MAX_SURFACES)
+		m->md3 = hd;
 	if (!m->md3)
 		return 0;
 	if (!sin_tab[64])
 		for (int i = 0; i < 256; i++)
 			sin_tab[i] = rp_sin1((float)i * (1.0f / 256.0f));
 	hd = m->md3;
+	/* its frames' bounds and its tags, which the game asks for every frame: in
+	   memory now */
+	rp_bin_touch((const u8 *)hd + hd->ofsFrames, (u32)hd->numFrames * sizeof(md3Frame_t));
+	rp_bin_touch((const u8 *)hd + hd->ofsTags, (u32)(hd->numFrames * hd->numTags) * sizeof(md3Tag_t));
 	m->surf = ri.Hunk_Alloc((hd->numSurfaces + 1) * (int)sizeof *m->surf, h_low);
 	const md3Surface_t *s = (const md3Surface_t *)((const u8 *)hd + hd->ofsSurfaces);
 	for (int i = 0; i < hd->numSurfaces; i++) {
@@ -473,24 +494,32 @@ int rp_model_tag(orientation_t *tag, qhandle_t h, int startFrame, int endFrame, 
 
 /* ---- skins ----------------------------------------------------------------------------------- */
 
+static qhandle_t skin_keep(const struct skin *sk) {
+	int bytes = (int)(sizeof *sk - (SKIN_SURFS - (sk->n > 0 ? sk->n : 1)) * sizeof sk->s[0]);
+	skins[nskins] = ri.Hunk_Alloc(bytes, h_low);
+	memcpy(skins[nskins], sk, bytes);
+	return nskins++;
+}
+
 /* a .skin file: lines of surface,shader; another name: a skin of that one
    shader for every surface */
 qhandle_t rp_skin_register(const char *name) {
 	if (!name || !name[0] || strlen(name) >= MAX_QPATH || !skins)
 		return 0;
 	for (int i = 1; i < nskins; i++)
-		if (!Q_stricmp(skins[i].name, name))
+		if (!Q_stricmp(skins[i]->name, name))
 			return i;
 	if (nskins >= RP_SKINS)
 		return 0;
-	struct skin *sk = &skins[nskins];
+	static struct skin tmp;
+	struct skin *sk = &tmp;
 	Q_strncpyz(sk->name, name, MAX_QPATH);
 	sk->n = 0;
 	const char *ext = strrchr(name, '.');
 	if (!ext || Q_stricmp(ext, ".skin")) {
 		sk->n = 1, sk->s[0].surf[0] = 0;
 		sk->s[0].shader = rp_shader_register(name, -1, 1);
-		return nskins++;
+		return skin_keep(sk);
 	}
 	char *text;
 	long size = ri.FS_ReadFile(name, (void **)&text);
@@ -522,13 +551,13 @@ qhandle_t rp_skin_register(const char *name) {
 		sk->n++;
 	}
 	ri.FS_FreeFile(text);
-	return nskins++;
+	return skin_keep(sk);
 }
 
 static qhandle_t skin_shader(qhandle_t h, const char *surf) {
 	if (h <= 0 || h >= nskins)
 		return 0;
-	const struct skin *sk = &skins[h];
+	const struct skin *sk = skins[h];
 	if (sk->n == 1 && !sk->s[0].surf[0])
 		return sk->s[0].shader;
 	for (int i = 0; i < sk->n; i++)
@@ -580,13 +609,43 @@ int rp_model_rect(const refEntity_t *e, float *rect) {
 static inline float dot3(const float *a, const float *b) { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; }
 
 int rp_scene_world; /* the scene being drawn has the map's world (rp_main.c) */
+static u16 cut_count[RP_MODELS];
+
+/* the models most often built on the EE, for the run's report */
+void rp_model_report(void) {
+	for (int n = 0; n < 4; n++) {
+		int best = 0;
+		for (int i = 1; i < nmodels; i++)
+			if (cut_count[i] > cut_count[best])
+				best = i;
+		if (!best || !cut_count[best])
+			break;
+		ri.Printf(PRINT_ALL, "ps2: renderer: built on the EE %u times: %s\n", cut_count[best], models[best].name);
+		cut_count[best] = 0;
+	}
+}
 
 /* the surface on VU1: a chain of its pieces */
 static const void *surf_chain(struct msurf *sf, int frame, int oldframe) {
-	const u8 *fn = frame_block(sf, frame), *fo = fn ? frame_block(sf, oldframe) : NULL;
-	if (!fo) {
-		rp_model_stats.paged++;
+	/* a frame that is not ready: the other one, or the block drawn last */
+	u16 last = sf->last;
+	const u8 *fn = frame_block(sf, frame), *fo = frame_block(sf, oldframe);
+	if (!fn)
+		fn = fo;
+	if (!fn && last && cache[last - 1].mem && cache[last - 1].sf == sf) {
+		fn = cache[last - 1].mem;
+		cache[last - 1].used = mx_frame_number();
+	}
+	if (!fn)
 		return 0;
+	if (!fo)
+		fo = fn;
+	/* the frame after is likely asked for next */
+	if (frame + 1 < sf->md3->numFrames && !sf->block[frame + 1]) {
+		const md3XyzNormal_t *x = (const md3XyzNormal_t *)((const u8 *)sf->md3 + sf->md3->ofsXyzNormals) +
+		                          (frame + 1) * sf->md3->numVerts;
+		if (!mx_mem_resident(x, (u32)sf->md3->numVerts * sizeof *x))
+			mx_mem_prefetch(x, (u32)sf->md3->numVerts * sizeof *x);
 	}
 	u64 *c0 = rp_dyn((u32)sf->npiece * 6 + 1), *c = c0;
 	if (!c)
@@ -698,9 +757,10 @@ void rp_model_draw(const refEntity_t *e, float t) {
 		ld[a] = dot3(dir, e->axis[a]) / sc;
 	}
 	const void *matrix = 0;
-	if (cut)
+	if (cut && !(e->renderfx & RF_DEPTHHACK)) {
 		rp_model_stats.cut++;
-	else
+		cut_count[e->hModel]++;
+	} else
 		rp_model_stats.drawn++;
 	for (int i = 0; i < h->numSurfaces; i++) {
 		struct msurf *sf = &m->surf[i];

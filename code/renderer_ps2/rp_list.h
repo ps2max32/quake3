@@ -33,6 +33,10 @@ struct rp_view {
 	float fr_len[5], gb_len[5]; /* the lengths of their normals */
 	u32 nstrip, strip_h, all;   /* beam racing's strips: how many, their lines, all of them as a mask */
 	u32 serial;                 /* another for every view set */
+	/* the lines between strips as planes through the eye, a line and a half
+	   below (lo) and above (hi) each: a point is below the line when n . p > d */
+	struct rp_plane sb_lo[15], sb_hi[15];
+	u8 sb_near[15][3], sb_far[15][3]; /* a box's numbers (mins at 0, maxs at 4) nearest and farthest along them */
 };
 extern struct rp_view rp_view;
 
@@ -49,8 +53,9 @@ static inline float rp_box_dist(const struct rp_plane *p, const float *mins, con
 		d += p->n[k] * ((p->n[k] >= 0) == far ? maxs[k] : mins[k]);
 	return d;
 }
-/* The strips a box (world coordinates) is drawn in, as a mask. */
-u32 rp_strip_mask(const float *mins, const float *maxs);
+/* The strips a box (world coordinates; mins, a number between, maxs: as a
+   map's group and chunk have them) is drawn in, as a mask. */
+u32 rp_strip_mask(const float *box);
 /* The strips of the picture's lines y0 .. y1. */
 u32 rp_strip_lines(float y0, float y1);
 

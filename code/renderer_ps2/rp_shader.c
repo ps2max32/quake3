@@ -4,8 +4,9 @@
    lit by the light grid on a model, blended with the vertex colours on the
    screen.
 
-   The images are the PS2 pak's (tools/ps2pak.py: <name>.p8, paletted, with
-   their MIPMAP levels); one without a .p8 is not drawn.
+   The images are the file of images' (rp_bin.c; tools/ps2bin.py makes it of
+   tools/ps2pak.py's pak: paletted, with their MIPMAP levels); one that is
+   not in it is not drawn.
 
    The GS blends (A - B) * C + D with C an alpha: the script's blends are
    mapped onto that, a product with the picture (blendFunc filter, the marks'
@@ -15,6 +16,7 @@
 #include <mx/mem.h>
 #include <mx/mx.h>
 
+#include "rp_bin.h"
 #include "rp_shader.h"
 
 #define LIGHTMAP_2D -4
@@ -22,78 +24,37 @@
 
 /* ---- images ------------------------------------------------------------------------------- */
 
-struct p8 {
-	char magic[4];
-	u16 width, height, pw, ph, w0, h0, levels, pad;
-	u32 format;
-};
-#define GL_PALETTE4_RGB8_OES 0x8B90
-#define GL_PALETTE4_RGBA8_OES 0x8B91
-#define GL_PALETTE8_RGB8_OES 0x8B95
-#define GL_PALETTE8_RGBA8_OES 0x8B96
-
 static unsigned img_missing, img_loaded, img_bytes;
 
-/* the image of a script's or the game's name (with or without extension) */
+/* the image of a script's or the game's name (with or without extension):
+   in the file of images (rp_bin.c), its texels where they lie */
 static struct rp_image *image_load(const char *name) {
-	char base[MAX_QPATH], file[MAX_QPATH];
+	char base[MAX_QPATH];
 	COM_StripExtension(name, base, sizeof base);
 	Q_strlwr(base);
+	for (char *c = base; *c; c++)
+		if (*c == '\\')
+			*c = '/';
 	struct rp_image *im = rp_image_find(base);
 	if (im)
 		return im;
-	Com_sprintf(file, sizeof file, "%s.p8", base);
-	void *buf;
-	long size = ri.FS_ReadFile(file, &buf);
-	if (size < (long)sizeof(struct p8) || !buf) {
-		if (buf)
-			ri.FS_FreeFile(buf);
+	const struct rp_bin_entry *e = rp_bin_find(&rp_bin_tex, base);
+	if (!e) {
 		if (img_missing++ < 40)
-			ri.Printf(PRINT_DEVELOPER, "ps2: renderer: no %s\n", file);
+			ri.Printf(PRINT_DEVELOPER, "ps2: renderer: no image %s\n", base);
 		return NULL;
 	}
-	const struct p8 *h = buf;
-	int t4 = h->format == GL_PALETTE4_RGB8_OES || h->format == GL_PALETTE4_RGBA8_OES;
-	int alpha = h->format == GL_PALETTE4_RGBA8_OES || h->format == GL_PALETTE8_RGBA8_OES;
-	u32 ncol = t4 ? 16 : 256, chans = alpha ? 4 : 3;
-	u32 w = h->w0, hh = h->h0;
-	/* the levels down to 8 texels a side (bilinear filters and IMAGE transfers
-	   want no less); an image smaller than that is not the GS's to draw */
-	u32 levels = 0;
-	while (levels < h->levels && levels < MX_TEX_LEVELS && (w >> levels) >= 8 && (hh >> levels) >= 8)
-		levels++;
-	if (memcmp(h->magic, "P8T1", 4) || !levels || (w & (w - 1)) || (hh & (hh - 1)) || w > 512 || hh > 512 ||
-	    !(im = rp_image_alloc(base, t4 ? MX_GS_PSM_T4 : MX_GS_PSM_T8, w, hh, levels, alpha))) {
-		ri.FS_FreeFile(buf);
-		img_missing++;
+	const u8 *level[MX_TEX_LEVELS];
+	u32 levels = e->levels > MX_TEX_LEVELS ? MX_TEX_LEVELS : e->levels;
+	for (u32 l = 0; l < levels; l++)
+		level[l] = rp_bin_tex.base + e->off_level[l];
+	im = rp_image_static(base, e->psm, e->w, e->h, levels, e->alpha, level, rp_bin_tex.base + e->off_clut);
+	if (!im)
 		return NULL;
-	}
-	im->pic_w = h->width, im->pic_h = h->height;
-	const u8 *pal = (const u8 *)(h + 1), *src = pal + ncol * chans;
-	u32 *clut = im->m.clut;
-	for (u32 i = 0; i < ncol; i++) {
-		const u8 *c = pal + i * chans;
-		u32 a = alpha ? ((u32)c[3] + 1) >> 1 : 0x80;
-		/* the GS's order of a 256-entry CLUT */
-		u32 k = t4 ? i : (i & 0x18) == 0x08 ? i + 8 : (i & 0x18) == 0x10 ? i - 8 : i;
-		clut[k] = (u32)c[0] | (u32)c[1] << 8 | (u32)c[2] << 16 | a << 24;
-	}
-	for (u32 l = 0; l < levels; l++) {
-		u32 n = t4 ? ((w >> l) * (hh >> l) + 1) / 2 : (w >> l) * (hh >> l);
-		u8 *dst = im->m.level[l];
-		if ((const u8 *)buf + size < src + n)
-			break;
-		if (t4) /* the first texel of a byte: the file's high four bits, the GS's low ones */
-			for (u32 i = 0; i < n; i++)
-				dst[i] = (u8)(src[i] << 4 | src[i] >> 4);
-		else
-			memcpy(dst, src, n);
-		src += n;
-		img_bytes += n;
-	}
-	rp_image_ready(im);
-	ri.FS_FreeFile(buf);
-	img_loaded++;
+	im->pic_w = e->pic_w, im->pic_h = e->pic_h;
+	img_loaded++, img_bytes += e->size;
+	/* in memory when the game starts, not when its first frame draws it */
+	rp_bin_touch(rp_bin_tex.base + e->off, e->size);
 	return im;
 }
 
@@ -433,7 +394,7 @@ static void parse_shader(char *body, struct rp_shader *sh) {
 /* ---- the shaders ---------------------------------------------------------------------------------- */
 
 #define MAX_SHADER 1024
-static struct rp_shader *shaders;
+static struct rp_shader **shaders; /* each its own piece of the hunk */
 static int nshader;
 static unsigned sh_script, sh_image, sh_none;
 
@@ -449,7 +410,12 @@ void rp_shaders_begin(void) {
 	scripts_load();
 }
 
-struct rp_shader *rp_shader_get(qhandle_t h) { return h > 0 && h < nshader ? &shaders[h] : NULL; }
+void rp_shader_report(void) {
+	ri.Printf(PRINT_ALL, "ps2: renderer: shaders: %u of scripts, %u images alone, %u without either; images: %u loaded "
+	          "(%u KB), %u not found\n", sh_script, sh_image, sh_none, img_loaded, img_bytes / 1024, img_missing);
+}
+
+struct rp_shader *rp_shader_get(qhandle_t h) { return h > 0 && h < nshader ? shaders[h] : NULL; }
 int rp_shader_count(void) { return nshader ? nshader - 1 : 0; }
 
 qhandle_t rp_shader_register(const char *name, int lightmap, int mip) {
@@ -458,11 +424,11 @@ qhandle_t rp_shader_register(const char *name, int lightmap, int mip) {
 		return 0;
 	COM_StripExtension(name, base, sizeof base);
 	for (int i = 1; i < nshader; i++)
-		if (!Q_stricmp(shaders[i].name, base))
-			return shaders[i].defaulted ? 0 : i;
+		if (!Q_stricmp(shaders[i]->name, base))
+			return shaders[i]->defaulted ? 0 : i;
 	if (nshader >= MAX_SHADER)
 		return 0;
-	struct rp_shader *sh = &shaders[nshader];
+	struct rp_shader *sh = shaders[nshader] = ri.Hunk_Alloc(sizeof *sh, h_low);
 	memset(sh, 0, sizeof *sh);
 	Q_strncpyz(sh->name, base, sizeof sh->name);
 	sh->lightmap = lightmap, sh->nomip = !mip;

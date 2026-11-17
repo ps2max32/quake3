@@ -1806,6 +1806,11 @@ Multiple files can be loaded in temporary memory.
 When the files-in-use count reaches zero, all temp memory will be deleted
 =================
 */
+#ifdef __PS2__
+#include <mx/mem.h>
+static struct mx_heap *ps2_temp;
+#endif
+
 void *Hunk_AllocateTempMemory( int size ) {
 	void		*buf;
 	hunkHeader_t	*hdr;
@@ -1818,6 +1823,22 @@ void *Hunk_AllocateTempMemory( int size ) {
 	{
 		return Z_Malloc(size);
 	}
+
+#ifdef __PS2__
+	// PS2: out of a heap of pages of its own. A block that is freed gives its
+	// whole pages back without a write to the swap file; the hunk's pages
+	// would stay as a load wrote them (megabytes of files read and freed)
+	// and be written out, one by one, when the game wants their memory.
+	if ( !ps2_temp ) {
+		ps2_temp = mx_heap_create( "q3.temp", MX_MEM_PAGED, 24u << 20 );
+	}
+	buf = ps2_temp ? mx_heap_alloc( ps2_temp, (u32)size + 16, 16 ) : NULL;
+	if ( !buf ) {
+		Com_Error( ERR_DROP, "Hunk_AllocateTempMemory: failed on %i", size );
+	}
+	(void)hdr;
+	return buf;
+#else
 
 	Hunk_SwapBanks();
 
@@ -1847,6 +1868,7 @@ void *Hunk_AllocateTempMemory( int size ) {
 
 	// don't bother clearing, because we are going to load a file over it
 	return buf;
+#endif
 }
 
 
@@ -1868,6 +1890,11 @@ void Hunk_FreeTempMemory( void *buf ) {
 		return;
 	}
 
+#ifdef __PS2__
+	(void)hdr;
+	mx_heap_free( ps2_temp, buf );
+	return;
+#endif
 
 	hdr = ( (hunkHeader_t *)buf ) - 1;
 	if ( hdr->magic != HUNK_MAGIC ) {
@@ -1904,6 +1931,11 @@ permanent allocs use this side.
 =================
 */
 void Hunk_ClearTempMemory( void ) {
+#ifdef __PS2__
+	if ( ps2_temp ) {
+		mx_heap_reset( ps2_temp );
+	}
+#endif
 	if ( s_hunkData != NULL ) {
 		hunk_temp->temp = hunk_temp->permanent;
 	}

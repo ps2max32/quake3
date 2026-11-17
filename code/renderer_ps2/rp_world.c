@@ -21,6 +21,7 @@
 #include <mx/vif.h>
 #include <mx/vm.h>
 
+#include "rp_bin.h"
 #include "rp_list.h"
 #include "rp_tex.h"
 #include "rp_world.h"
@@ -154,8 +155,40 @@ static void images_load(void) {
 	mx_printf("rp: %u textures (%u KB) and %u lightmap pages\n", h->ntex, bytes / 1024, h->nlightmap);
 }
 
+/* The world's groups in runs of one material and lightmap page, as they lie
+   in the file: a view walks these and looks at a group only when the
+   camera's cluster sees it. */
+#define MAX_GRUN 1024
+static struct {
+	u16 first, n; /* groups */
+	u8 blended;
+} grun[MAX_GRUN];
+static u32 ngrun;
+
+static void runs_make(void) {
+	const struct pm_model *world = &pm.model[0];
+	u32 g = world->first_group, end = world->first_group + world->ngroup;
+	ngrun = 0;
+	if (!pm.h->nmodel)
+		return;
+	while (g < end && ngrun < MAX_GRUN) {
+		const struct pm_chunk *c0 = &pm.chunk[pm.group[g].first_chunk];
+		u32 first = g;
+		for (; g < end && g - first < 65535; g++) {
+			const struct pm_chunk *c = &pm.chunk[pm.group[g].first_chunk];
+			if (c->mat != c0->mat || c->lightmap != c0->lightmap)
+				break;
+		}
+		grun[ngrun].first = (u16)first, grun[ngrun].n = (u16)(g - first);
+		grun[ngrun].blended = pm.mat[c0->mat].blend != BLEND_NONE;
+		ngrun++;
+	}
+}
+
 void rp_world_free(void) {
 	images_free();
+	if (pm.h)
+		mx_vm_unlock(pm.base + pm.h->off_data, pm.h->size - pm.h->off_data);
 	pm.h = 0;
 }
 
@@ -163,6 +196,11 @@ int rp_world_load(const void *p, u32 size) {
 	const struct pm_head *h = p;
 	rp_world_free();
 	if (size < sizeof *h || h->magic != PM_MAGIC || h->version != 4 || h->size > size || h->batch != Q3VU_BATCH)
+		return -1;
+	/* the chunks stay in memory: the DMAC reads them every frame. The textures
+	   are locked when they are sent to GS memory (rp_tex.c); the rest only
+	   the EE reads */
+	if (mx_vm_lock((const u8 *)p + h->off_data, h->size - h->off_data) < 0)
 		return -1;
 	pm.base = p, pm.h = h;
 	pm.mat = (const void *)(pm.base + h->off_mat);
@@ -174,7 +212,10 @@ int rp_world_load(const void *p, u32 size) {
 	pm.plane = (const void *)(pm.base + h->off_plane);
 	pm.node = (const void *)(pm.base + h->off_node);
 	pm.leaf = (const void *)(pm.base + h->off_leaf);
+	/* its tables and textures in memory now, not at the first frame's draws */
+	rp_bin_touch(pm.base, h->off_data);
 	images_load();
+	runs_make();
 	return 0;
 }
 
@@ -250,24 +291,18 @@ void rp_world_cull(struct rp_world_stats *st) {
 	u32 cluster = cam_cluster(org);
 	st->cluster = cluster;
 	const u8 *row = cluster < h->ncluster ? pm.vis + cluster * h->vis_bytes : 0;
-	const struct pm_model *world = &pm.model[0];
 	for (int pass = 0; pass < 2; pass++) {
-		u32 g = world->first_group, end = world->first_group + world->ngroup;
-		while (g < end) {
-			const struct pm_chunk *c0 = &pm.chunk[pm.group[g].first_chunk];
-			int blended = pm.mat[c0->mat].blend != BLEND_NONE;
+		for (u32 r = 0; r < ngrun; r++) {
+			if (grun[r].blended != pass)
+				continue;
 			u32 first = nitem;
-			/* the run of groups of one material and lightmap page */
-			for (; g < end; g++) {
-				const struct pm_group *gr = &pm.group[g];
-				if (pm.chunk[gr->first_chunk].mat != c0->mat || pm.chunk[gr->first_chunk].lightmap != c0->lightmap)
-					break;
-				if (blended != pass || nitem + gr->nchunk > MAX_ITEM)
-					continue;
+			for (u32 g = grun[r].first; g < (u32)grun[r].first + grun[r].n; g++) {
 				if (row && !(row[g >> 3] >> (g & 7) & 1))
 					continue;
-				if (!pass)
-					st->seen++;
+				const struct pm_group *gr = &pm.group[g];
+				if (nitem + gr->nchunk > MAX_ITEM)
+					continue;
+				st->seen++;
 				/* out: wholly outside a plane of the frustum; partly in view: its
 				   chunks are tested each; across: not wholly inside the planes the
 				   programs that test nothing need */
@@ -281,7 +316,7 @@ void rp_world_cull(struct rp_world_stats *st) {
 				for (int p = 0; p < 5 && !cross; p++)
 					cross = sel_near(&gb[p], gr->mins) < 0;
 				/* the strips the group touches: in one, its chunks are in that one */
-				u32 gmask = rp_strip_mask(gr->mins, gr->maxs);
+				u32 gmask = rp_strip_mask(gr->mins);
 				if (!gmask)
 					continue;
 				int one = !(gmask & (gmask - 1));
@@ -319,7 +354,7 @@ void rp_world_cull(struct rp_world_stats *st) {
 						for (int p = 0; p < 5 && !cut; p++)
 							cut = sel_near(&gb[p], ch->mins) < 0;
 					}
-					u32 mask = one || gr->nchunk == 1 ? gmask : rp_strip_mask(ch->mins, ch->maxs);
+					u32 mask = one || gr->nchunk == 1 ? gmask : rp_strip_mask(ch->mins);
 					if (!mask)
 						continue;
 					st->drawn++;

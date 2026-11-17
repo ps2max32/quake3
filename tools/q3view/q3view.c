@@ -135,8 +135,7 @@ int main(int argc, char **argv) {
 		first = 0;
 	if (count > ncam - first)
 		count = ncam - first;
-	/* the DMAC reads the map where it lies */
-	int lk = mx_vm_lock(map, msize);
+	int lk = 0;
 	/* a seventh argument: the strips' lines (192: three strips; 64: nine; 0: three strips
 	   without records of their own, the whole frame in every pass) */
 	u32 lines = argc > 7 ? num(argv[7]) : 192;

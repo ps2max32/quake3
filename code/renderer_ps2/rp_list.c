@@ -147,8 +147,23 @@ void rp_view_rect(const struct rp_cam *cam, float x, float y, float w, float h) 
 	v->nstrip = mx_hires_passes(), v->strip_h = mx_hires_strip_height();
 	if (!v->nstrip || !v->strip_h || !mx_hires_strip_record_bytes() || (rp_debug & 256))
 		v->nstrip = 0;
-	v->all = !v->nstrip ? 1 : v->nstrip >= 32 ? ~0u : (1u << v->nstrip) - 1;
+	if (v->nstrip > 16)
+		v->nstrip = 16;
+	v->all = !v->nstrip ? 1 : (1u << v->nstrip) - 1;
 	v->serial++;
+	/* a point d from the eye is below the picture's line B when (top - B) F . d
+	   - fy U . d > 0, top the line of the view's centre */
+	float top = v->cy - 2048.0f + (float)mx_gs.h * 0.5f;
+	for (u32 j = 1; j < v->nstrip; j++) {
+		float B = (float)(j * v->strip_h);
+		for (int k = 0; k < 3; k++) {
+			v->sb_lo[j - 1].n[k] = (top - (B + 1.5f)) * v->F[k] - v->fy * v->U[k];
+			v->sb_hi[j - 1].n[k] = (top - (B - 1.5f)) * v->F[k] - v->fy * v->U[k];
+			v->sb_near[j - 1][k] = (u8)(v->sb_lo[j - 1].n[k] >= 0 ? k : 4 + k);
+			v->sb_far[j - 1][k] = (u8)(v->sb_hi[j - 1].n[k] >= 0 ? 4 + k : k);
+		}
+		v->sb_lo[j - 1].d = dot3(v->sb_lo[j - 1].n, v->org), v->sb_hi[j - 1].d = dot3(v->sb_hi[j - 1].n, v->org);
+	}
 }
 
 void rp_view_set(const struct rp_cam *cam) {
@@ -173,21 +188,26 @@ u32 rp_strip_lines(float lo, float hi) {
 	return k1 < k0 ? 0 : ((2u << k1) - 1) & ~((1u << k0) - 1);
 }
 
-/* A box that reaches behind the near plane may be anywhere. */
-u32 rp_strip_mask(const float *mins, const float *maxs) {
+/* A box that reaches behind the near plane may be anywhere. Else: it is out
+   of the strips above a line when all of it is below that line (its corner
+   nearest along the line's plane is), and out of those below when all of it
+   is above. */
+u32 rp_strip_mask(const float *b) {
 	const struct rp_view *v = &rp_view;
 	if (!v->nstrip)
 		return 1;
-	if (rp_box_dist(&v->fr[0], mins, maxs, 0) < 0)
+	if (rp_box_dist(&v->fr[0], b, b + 4, 0) < 0)
 		return v->all;
-	float lo = 1e9f, hi = -1e9f, top = v->cy - 2048.0f + (float)mx_gs.h * 0.5f;
-	for (int c8 = 0; c8 < 8; c8++) {
-		float d[3] = {(c8 & 1 ? maxs[0] : mins[0]) - v->org[0], (c8 & 2 ? maxs[1] : mins[1]) - v->org[1],
-		              (c8 & 4 ? maxs[2] : mins[2]) - v->org[2]};
-		float y = top - v->fy * dot3(v->U, d) / dot3(v->F, d);
-		lo = y < lo ? y : lo, hi = y > hi ? y : hi;
+	u32 mask = v->all;
+	for (u32 j = 0; j + 1 < v->nstrip; j++) {
+		const struct rp_plane *lo = &v->sb_lo[j], *hi = &v->sb_hi[j];
+		const u8 *n = v->sb_near[j], *f = v->sb_far[j];
+		if (lo->n[0] * b[n[0]] + lo->n[1] * b[n[1]] + lo->n[2] * b[n[2]] > lo->d)
+			mask &= ~((2u << j) - 1); /* below the line: not in strips 0 .. j */
+		if (hi->n[0] * b[f[0]] + hi->n[1] * b[f[1]] + hi->n[2] * b[f[2]] < hi->d)
+			mask &= (2u << j) - 1;    /* above it: not in strips j + 1 .. */
 	}
-	return rp_strip_lines(lo, hi);
+	return mask;
 }
 
 /* ---- matrices ------------------------------------------------------------------------- */

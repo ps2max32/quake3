@@ -65,6 +65,8 @@ void rp_shaders_begin(void);
 qhandle_t rp_shader_register(const char *name, int lightmap, int mip);
 struct rp_shader *rp_shader_get(qhandle_t h);
 int rp_shader_count(void);
+/* For a run's report: what was registered. */
+void rp_shader_report(void);
 
 /* A stage at time t (seconds): the state to draw it with (its image placed
    in GS memory for this frame); 0: nothing to draw (no image, no room). */

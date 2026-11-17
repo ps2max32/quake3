@@ -31,6 +31,7 @@ struct rp_image {
 struct rp_tex_stats {
 	u32 uploads, upload_kb; /* textures sent to GS memory, since the start */
 	u32 full;               /* not placed: no room in GS memory */
+	u32 later;              /* not placed in a frame that had sent its share of images */
 };
 extern struct rp_tex_stats rp_tex_stats;
 
@@ -39,8 +40,10 @@ extern struct rp_tex_stats rp_tex_stats;
 void rp_tex_init(void);
 /* At the start of each frame. */
 void rp_tex_frame(void);
-/* An image whose texels lie where they are read from (a file locked in
-   memory): level[i] of w >> i x h >> i texels, clut as above. */
+/* An image whose texels lie where they are read from (a mapped file, the
+   CLUT and the levels one after the other: they are locked in memory while
+   they are sent to GS memory): level[i] of w >> i x h >> i texels, clut as
+   above. */
 struct rp_image *rp_image_static(const char *name, u32 psm, u32 w, u32 h, u32 levels, int alpha,
                                  const u8 *const *level, const void *clut);
 /* An image with memory of its own: fill im->m.level[i] and im->m.clut (in

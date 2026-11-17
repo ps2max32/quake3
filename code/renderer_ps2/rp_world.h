@@ -16,10 +16,11 @@ struct rp_world_stats {
 	u32 verts;                   /* strip vertices of the chunks drawn */
 };
 
-/* The map at p (the whole file, locked in memory: the DMAC reads its chunks
-   and textures from it), after rp_tex_init. Returns 0, or -1 if it is no map
-   of this version. rp_world_free: before the file goes (and no frame in
-   flight may still draw it). */
+/* The map at p (the whole file, mapped: its chunks are locked in memory
+   here, the DMAC reads them where they lie), after rp_tex_init. Returns 0,
+   or -1 if it is no map of this version or there is no memory to keep its
+   chunks in. rp_world_free: before the file goes (and no frame in flight
+   may still draw it). */
 int rp_world_load(const void *p, u32 size);
 void rp_world_free(void);
 /* In a frame, after rp_view_set: what of the world the view sees. Then its

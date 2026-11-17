@@ -15,6 +15,7 @@
 #include <mx/mem.h>
 #include <mx/mx.h>
 #include <mx/vif.h>
+#include <mx/vm.h>
 
 #include "rp_tex.h"
 
@@ -33,7 +34,15 @@ void rp_tex_init(void) {
 	}
 }
 
-void rp_tex_frame(void) { mx_vcache_frame(mx_frame_number(), mx_frame_done()); }
+/* images sent to GS memory in the frame being built: no more than fit its
+   record (about 60 quadwords of tags each) */
+#define FRAME_UPLOADS 32
+static u32 frame_uploads;
+
+void rp_tex_frame(void) {
+	mx_vcache_frame(mx_frame_number(), mx_frame_done());
+	frame_uploads = 0;
+}
 
 u64 rp_tex_key(void) { return ++serial; }
 
@@ -169,11 +178,32 @@ void rp_images_free(void) {
 
 /* an IMAGE transfer into GS memory, its data read where it lies; works in
    the frame's stream (VIF1) and in the once record (the GIF alone: it does
-   not read a tag's VIF codes) */
-static void image_xfer(u32 dbp, u32 dbw, u32 psm, u32 w, u32 h, u32 bytes, const void *data) {
+   not read a tag's VIF codes). file: the data is a mapped file's: each part
+   of it in one page of memory is locked there until the frame is done (a
+   part a REF: pages need not lie one after the other). 0, or -1 when a part
+   could not be locked (nothing is sent). */
+static int image_xfer(u32 dbp, u32 dbw, u32 psm, u32 w, u32 h, u32 bytes, const void *data, int file) {
 	u32 qwc = (bytes + 15) / 16;
-	u64 *c = mx_frame_reserve(6 + 3 * (qwc / 0x7FFF + 1));
 	const u8 *d = data;
+	if (file && mx_is_vm(d)) {
+		for (u32 at = 0; at < qwc * 16;) {
+			u32 n = MX_VM_PAGE - (u32)((uintptr_t)(d + at) & (MX_VM_PAGE - 1));
+			n = n > qwc * 16 - at ? qwc * 16 - at : n;
+			if (mx_vm_lock(d + at, n) < 0) {
+				for (u32 un = 0; un < at;) {
+					u32 k = MX_VM_PAGE - (u32)((uintptr_t)(d + un) & (MX_VM_PAGE - 1));
+					k = k > at - un ? at - un : k;
+					mx_vm_unlock(d + un, k);
+					un += k;
+				}
+				return -1;
+			}
+			mx_frame_unlock(d + at, n);
+			at += n;
+		}
+	} else
+		file = 0;
+	u64 *c = mx_frame_reserve(6 + 3 * (qwc / 0x7FFF + 1) + (file ? 2 * (qwc * 16 / MX_VM_PAGE + 2) : 0));
 	c = mx_e_cnt(c, 5, mx_vif_nop(), mx_vif_direct(5));
 	c = mx_e_ad_tag(c, 4, 0);
 	c = mx_e_ad(c, MX_GS_REG_BITBLTBUF, mx_gs_bitbltbuf(0, 0, 0, dbp, dbw, psm));
@@ -184,12 +214,21 @@ static void image_xfer(u32 dbp, u32 dbw, u32 psm, u32 w, u32 h, u32 bytes, const
 		u32 n = qwc > 0x7FFF ? 0x7FFF : qwc;
 		c = mx_e_cnt(c, 1, mx_vif_nop(), mx_vif_direct(1));
 		c = mx_e_giftag(c, n, n == qwc, -1, MX_GIF_FLG_IMAGE, 0, 0);
-		c = mx_e_ref(c, d, n, mx_vif_nop(), mx_vif_direct(n));
-		d += n * 16;
+		/* the data: in one piece, or a REF a page */
+		for (u32 left = n; left;) {
+			u32 k = left;
+			if (file) {
+				u32 room = (MX_VM_PAGE - (u32)((uintptr_t)d & (MX_VM_PAGE - 1))) / 16;
+				k = room < left ? room : left;
+			}
+			c = mx_e_ref(c, d, k, mx_vif_nop(), mx_vif_direct(k));
+			d += k * 16, left -= k;
+		}
 		qwc -= n;
 	}
 	mx_frame_commit(c);
 	rp_tex_stats.upload_kb += (bytes + 1023) / 1024;
+	return 0;
 }
 
 static void texflush(void) {
@@ -204,9 +243,19 @@ const struct mx_tex *rp_image_place(struct rp_image *im) {
 	u32 frame = mx_frame_number();
 	if (im->frame == frame + 1)
 		return im->ok ? &im->t : 0;
-	im->frame = frame + 1, im->ok = 0;
 	u32 tw = log2u(im->w), th = log2u(im->h), from = 0;
 	u32 cpsm = im->clut ? MX_GS_PSM_CT32 : MX_VCACHE_NO_CLUT;
+	/* not there, and the frame has sent its share: not this frame (asked again
+	   by the next draw with it) */
+	if (frame_uploads >= FRAME_UPLOADS) {
+		struct mx_tex t;
+		if (!mx_vcache_peek(mx_vcache_tex_key(im->key, 0), &t) &&
+		    !(im->split && im->m.tail && mx_vcache_peek(mx_vcache_tex_key(im->key, im->m.tail), &t))) {
+			rp_tex_stats.later++;
+			return 0;
+		}
+	}
+	im->frame = frame + 1, im->ok = 0;
 	int r = im->split ? mx_vcache_tex_mem(im->key, &im->m, im->psm, tw, th, cpsm, 0, 0, &im->t, &from)
 	                  : mx_vcache_tex(im->key, im->psm, tw, th, im->levels, cpsm, &im->t);
 	if (r == MX_VCACHE_FULL) {
@@ -216,19 +265,27 @@ const struct mx_tex *rp_image_place(struct rp_image *im) {
 	im->from = (u8)from, im->ok = 1;
 	if (r == MX_VCACHE_HIT)
 		return &im->t;
-	rp_tex_stats.uploads++;
+	rp_tex_stats.uploads++, frame_uploads++;
 	mx_hires_once(1);
+	int bad = 0;
 	for (u32 l = 0; l < (u32)im->levels - from; l++) {
 		u32 w = im->w >> (l + from), h = im->h >> (l + from);
 		w = w ? w : 1, h = h ? h : 1;
-		image_xfer(im->t.tbp[l], im->t.tbw[l], im->psm, w, h, im->psm == MX_GS_PSM_T4 ? (w * h + 1) / 2 : w * h,
-		           im->level[l + from]);
+		bad |= image_xfer(im->t.tbp[l], im->t.tbw[l], im->psm, w, h, im->psm == MX_GS_PSM_T4 ? (w * h + 1) / 2 : w * h,
+		                  im->level[l + from], !im->split);
 	}
 	if (im->clut)
-		image_xfer(im->t.cbp, 1, MX_GS_PSM_CT32, im->psm == MX_GS_PSM_T4 ? 8 : 16, im->psm == MX_GS_PSM_T4 ? 2 : 16,
-		           im->psm == MX_GS_PSM_T4 ? 64 : 1024, im->clut);
+		bad |= image_xfer(im->t.cbp, 1, MX_GS_PSM_CT32, im->psm == MX_GS_PSM_T4 ? 8 : 16, im->psm == MX_GS_PSM_T4 ? 2 : 16,
+		                  im->psm == MX_GS_PSM_T4 ? 64 : 1024, im->clut, !im->split);
 	texflush();
 	mx_hires_once(0);
+	if (bad) {
+		/* a part of it is not in GS memory: its place is given up, the draw goes without */
+		mx_vcache_drop(mx_vcache_tex_key(im->key, from));
+		im->ok = 0;
+		rp_tex_stats.full++;
+		return 0;
+	}
 	return &im->t;
 }
 
@@ -239,7 +296,7 @@ u32 rp_clut_place(u64 key, const void *clut, int small) {
 		return 0;
 	if (r == MX_VCACHE_MISS) {
 		mx_hires_once(1);
-		image_xfer(bp, 1, MX_GS_PSM_CT32, w, h, w * h * 4, clut);
+		image_xfer(bp, 1, MX_GS_PSM_CT32, w, h, w * h * 4, clut, 0);
 		texflush();
 		mx_hires_once(0);
 	}

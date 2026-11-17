@@ -38,11 +38,14 @@ int rp_model_rect(const refEntity_t *e, float *rect);
 /* the scene being drawn has the map's world: the models stand in its light */
 extern int rp_scene_world;
 
+/* For a run's report: the models most often built on the EE. */
+void rp_model_report(void);
+
 struct rp_model_stats {
 	u32 drawn, culled, cut;   /* entities: on VU1, out of view, across a plane (built on the EE) */
 	u32 surfs, pieces, verts; /* of those drawn on VU1 */
 	u32 nostage, stages;      /* surfaces without a stage to draw; stages after the first, not drawn yet */
-	u32 paged;                /* surfaces left out of a frame: no memory for their frames */
+	u32 paged;                /* frames of surfaces not ready when a draw wanted them (their vertices not in memory, or no room) */
 	u32 made, evicted;        /* frames of surfaces made ready; of them given up for others */
 	u32 kb;                   /* memory of the models' vertices */
 };

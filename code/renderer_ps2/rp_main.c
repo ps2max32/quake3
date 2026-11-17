@@ -28,6 +28,7 @@
 #include <mx/mx.h>
 #include <mx/vm.h>
 
+#include "rp_bin.h"
 #include "rp_list.h"
 #include "rp_model.h"
 #include "rp_poly.h"
@@ -41,9 +42,11 @@ static cvar_t *r_ps2draw, *r_ps2shot;
 /* ---- the screen ------------------------------------------------------------------- */
 
 /* beam racing's records, read by the DMAC: four frames, and four of each of
-   the three strips */
-static u8 rec[4 * 128 * 1024] MX_CORE_BSS MX_ALIGNED(64);
-static u8 srec[4 * 3 * 96 * 1024] MX_CORE_BSS MX_ALIGNED(64);
+   the three strips. They hold CALLs (the draws lie elsewhere: rp_list.c): a
+   frame of the game is a few KB a strip, and its texture uploads (at most
+   rp_tex.c's a frame) fit the frame's own record. */
+static u8 rec[4 * 64 * 1024] MX_CORE_BSS MX_ALIGNED(64);
+static u8 srec[4 * 3 * 32 * 1024] MX_CORE_BSS MX_ALIGNED(64);
 static int screen_on, in_frame;
 /* cycles a frame waited for a free record: not the frame's work (sys_ps2.c) */
 unsigned ps2_ren_wait;
@@ -59,6 +62,21 @@ static void screen_init(void) {
 	          mx_hires_strip_height(), sbytes / 1024);
 	rp_tex_init();
 	rp_list_init();
+	/* the images and the models: two files beside the paks, mapped */
+	char path[MAX_OSPATH];
+	const char *base = ri.Cvar_Get("fs_basepath", "", 0)->string;
+	if (base[0] == '.' && base[1] == '/')
+		base += 2;
+	else if (base[0] == '.' && !base[1])
+		base = "";
+	Com_sprintf(path, sizeof path, "%s%s%s/ps2tex.bin", base, base[0] ? "/" : "", BASEGAME);
+	if (rp_bin_open(&rp_bin_tex, path, 1) < 0)
+		ri.Error(ERR_FATAL, "ps2: no %s (tools/ps2bin.py makes it of ps2tex.pk3)", path);
+	Com_sprintf(path, sizeof path, "%s%s%s/ps2mdl.bin", base, base[0] ? "/" : "", BASEGAME);
+	if (rp_bin_open(&rp_bin_mdl, path, 2) < 0)
+		ri.Error(ERR_FATAL, "ps2: no %s (tools/ps2bin.py makes it of the paks)", path);
+	ri.Printf(PRINT_ALL, "ps2: renderer: %u images (%u MB) and %u models (%u MB) mapped\n", rp_bin_tex.count,
+	          rp_bin_tex.size >> 20, rp_bin_mdl.count, rp_bin_mdl.size >> 20);
 	screen_on = 1;
 }
 
@@ -87,7 +105,6 @@ static void world_free(void) {
 	if (world_map) {
 		frames_flush();
 		rp_world_free();
-		mx_vm_unlock(world_map, world_size);
 		mx_vm_unmap_file(world_map);
 	}
 	world_map = NULL, world_ok = 0;
@@ -448,6 +465,7 @@ static void RP_EndFrame(int *frontEndMsec, int *backEndMsec) {
 				mx_sleep_us(2000);
 			int r = mx_hires_save_tga("quake3.tga");
 			ri.Printf(PRINT_ALL, "ps2: renderer: the picture of frame %d: quake3.tga (%d)\n", r_ps2shot->integer, r);
+			ri.Cmd_ExecuteText(EXEC_NOW, "meminfo\n");
 			ri.Cmd_ExecuteText(EXEC_APPEND, "quit\n");
 		}
 	}
@@ -499,10 +517,14 @@ void ps2_ren_report(void) {
 	           rp_shader_count());
 	Com_Printf("ps2: renderer: models, a frame: %u on VU1 (%u surfaces, %u pieces, %u vertices), %u across a plane "
 	           "(on the EE), %u out of view; in all %u surfaces without a stage, %u later stages not drawn, %u "
-	           "surfaces left out (no memory for their frames)\n",
+	           "times a surface's frame was not ready\n",
 	           rp_model_stats.drawn / n, rp_model_stats.surfs / n, rp_model_stats.pieces / n, rp_model_stats.verts / n,
 	           rp_model_stats.cut / n, rp_model_stats.culled / n, rp_model_stats.nostage, rp_model_stats.stages,
 	           rp_model_stats.paged);
+	rp_model_report();
+	rp_shader_report();
+	Com_Printf("ps2: renderer: the hunk has %d KB left of %d MB\n", Hunk_MemoryRemaining() / 1024,
+	           Cvar_VariableIntegerValue("com_hunkMegs"));
 	Com_Printf("ps2: renderer: polygons: %u drawn (%u across a plane), %u out of view; %u pictures; %u stages without "
 	           "an image in GS memory\n", rp_poly_stats.polys, rp_poly_stats.cut, rp_poly_stats.culled,
 	           rp_poly_stats.pics, st_nostage);
@@ -514,10 +536,10 @@ void ps2_ren_report(void) {
 	if (st_frames)
 		Com_Printf("ps2: renderer: a frame: %u runs, %u draws; over the strips %u vertices in %u batches, %u set-ups, %u "
 		           "quadwords of records, %u of chains; %u draws left out (no memory); textures sent %u (%u KB), %u "
-		           "found no room\n", rp_list_stats.runs / st_frames, rp_list_stats.draws / st_frames,
+		           "found no room, %u waited a frame\n", rp_list_stats.runs / st_frames, rp_list_stats.draws / st_frames,
 		           rp_list_stats.sent / st_frames, rp_list_stats.batches / st_frames, rp_list_stats.setups / st_frames,
 		           rp_list_stats.qw / st_frames, rp_list_stats.dyn_qw / st_frames, rp_list_stats.lost,
-		           rp_tex_stats.uploads, rp_tex_stats.upload_kb, rp_tex_stats.full);
+		           rp_tex_stats.uploads, rp_tex_stats.upload_kb, rp_tex_stats.full, rp_tex_stats.later);
 	if (ncams) {
 		FILE *f = fopen("quake3.cam", "wb");
 		int head[4] = {0x4d414351 /* "QCAM" */, 1, ncams, sizeof *cams};
@@ -587,10 +609,10 @@ static void RP_LoadWorld(const char *name) {
 		ri.Printf(PRINT_WARNING, "ps2: renderer: no %s (tools/ps2map.py makes it): the world is not drawn\n", path);
 		return;
 	}
-	int lk = mx_vm_lock(world_map, world_size);
-	if (lk < 0 || rp_world_load(world_map, world_size) < 0) {
-		ri.Printf(PRINT_WARNING, "ps2: renderer: %s: %s\n", path, lk < 0 ? "no memory to keep it in" : "not a map of this version");
-		world_free();
+	if (rp_world_load(world_map, world_size) < 0) {
+		ri.Printf(PRINT_WARNING, "ps2: renderer: %s is not a map of this version (or no memory for it)\n", path);
+		mx_vm_unmap_file(world_map);
+		world_map = NULL;
 		return;
 	}
 	world_ok = 1;
