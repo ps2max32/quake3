@@ -7,20 +7,20 @@ extern const unsigned char q3vu_vu[], q3vu_vu_end[];
 
 #define Q3M_SETUP 0
 #define Q3M_BATCH 15
-#define Q3MC_SETUP 114
-#define Q3MC_BATCH 131
-#define Q3W2_SETUP 264
-#define Q3W2_BATCH 276
-#define Q3W1_SETUP 338
-#define Q3W1_BATCH 349
-#define Q3W2C_SETUP 400
-#define Q3W2C_BATCH 412
-#define Q3W1C_SETUP 468
-#define Q3W1C_BATCH 479
-#define Q3W1T_SETUP 530
-#define Q3W1T_BATCH 546
-#define Q3W1TC_SETUP 606
-#define Q3W1TC_BATCH 622
+#define Q3MC_SETUP 115
+#define Q3MC_BATCH 132
+#define Q3W2_SETUP 254
+#define Q3W2_BATCH 266
+#define Q3W1_SETUP 328
+#define Q3W1_BATCH 339
+#define Q3W2C_SETUP 390
+#define Q3W2C_BATCH 402
+#define Q3W1C_SETUP 458
+#define Q3W1C_BATCH 469
+#define Q3W1T_SETUP 520
+#define Q3W1T_BATCH 536
+#define Q3W1TC_SETUP 596
+#define Q3W1TC_BATCH 612
 
 #define Q3VU_CTX_QW 72 /* the context, at 0 */
 #define Q3VU_CTX_C0 0
@@ -36,6 +36,7 @@ extern const unsigned char q3vu_vu[], q3vu_vu_end[];
 #define Q3VU_CTX_NOP 10
 #define Q3VU_CTX_SS 69
 #define Q3VU_CTX_SN 70
+#define Q3VU_CTX_CULL 71
 #define Q3VU_ROOM_PL 12
 #define Q3VU_ROOM_CO 18
 #define Q3VU_ROOM_WA 30
@@ -56,9 +57,9 @@ extern const unsigned char q3vu_vu[], q3vu_vu_end[];
 #define Q3VU_T_CADD 34 /* q3w1t's */
 #define Q3VU_M_OUT 18
 #define Q3VU_M_IDX 306
-#define Q3VU_M_VERT 346
+#define Q3VU_M_VERT 352
 #define Q3VU_M_VERTS 28 /* a piece's vertices at most */
-#define Q3VU_M_ENTRIES 96 /* and its entries */
+#define Q3VU_M_TRIS 32 /* and its triangles */
 #define Q3VU_BASE 72
 #define Q3VU_BUF 476
 #define Q3VU_A 18

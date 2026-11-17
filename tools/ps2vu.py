@@ -59,25 +59,29 @@ Programs:
          frame's position, the old frame's: M_VERT + 4 i), blended, lit
          (ambient + directed * N.L, the directed light's colour times its
          direction as three uniforms) and written in place as ST, RGBAQ,
-         XYZ2; then the piece's triangles as a strip's entries (M_IDX: the
-         number of quadwords and of triangles, then four entries a quadword:
-         the vertex's offset 4 i, bit 15 ADC) gathered into the packet at
-         M_OUT. Nothing is cut: for models inside the guard band.
+         XYZ2; then the piece's triangles (M_IDX: their number, then a
+         quadword each: its vertices' offsets 4 i) gathered into the packet
+         at M_OUT, three vertices each (the first two ADC), but those that
+         face away: the sign of the screen's cross product of its edges
+         against the context's CULL (x: 0x20 leaves out those whose product
+         is negative, 0 the others, 0x40 none). Nothing is cut: for models
+         inside the guard band.
     w1t, w1tc   one pass of a shader's stage: w1 and w1c with the texture
          coordinates through a matrix (TM0, TM1, TM2: tcMod) and the colour
          as the vertex's times CMUL plus CADD (a stage's own colour: CMUL 0)
     mc   the same for a model across the near plane or the guard band (the
          view weapon always is): each vertex is tested as w2c's and its
-         position before the divide kept in its fourth quadword; the gather
-         leaves a triangle with a vertex outside out of the packet (ADC), and
-         after the packet is kicked q3mclip cuts those.
+         position before the divide kept in its fourth quadword; a triangle
+         with a vertex outside is not culled but put in the packet with ADC
+         on all three (the vertices' offsets in their XYZ2's w), and after
+         the packet is kicked q3mclip cuts those.
 
 q3clip (the end of this file): a triangle left out is found by its vertex's w
 (ADC set, tools/ps2map.py's bit 13 clear). Its three positions before the
 divide are in the second pass's RGBAQ slots; the texture coordinates come back
-from ST * w, the colours are still integers. q3mclip, the models': the third
-entry of each of the piece's triangles in the packet (its w: the vertex's
-offset, bit 15 set when it was left out), the corners where the loop left
+from ST * w, the colours are still integers. q3mclip, the models': each triangle
+in the packet (M_IDX's y: its vertices) whose third vertex has ADC (w bit
+15; the three w's: the vertices' offsets), the corners where the loop left
 them. Both hand the corners to the same two routines: q3cut_test (is any of
 it inside) and q3cut_poly. The polygon is cut in the
 triangle's own coordinates: a vertex is three weights (1 quadword), a plane
@@ -109,12 +113,12 @@ BUF_QW = 476
 # lightmap ST: three each), WA and WB the polygon (9 vertices), R0 and R1 a triangle's
 # packets, SAVE integers
 CTX = {"C0": 0, "C1": 1, "C2": 2, "C3": 3, "CS": 4, "CN": 5, "TA": 6, "TB": 7, "TA3": 8, "TB3": 9, "NOP": 10,
-       "SS": 69, "SN": 70}
+       "SS": 69, "SN": 70, "CULL": 71}
 ROOM = {"PL": 12, "CO": 18, "WA": 30, "WB": 39, "R0": 48, "R1": 58, "SAVE": 68}
 # q3m's buffer: the packet (its tag before it), the entries, the vertices; its uniforms where
 # its set-up finds them (q3clip's polygon room: free while no triangle is cut)
-M_OUT, M_IDX, M_VERT = 18, 306, 346
-M_VERTS, M_ENTRIES = 28, 96
+M_OUT, M_IDX, M_VERT = 18, 306, 352
+M_VERTS, M_TRIS = 28, 32
 MCTX = {"LERP": 30, "AMB": 31, "DX": 32, "DY": 33, "DZ": 34, "C255": 35}
 # a stage's, in the same room: the texture coordinates' matrix by columns (s' = TM0.x s + TM1.x
 # t + TM2.x, t' the y's; TM2.z 1), the colour's factor and what is added (0 .. 255)
@@ -435,12 +439,14 @@ def program_m(vs, kern, s, regs, words):
         tag = [f for f in free if int(f[2:]) not in CLIP_VF][0]
         free.remove(tag)
         ga, gb, gc = free[0], free[1], free[2]
+        assert len(free) >= 8, f"{name}: {len(free)} free VF registers for the gather"
         # nor the uniforms, but those it can load again (the context's first quadwords;
         # the models' own lie in q3clip's room)
         again = [(g, qw) for g, qw in kern.uniforms if int(regs[g][2:]) in CLIP_VF]
         assert all(qw < ROOM["PL"] for _, qw in again), f"{name}: a model uniform in q3clip's registers"
     else:
-        tag, ga, gb, gc = free[0], free[1], free[2], free[3]
+        tag = free.pop(0)
+        ga, gb, gc = free[0], free[1], free[2]
     slop = (s.stages - 1) * kern.u * kern.stride
     out = []
 
@@ -466,60 +472,83 @@ def program_m(vs, kern, s, regs, words):
     out.append(("label", name + "_loop"))
     for up, low in words:
         out.append((up, low))
-    # the entries: vi13 their quadwords, vi04 the next, vi05 their end, vi06 the packet's
-    # next vertex, vi07 the vertices, vi11 an entry's offset bits
+    # the triangles: vi04 the next, vi05 their end, vi06 the packet's next vertex, vi07 the
+    # vertices, vi11 0x8000 (ADC), vi12 the packet's vertices, vi13 0x20 (the MAC flag's sign
+    # of z), vi15 the cull (CTX CULL); clip: vi09 the three vertices' tests (0x7fff inside,
+    # 0x8000 outside) together
+    pa, pb, pc_ = free[3], free[4], free[5]
+    ea, eb = free[6], free[7]
     lo(f"ilw.x vi13, {M_IDX}(vi08)")
     lo(f"iaddiu vi04, vi08, {M_IDX + 1}")
     lo(f"iaddiu vi06, vi08, {M_OUT}")
     lo(f"iaddiu vi07, vi08, {M_VERT}")
     lo("iaddiu vi11, vi00, 0x7fff")
-    if clip:
-        # vi11 0x8000: an entry with it set, plus the vertices' base less it, is the
-        # vertex's place; and it is the bit of the vertices' tests
-        lo("iaddiu vi11, vi11, 1")
-        lo("iadd vi07, vi07, vi11")
+    lo("iaddiu vi11, vi11, 1")
     lo("iadd vi05, vi13, vi04")
-    lo("iadd vi12, vi13, vi13")
-    lo("iadd vi12, vi12, vi12")       # the packet's vertices
-    lo("iaddiu vi12, vi12, 0x7fff")
-    lo("iaddiu vi12, vi12, 1")        # with EOP
-    if clip:
-        lo("iaddiu vi14, vi00, 0")
-        lo("iaddiu vi15, vi00, 0")
+    lo("iaddiu vi12, vi00, 0")
+    lo(f"ilw.x vi15, {CTX['CULL']}(vi00)")
+    lo("iaddiu vi13, vi00, 0x20")
     out.append(("label", name + "_gather"))
-    ent = ("vi01", "vi02", "vi03", "vi09")
-    for k, f in enumerate("xyzw"):
+    ent = ("vi01", "vi02", "vi03")
+    for k, f in enumerate("xyz"):
         lo(f"ilw.{f} {ent[k]}, 0(vi04)")
-    for k, e in enumerate(ent):
-        lo(f"{'ior' if clip else 'iand'} vi10, {e}, vi11")
-        lo("iadd vi10, vi10, vi07")
+    if clip:
+        lo("iaddiu vi09, vi00, 0")
+    for k, (e, pk) in enumerate(zip(ent, (pa, pb, pc_))):
+        lo(f"iadd vi10, {e}, vi07")
         lo(f"lq.xyzw {ga}, 0(vi10)")
         lo(f"lq.xyzw {gb}, 1(vi10)")
-        lo(f"lq.xyz {gc}, 2(vi10)")
+        lo(f"lq.xyzw {pk}, 2(vi10)")
         if clip:
-            # the vertex's own test (0x7fff inside, 0x8000 outside), and those of the two
-            # entries before it (vi14, vi15): one of a triangle's three outside leaves
-            # it out; the entry's offset stays in the packet for q3mclip
-            lo("ilw.w vi13, 2(vi10)")
-        else:
-            lo("nop")
+            lo("ilw.w vi14, 2(vi10)")
         lo(f"sq.xyzw {ga}, {3 * k}(vi06)")
         lo(f"sq.xyzw {gb}, {3 * k + 1}(vi06)")
-        lo(f"sq.xyz {gc}, {3 * k + 2}(vi06)")
+        lo(f"sq.xyzw {pk}, {3 * k + 2}(vi06)")
         if clip:
-            lo("ior vi10, vi13, vi14")
-            lo("ior vi10, vi10, vi15")
-            lo("iand vi10, vi10, vi11")
-            lo(f"ior vi10, vi10, {e}")
+            # the vertex's offset for q3mclip; ADC on the first two
+            lo("ior vi09, vi09, vi14")
+            if k < 2:
+                lo(f"ior vi10, {e}, vi11")
+            else:
+                lo("iand vi10, vi09, vi11")
+                lo(f"ior vi10, vi10, {e}")
             lo(f"isw.w vi10, {3 * k + 2}(vi06)")
-            lo("iaddiu vi15, vi14, 0")
-            lo("iaddiu vi14, vi13, 0")
         else:
-            lo(f"isw.w {e}, {3 * k + 2}(vi06)")
+            lo(f"isw.w {'vi11' if k < 2 else 'vi00'}, {3 * k + 2}(vi06)")
+    if clip:
+        # a vertex outside: kept for q3mclip, not culled (its positions are not the screen's)
+        lo("iand vi09, vi09, vi11")
+        lo("nop")
+        lo(f"ibne vi09, vi00, {name}_keep")
+        lo("nop")
+    # the screen's cross product of the edges a -> b, a -> c: z = ea.x eb.y - eb.x ea.y
+    out.append((f"itof4.xy {pa}, {pa}", "nop"))
+    out.append((f"itof4.xy {pb}, {pb}", "nop"))
+    out.append((f"itof4.xy {pc_}, {pc_}", "nop"))
+    out.append((f"sub.xy {ea}, {pb}, {pa}", "nop"))
+    out.append((f"sub.xy {eb}, {pc_}, {pa}", "nop"))
+    out.append((f"opmula.xyz ACC, {ea}, {eb}", "nop"))
+    out.append((f"opmsub.xyz {ea}, {eb}, {ea}", "nop"))
+    lo("nop")
+    lo("nop")
+    lo("nop")
+    lo("fmand vi10, vi13")
+    lo("nop")
+    lo(f"ibeq vi10, vi15, {name}_drop")
+    lo("nop")
+    out.append(("label", name + "_keep"))
+    lo("iaddiu vi06, vi06, 9")
+    lo("iaddiu vi12, vi12, 3")
+    out.append(("label", name + "_drop"))
     lo("iaddiu vi04, vi04, 1")
-    lo("iaddiu vi06, vi06, 12")
+    lo("nop")
     lo(f"ibne vi04, vi05, {name}_gather")
     lo("nop")
+    if clip:
+        # the packet's vertices, for q3mclip
+        lo(f"isw.y vi12, {M_IDX}(vi08)")
+    lo("iaddiu vi12, vi12, 0x7fff")
+    lo("iaddiu vi12, vi12, 1")        # with EOP
     lo(f"mfir.x {tag}, vi12")
     lo(f"iaddiu vi07, vi08, {M_OUT - 1}")
     lo("nop")
@@ -614,6 +643,7 @@ def clipper():
     L(f"isw.x vi15, {SAVE}(vi00)", f"isw.y vi00, {SAVE}(vi00)", f"lq.xyzw vf01, {CTX['TA3']}(vi00)", "xtop vi08", "nop",
       f"ilw.y vi12, {M_IDX}(vi08)", f"sq.xyzw vf01, {R0}(vi00)", f"iaddiu vi11, vi08, {M_OUT + 6}", "nop",
       "iblez vi12, q3clip_ret", "nop")
+    # vi12: the packet's vertices, three a triangle
     lab("q3mclip_scan")
     L("ilw.w vi05, 2(vi11)", "ilw.w vi02, -4(vi11)", "ilw.w vi03, -1(vi11)", "iaddiu vi01, vi00, 0x7fff", "xtop vi07",
       "ibgez vi05, q3mclip_next", f"iaddiu vi07, vi07, {M_VERT}")
@@ -624,7 +654,7 @@ def clipper():
     attributes([(["0(vi02)", "0(vi03)", "0(vi04)"], CSA)], ["1(vi02)", "1(vi03)", "1(vi04)"])
     L("bal vi15, q3cut_poly", "nop")
     lab("q3mclip_next")
-    L("iaddiu vi11, vi11, 9", "isubiu vi12, vi12, 1", "nop", "ibne vi12, vi00, q3mclip_scan", "nop")
+    L("iaddiu vi11, vi11, 9", "isubiu vi12, vi12, 3", "nop", "ibgtz vi12, q3mclip_scan", "nop")
     L("b q3clip_ret", "nop")
 
     # q3cut_test: the corners' positions before the divide in vf09, vf12, vf13; vi15 the
@@ -761,7 +791,7 @@ def main():
         if kern.name in ("q3m", "q3mc"):
             prog, mpad, mslop = program_m(vs, kern, s, regs, words)
             # its stray stores stay between the entries and the buffer's end
-            assert M_OUT + 3 * M_ENTRIES <= M_IDX and M_IDX + 1 + M_ENTRIES // 4 + mpad <= M_VERT
+            assert M_OUT + 9 * M_TRIS <= M_IDX and M_IDX + 1 + M_TRIS + mpad <= M_VERT
             assert M_VERT + 4 * M_VERTS + mslop <= BUF_QW, f"q3m: slop {mslop} leaves the buffer"
             progs.append([("comment", f"{kern.name}: a vertex in {kern.ii} cycles, {s.stages} stages; then the gather")] + prog)
             continue
@@ -806,7 +836,7 @@ def main():
     h += [f"#define Q3VU_T_{g} {q} /* q3w1t's */" for g, q in TCTX.items()]
     h += [f"#define Q3VU_M_OUT {M_OUT}", f"#define Q3VU_M_IDX {M_IDX}", f"#define Q3VU_M_VERT {M_VERT}",
           f"#define Q3VU_M_VERTS {M_VERTS} /* a piece's vertices at most */",
-          f"#define Q3VU_M_ENTRIES {M_ENTRIES} /* and its entries */"]
+          f"#define Q3VU_M_TRIS {M_TRIS} /* and its triangles */"]
     h += [f"#define Q3VU_BASE {CTX_QW}", f"#define Q3VU_BUF {BUF_QW}", f"#define Q3VU_A {A}", f"#define Q3VU_B {B}",
           f"#define Q3VU_IB {IB}",
           f"#define Q3VU_BATCH {n}",

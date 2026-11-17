@@ -55,6 +55,7 @@ struct rp_shader {
 	int lightmap;           /* as registered: LIGHTMAP_2D, LIGHTMAP_NONE, ... */
 	u8 nstage;
 	u8 sort, cull_none, polygon_offset, sky, deform, nodraw, defaulted, nomip;
+	u8 cull_back; /* the faces that face the eye are the ones left out */
 	struct rp_stage st[RP_STAGES];
 };
 

@@ -82,6 +82,9 @@ enum { RP_ALPHA_NONE, RP_ALPHA_GT0, RP_ALPHA_LT128, RP_ALPHA_GE128 };
    world's one-pass program with the state's texture matrix and colour
    (q3w1t), for draws in the world's batch format */
 enum { RP_PROG_WORLD, RP_PROG_GS, RP_PROG_MODEL, RP_PROG_STAGE };
+/* a model's triangles left out by the sign of their screen's cross product:
+   none, those of one sign, those of the other */
+enum { RP_CULL_NONE, RP_CULL_NEG, RP_CULL_POS };
 /* depth: tested and written; tested; neither (2D) */
 enum { RP_Z_WRITE, RP_Z_TEST, RP_Z_NONE };
 
@@ -94,6 +97,7 @@ struct rp_state {
 	u8 prog;               /* RP_PROG_* */
 	u8 nomip;              /* the first level only, bilinear */
 	u8 clamp;              /* the texture is not repeated */
+	u8 cull;               /* RP_PROG_MODEL: RP_CULL_* */
 	float texels;          /* of the texture's first level a unit of the surface (the MIPMAP level) */
 	/* RP_PROG_MODEL: the old frame's share (x); the colour without light;
 	   the directed light's colour times its direction's x, y, z (in the
@@ -130,6 +134,7 @@ struct rp_list_stats {
 	u32 dyn_qw;        /* and into rp_dyn's memory */
 	u32 lost;          /* draws left out: no room */
 	u32 k_sent[16], k_batches[16], k_setups[16]; /* the last frame's, by strip */
+	u32 k_msent[16], k_mbatches[16], k_draws[16]; /* of them the models' program's; draws (CALLs) */
 	u32 p_sent[4], p_batches[4], p_setups[4];    /* sent, batches and setups by program (RP_PROG_*) */
 	u32 p_clip[4];                               /* of p_sent, by the programs that cut */
 };

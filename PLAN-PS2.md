@@ -381,6 +381,20 @@ because it waited behind another. The timedemo with parts left out
 - The lightmap pass is 2.9 ms a field: every world triangle set up twice.
 - More, lower strips cost more than they give (a chunk is in more strips).
 
+Back faces of the models are now left out in `q3m`'s gather (a quadword a
+triangle, the sign of the screen's cross product against the shader's
+cull): the picture is the same (4 pixels of 2 million differ), the GS gets
+half the models' triangles, and the passes are as long as before (11.95 ms
+a field, 620 late). So the models' cost is not the GS's triangles. A fit of
+each pass's time to what its strip held (`quake3.pass`, now with the
+models' vertices and batches and the draws) gives about 30 us a program
+set-up when the GS draws (7 us when it draws nothing) and almost nothing a
+model vertex: a pass of 59 set-ups spends about 1.8 ms on them. The
+set-ups (each waits for the program before: FLUSHE, a run's GS registers,
+TEX0 with its CLUT) are the next thing to cut: fewer runs a strip (the
+world's runs by material are split into a cut and an uncut list, each with
+its own set-up), and set-ups that do not wait.
+
 The view weapon now goes through `q3mc` with the cut: a triangle with a
 vertex outside the guard band is left out of the piece's packet and cut
 after it (`q3mclip`, the world's routines), where it was dropped before

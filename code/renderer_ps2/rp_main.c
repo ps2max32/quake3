@@ -485,7 +485,7 @@ static struct mx_hires_pass *pass_log;
 static struct {
 	u32 frame;
 	u16 demo, tex_kb;
-	u16 sent[8], batches[8], setups[8];
+	u16 sent[8], batches[8], setups[8], msent[8], mbatches[8], draws[8];
 } frame_log[FRAME_LOG];
 static u32 pass_tex_kb;
 
@@ -503,6 +503,8 @@ static void passes_frame(u32 frame, int df) {
 	for (int k = 0; k < 8; k++) {
 		f->sent[k] = (u16)rp_list_stats.k_sent[k], f->batches[k] = (u16)rp_list_stats.k_batches[k];
 		f->setups[k] = (u16)rp_list_stats.k_setups[k];
+		f->msent[k] = (u16)rp_list_stats.k_msent[k], f->mbatches[k] = (u16)rp_list_stats.k_mbatches[k];
+		f->draws[k] = (u16)rp_list_stats.k_draws[k];
 	}
 }
 
@@ -513,15 +515,16 @@ static void passes_report(void) {
 	mx_hires_log(0, 0);
 	static char text[64 * 96];
 	FILE *fo = fopen("quake3.pass", "w");
-	int len = sprintf(text, "# frame demo strip wait_us run_us over out sent batches setups tex_kb\n");
+	int len = sprintf(text, "# frame demo strip wait_us run_us over out sent batches setups tex_kb msent mbatches draws\n");
 	for (u32 i = first; i < n && fo; i++) {
 		const struct mx_hires_pass *e = &pass_log[i % PASS_LOG];
 		const typeof(frame_log[0]) *f = &frame_log[e->frame % FRAME_LOG];
 		u32 k = e->strip & 7;
 		int known = f->frame == e->frame;
-		len += sprintf(text + len, "%u %u %u %u %u %u %u %u %u %u %u\n", e->frame, known ? f->demo : 0, e->strip,
+		len += sprintf(text + len, "%u %u %u %u %u %u %u %u %u %u %u %u %u %u\n", e->frame, known ? f->demo : 0, e->strip,
 		               e->wait_us, e->run_us, e->over, e->out, known ? f->sent[k] : 0, known ? f->batches[k] : 0,
-		               known ? f->setups[k] : 0, known ? f->tex_kb : 0);
+		               known ? f->setups[k] : 0, known ? f->tex_kb : 0, known ? f->msent[k] : 0,
+		               known ? f->mbatches[k] : 0, known ? f->draws[k] : 0);
 		if (len > (int)sizeof text - 96) {
 			fwrite(text, 1, len, fo);
 			len = 0;

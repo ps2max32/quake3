@@ -370,7 +370,7 @@ static const void *setup_gs(const struct rp_state *s) {
 static const void *setup_chain(const struct rp_state *s, int cut, int state) {
 	if (s->prog == RP_PROG_GS)
 		return setup_gs(s);
-	u64 *c0 = rp_dyn(36), *c = c0;
+	u64 *c0 = rp_dyn(38), *c = c0;
 	if (!c)
 		return 0;
 	int lit = s->lm_ok && s->prog == RP_PROG_WORLD && !(rp_debug & (2 | 128)), tex = s->tex_ok && !(rp_debug & (32 | 128));
@@ -398,6 +398,9 @@ static const void *setup_chain(const struct rp_state *s, int cut, int state) {
 			c = mx_e_cnt(c, 6, mx_vif_nop(), mx_vif_unpack(MX_UNPACK_V4_32, Q3VU_M_LERP, 6, 0));
 			for (int k = 0; k < 6; k++)
 				c = mx_e_w4(c, fbits(s->model[k][0]), fbits(s->model[k][1]), fbits(s->model[k][2]), fbits(s->model[k][3]));
+			/* the gather's cull: the MAC flag's sign of z that leaves a triangle out */
+			c = mx_e_cnt(c, 1, mx_vif_nop(), mx_vif_unpack(MX_UNPACK_V4_32, Q3VU_CTX_CULL, 1, 0));
+			c = mx_e_w4(c, s->cull == RP_CULL_NEG ? 0x20 : s->cull == RP_CULL_POS ? 0 : 0x40, 0, 0, 0);
 		}
 		if (s->prog == RP_PROG_STAGE) {
 			c = mx_e_cnt(c, 5, mx_vif_nop(), mx_vif_unpack(MX_UNPACK_V4_32, Q3VU_T_TM0, 5, 0));
@@ -597,6 +600,8 @@ void rp_list_end(void) {
 		}
 		int windowed = 0;
 		u32 at_sent = rp_list_stats.sent, at_batches = rp_list_stats.batches, at_setups = rp_list_stats.setups;
+		u32 at_msent = rp_list_stats.p_sent[RP_PROG_MODEL], at_mb = rp_list_stats.p_batches[RP_PROG_MODEL];
+		u32 ndr = 0;
 		if (nstrip)
 			mx_hires_strip((int)k);
 		for (u32 r = 0; r < nrun; r++) {
@@ -642,6 +647,7 @@ void rp_list_end(void) {
 				}
 				if (d[i].mask & bit) {
 					list[d[i].clip][n[d[i].clip]++] = d[i].chain;
+					ndr++;
 					rp_list_stats.sent += d[i].verts, rp_list_stats.batches += d[i].batches;
 					rp_list_stats.p_sent[rn->s.prog] += d[i].verts, rp_list_stats.p_batches[rn->s.prog] += d[i].batches;
 					if (d[i].clip)
@@ -652,6 +658,9 @@ void rp_list_end(void) {
 		rp_list_stats.k_sent[k] = rp_list_stats.sent - at_sent;
 		rp_list_stats.k_batches[k] = rp_list_stats.batches - at_batches;
 		rp_list_stats.k_setups[k] = rp_list_stats.setups - at_setups;
+		rp_list_stats.k_msent[k] = rp_list_stats.p_sent[RP_PROG_MODEL] - at_msent;
+		rp_list_stats.k_mbatches[k] = rp_list_stats.p_batches[RP_PROG_MODEL] - at_mb;
+		rp_list_stats.k_draws[k] = ndr;
 	}
 	if (nstrip)
 		mx_hires_strip(-1);

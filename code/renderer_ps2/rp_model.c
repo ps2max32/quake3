@@ -4,8 +4,8 @@
    (rp_bin.c: mapped, not loaded; cgame asks for its tags and bounds), and
    its surfaces are made ready for VU1
    (tools/ps2vu.py, q3m): a surface is cut into pieces of at most
-   Q3VU_M_VERTS vertices, each with its triangles as entries of a strip
-   (three a triangle now: the first two end none). Of a piece there are its
+   Q3VU_M_VERTS vertices and Q3VU_M_TRIS triangles, a triangle a quadword
+   of its vertices' offsets (VU1 leaves out those that face away). Of a piece there are its
    texture coordinates (16-bit fixed point) and its entries, once, in memory
    the DMAC reads; and for a frame its positions (the file's 16-bit ones)
    and its normals (three bytes, decoded from the file's two angles). A
@@ -43,6 +43,9 @@
 #include "vu/q3vu.h"
 
 struct rp_model_stats rp_model_stats;
+/* 1: an MD3's front faces have a negative screen's cross product (q3m's
+   gather): which sign the engine's winding gives on the GS's screen */
+#define RP_MODEL_FRONT_NEG 0
 float rp_sin1(float turns);
 
 /* ---- the light grid ------------------------------------------------------------------- */
@@ -166,8 +169,7 @@ void rp_light_at(const vec3_t p, int world, vec3_t ambient, vec3_t directed, vec
 
 struct piece {
 	u8 nvert, st_qw, pos_qw, nrm_qw;
-	u16 nent, idx_qw;
-	u16 ntri, pad;
+	u16 ntri, idx_qw;
 	u32 st, idx;   /* in the surface's fixed memory */
 	u32 pos, nrm;  /* in a frame's block */
 };
@@ -248,12 +250,12 @@ static int surf_make(struct msurf *sf) {
 	struct piece *pc = ri.Hunk_Alloc(maxp * (int)sizeof *pc, h_low);
 	u16 (*pv)[Q3VU_M_VERTS] = ri.Hunk_Alloc(maxp * (int)sizeof *pv, h_low);
 	sf->block = ri.Hunk_Alloc(nf * (int)sizeof *sf->block, h_low);
-	u16 (*pe)[Q3VU_M_ENTRIES] = ri.Hunk_AllocateTempMemory(maxp * (int)sizeof *pe);
+	u16 (*pe)[Q3VU_M_TRIS][4] = ri.Hunk_AllocateTempMemory(maxp * (int)sizeof *pe);
 	s16 *map = ri.Hunk_AllocateTempMemory(nv * (int)sizeof *map);
 	memset(map, 0xFF, nv * sizeof *map);
 	int np = 0;
 	u32 fixed = 0, frame = 0;
-	pc[0].nvert = 0, pc[0].nent = 0;
+	pc[0].nvert = 0, pc[0].ntri = 0;
 	for (int t = 0; t <= nt; t++) {
 		struct piece *p = &pc[np];
 		int fresh = 0;
@@ -265,14 +267,10 @@ static int surf_make(struct msurf *sf) {
 				fresh += map[v] < 0 && (k < 1 || tri[t].indexes[k] != tri[t].indexes[0]) &&
 				         (k < 2 || tri[t].indexes[k] != tri[t].indexes[1]);
 			}
-		if (t == nt || p->nvert + fresh > Q3VU_M_VERTS || p->nent + 3 > Q3VU_M_ENTRIES) {
-			/* the piece is whole: a multiple of four entries (the rest end no
-			   triangle), its places */
-			if (p->nent) {
-				p->ntri = p->nent / 3;
-				while (p->nent & 3)
-					pe[np][p->nent++] = 0x8000;
-				p->st_qw = (u8)((p->nvert * 6 + 15) / 16), p->idx_qw = (u16)((8 * (1 + p->nent / 4) + 15) / 16);
+		if (t == nt || p->nvert + fresh > Q3VU_M_VERTS || p->ntri == Q3VU_M_TRIS) {
+			/* the piece is whole: its places */
+			if (p->ntri) {
+				p->st_qw = (u8)((p->nvert * 6 + 15) / 16), p->idx_qw = (u16)((8 * (1 + p->ntri) + 15) / 16);
 				p->pos_qw = (u8)((p->nvert * 6 + 15) / 16), p->nrm_qw = (u8)((p->nvert * 3 + 15) / 16);
 				p->st = fixed, fixed += p->st_qw * 16u;
 				p->idx = fixed, fixed += p->idx_qw * 16u;
@@ -285,7 +283,7 @@ static int surf_make(struct msurf *sf) {
 			if (t == nt || np == maxp)
 				break;
 			p = &pc[np];
-			p->nvert = 0, p->nent = 0;
+			p->nvert = 0, p->ntri = 0;
 		}
 		for (int k = 0; k < 3; k++) {
 			int v = tri[t].indexes[k];
@@ -293,8 +291,10 @@ static int surf_make(struct msurf *sf) {
 				v = 0;
 			if (map[v] < 0)
 				map[v] = (s16)p->nvert, pv[np][p->nvert++] = (u16)v;
-			pe[np][p->nent++] = (u16)(map[v] * 4 | (k < 2 ? 0x8000 : 0));
+			pe[np][p->ntri][k] = (u16)(map[v] * 4);
 		}
+		pe[np][p->ntri][3] = 0;
+		p->ntri++;
 	}
 	sf->npiece = np, sf->piece = pc, sf->frame_bytes = frame;
 	sf->fixed = mx_heap_alloc(heap, fixed, 64);
@@ -312,8 +312,8 @@ static int surf_make(struct msurf *sf) {
 				d[3 * k + 2] = 4096;
 			}
 			u16 *e = (u16 *)(sf->fixed + p->idx);
-			e[0] = (u16)(p->nent / 4), e[1] = p->ntri; /* the entries' quadwords, the triangles (q3mclip) */
-			memcpy(e + 4, pe[i], p->nent * sizeof *e);
+			e[0] = p->ntri;
+			memcpy(e + 4, pe[i], p->ntri * sizeof pe[i][0]);
 		}
 		mx_dcache_writeback(sf->fixed, fixed);
 		model_bytes += fixed;
@@ -661,7 +661,7 @@ static const void *surf_chain(struct msurf *sf, int frame, int oldframe) {
 		c = mx_e_ref(c, fn + p->pos, p->pos_qw, mx_vif_nop(), mx_vif_unpack(MX_UNPACK_V3_16, Q3VU_M_VERT + 2, n, MX_UNPACK_FLG));
 		c = mx_e_ref(c, fo + p->pos, p->pos_qw, mx_vif_nop(), mx_vif_unpack(MX_UNPACK_V3_16, Q3VU_M_VERT + 3, n, MX_UNPACK_FLG));
 		c = mx_e_ref(c, sf->fixed + p->idx, p->idx_qw, mx_vif_stcycl(1, 1),
-		             mx_vif_unpack(MX_UNPACK_V4_16, Q3VU_M_IDX, 1 + p->nent / 4u, MX_UNPACK_FLG));
+		             mx_vif_unpack(MX_UNPACK_V4_16, Q3VU_M_IDX, 1 + p->ntri, MX_UNPACK_FLG));
 		c = mx_e_cnt(c, 0, mx_vif_itop(n), mx_vif_mscnt());
 		rp_model_stats.verts += n;
 	}
@@ -726,6 +726,10 @@ void rp_model_draw(const refEntity_t *e, float t) {
 		ld[a] = dot3(dir, e->axis[a]) / sc;
 	}
 	const void *matrix = 0;
+	float det = e->axis[0][0] * (e->axis[1][1] * e->axis[2][2] - e->axis[1][2] * e->axis[2][1]) -
+	            e->axis[0][1] * (e->axis[1][0] * e->axis[2][2] - e->axis[1][2] * e->axis[2][0]) +
+	            e->axis[0][2] * (e->axis[1][0] * e->axis[2][1] - e->axis[1][1] * e->axis[2][0]);
+	int mirrored = det < 0;
 	if (cut)
 		rp_model_stats.cut++;
 	else
@@ -753,6 +757,13 @@ void rp_model_draw(const refEntity_t *e, float t) {
 		rp_stage_colour(stg, t, e->shaderRGBA, e->shaderRGBA, col);
 		s.texels = 2.0f;
 		s.prog = RP_PROG_MODEL;
+		/* the faces away from the eye left out: the screen's winding of the
+		   engine's front faces, turned by a mirrored axis or a shader that
+		   culls its front */
+		if (sh->cull_none)
+			s.cull = RP_CULL_NONE;
+		else
+			s.cull = (mirrored ^ sh->cull_back ^ RP_MODEL_FRONT_NEG) ? RP_CULL_POS : RP_CULL_NEG;
 		float (*u)[4] = s.model;
 		u[0][0] = e->backlerp;
 		for (int a = 0; a < 3; a++) {

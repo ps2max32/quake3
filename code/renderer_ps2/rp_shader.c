@@ -349,6 +349,7 @@ static void parse_shader(char *body, struct rp_shader *sh) {
 		if (!Q_stricmp(t, "cull")) {
 			t = COM_ParseExt(&p, qfalse);
 			sh->cull_none = !Q_stricmp(t, "none") || !Q_stricmp(t, "disable") || !Q_stricmp(t, "twosided");
+			sh->cull_back = !Q_stricmp(t, "back") || !Q_stricmp(t, "backside") || !Q_stricmp(t, "backsided");
 		} else if (!Q_stricmp(t, "sort")) {
 			t = COM_ParseExt(&p, qfalse);
 			sort = !Q_stricmp(t, "portal")       ? SORT_PORTAL
