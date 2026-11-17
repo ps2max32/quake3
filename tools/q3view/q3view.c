@@ -16,6 +16,7 @@
 #include <mx/prof.h>
 #include <mx/vm.h>
 
+#include "rp_poly.h"
 #include "rp_tex.h"
 #include "rp_world.h"
 
@@ -35,6 +36,81 @@ static u32 num(const char *s) {
 	for (; *s >= '0' && *s <= '9'; s++)
 		v = v * 10 + (u32)(*s - '0');
 	return v;
+}
+
+/* a frame's counts: the world's and the list's */
+struct fstats {
+	u32 seen, groups, drawn, clip, back, verts, sent, batches, setups, qw;
+};
+
+static void pv(struct rp_vert *v, const struct rp_cam *c, float f, float l, float u, float s, float t) {
+	for (int k = 0; k < 3; k++)
+		v->xyz[k] = c->org[k] + f * c->axis[0][k] + l * c->axis[1][k] + u * c->axis[2][k];
+	v->st[0] = s, v->st[1] = t, v->rgba[0] = v->rgba[1] = v->rgba[2] = v->rgba[3] = 255;
+}
+
+/* rp_debug 8192: polygons and pictures (rp_poly.c) with the map's first
+   textures: a square 64 units ahead; one 24 units ahead, turned, that goes
+   behind the eye; a floor 40 units below from behind the eye to far ahead;
+   two blended squares; pictures in the corners and a row of small ones. */
+static void test_draws(const struct rp_cam *c) {
+	struct rp_image *im[3] = {rp_image_at(0), rp_image_at(1), rp_image_at(2)};
+	struct rp_state s = {0};
+	const struct mx_tex *t;
+	struct rp_vert q[4];
+	s.z = RP_Z_WRITE, s.texels = 2;
+	if (im[0] && (t = rp_image_place(im[0])))
+		s.tex = *t, s.tex_ok = 1;
+	rp_poly_state(&s);
+	pv(&q[0], c, 64, 20, 20, 0, 0), pv(&q[1], c, 64, -20, 20, 1, 0), pv(&q[2], c, 64, -20, -20, 1, 1), pv(&q[3], c, 64, 20, -20, 0, 1);
+	rp_poly(q, 4);
+	pv(&q[0], c, 60, 50, 12, 0, 0), pv(&q[1], c, -8, 30, 12, 2, 0), pv(&q[2], c, -8, 30, -12, 2, 1), pv(&q[3], c, 60, 50, -12, 0, 1);
+	rp_poly(q, 4);
+	if (im[1] && (t = rp_image_place(im[1])))
+		s.tex = *t, s.tex_ok = 1;
+	rp_poly_state(&s);
+	pv(&q[0], c, 3000, 300, -40, 0, 0), pv(&q[1], c, 3000, -300, -40, 4, 0), pv(&q[2], c, -100, -300, -40, 4, 7), pv(&q[3], c, -100, 300, -40, 0, 7);
+	rp_poly(q, 4);
+	s.blend = RP_BLEND_ADD;
+	rp_poly_state(&s);
+	pv(&q[0], c, 50, 40, 10, 0, 0), pv(&q[1], c, 50, 10, 10, 1, 0), pv(&q[2], c, 50, 10, -20, 1, 1), pv(&q[3], c, 50, 40, -20, 0, 1);
+	rp_poly(q, 4);
+	s.blend = RP_BLEND_ALPHA;
+	if (im[2] && (t = rp_image_place(im[2])))
+		s.tex = *t, s.tex_ok = 1;
+	rp_poly_state(&s);
+	pv(&q[0], c, 40, -5, 0, 0, 0), pv(&q[1], c, 40, -30, 0, 1, 0), pv(&q[2], c, 40, -30, -25, 1, 1), pv(&q[3], c, 40, -5, -25, 0, 1);
+	q[0].rgba[3] = q[1].rgba[3] = 64, q[2].rgba[3] = q[3].rgba[3] = 200;
+	rp_poly(q, 4);
+	s = (struct rp_state){0};
+	if (im[2] && (t = rp_image_place(im[2])))
+		s.tex = *t, s.tex_ok = 1;
+	s.clamp = 1;
+	rp_pic_state(&s);
+	rp_pic(16, 8, 256, 128, 0, 0, 1, 1, 0x80808080);
+	rp_pic(1920 - 16 - 256, 540 - 8 - 128, 256, 128, 0, 0, 1, 1, 0x80808080);
+	s.blend = RP_BLEND_ALPHA;
+	rp_pic_state(&s);
+	for (int i = 0; i < 40; i++)
+		rp_pic(300.0f + 32.0f * (float)i, 180.0f + 4.0f * (float)i, 24, 12, 0, 0, 0.25f, 0.25f, 0x40808080u + ((u32)i << 25));
+	rp_poly_flush();
+}
+
+static void frame_draw(const struct rp_cam *c, struct fstats *f) {
+	struct rp_world_stats w;
+	struct rp_list_stats l0 = rp_list_stats;
+	rp_list_begin();
+	rp_view_set(c);
+	rp_world_cull(&w);
+	rp_world_add(0);
+	rp_world_add(1);
+	if (rp_debug & 8192)
+		test_draws(c);
+	rp_list_end();
+	if (f)
+		*f = (struct fstats){w.seen, w.groups, w.drawn, w.clip, w.back, w.verts, rp_list_stats.sent - l0.sent,
+		                     rp_list_stats.batches - l0.batches, rp_list_stats.setups - l0.setups,
+		                     rp_list_stats.qw - l0.qw};
 }
 
 static u32 us(u32 cycles) { return (u32)((u64)cycles * 1000 / (MX_EE_HZ / 1000)); }
@@ -72,6 +148,7 @@ int main(int argc, char **argv) {
 	}
 	u32 sbytes = lines ? mx_hires_strip_records(srec, sizeof srec) : 0;
 	rp_tex_init();
+	rp_list_init();
 	if (rp_world_load(map, msize) < 0) {
 		mx_printf("q3view: %s is not a map of this version\n", mapname);
 		MX_TEST_END(1);
@@ -92,8 +169,7 @@ int main(int argc, char **argv) {
 		mx_frame_begin_n();
 		rp_tex_frame();
 		mx_hires_clear(0, 0, 0);
-		rp_frame_setup();
-		rp_world_draw(&c, 0);
+		frame_draw(&c, 0);
 		mx_frame_end();
 	}
 	for (u32 v = mx_gs.vsync; mx_gs.vsync - v < 6;)
@@ -111,10 +187,10 @@ int main(int argc, char **argv) {
 #define TOP 8
 	struct {
 		u32 us, cam;
-		struct rp_world_stats st;
+		struct fstats st;
 	} top[TOP] = {{0}};
-	struct rp_world_stats prev_st = {0};
-	struct rp_world_stats st, sum = {0}, max = {0};
+	struct fstats prev_st = {0};
+	struct fstats st, sum = {0}, max = {0};
 	u32 t_start = mx_gs.vsync, shot_at = ~0u;
 	/* rp_debug 4096: where the EE's time goes */
 	if (rp_debug & 4096)
@@ -136,8 +212,7 @@ int main(int argc, char **argv) {
 			mx_hires_clear(0, 0, 0);
 		else
 			mx_hires_clear(0x30, 0x40, 0x60);
-		rp_frame_setup();
-		rp_world_draw(&c, &st);
+		frame_draw(&c, &st);
 		mx_frame_end();
 		u32 t2 = mx_count() - t1;
 		wait += t1 - t0, build += t2;
@@ -186,8 +261,8 @@ int main(int argc, char **argv) {
 	          "most %u chunks, %u vertices (%u sent), %u set-ups, %u quadwords\n", sum.seen / n, sum.groups / n,
 	          sum.drawn / n, sum.clip / n, sum.back / n, sum.verts / n, sum.sent / n, sum.batches / n, sum.setups / n,
 	          sum.qw / n, max.drawn, max.verts, max.sent, max.setups, max.qw);
-	mx_printf("q3view: textures sent to GS memory in the flight: %u (%u KB), %u found no room\n", rp_tex_stats.uploads,
-	          rp_tex_stats.upload_kb, rp_tex_stats.full);
+	mx_printf("q3view: textures sent to GS memory in the flight: %u (%u KB), %u found no room; draws left out for want "
+	          "of memory: %u\n", rp_tex_stats.uploads, rp_tex_stats.upload_kb, rp_tex_stats.full, rp_list_stats.lost);
 	mx_printf("q3view: beam: fields %u, passes %u, left out %u, still drawn when the beam came %u, records shown %u, "
 	          "held %u; largest record %u KB, a strip's %u KB, %u cut off\n", mx_hires_stats.fields,
 	          mx_hires_stats.passes, mx_hires_stats.late, mx_hires_stats.over, mx_hires_stats.shown, mx_hires_stats.held,

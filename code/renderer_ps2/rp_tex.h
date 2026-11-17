@@ -45,6 +45,8 @@ struct rp_image *rp_image_static(const char *name, u32 psm, u32 w, u32 h, u32 le
    the GS's order), then rp_image_ready. 0: no memory, or no image left. */
 struct rp_image *rp_image_alloc(const char *name, u32 psm, u32 w, u32 h, u32 levels, int alpha);
 void rp_image_ready(struct rp_image *im);
+/* Image i (0 ..), or 0 when there is none there. */
+struct rp_image *rp_image_at(u32 i);
 /* The image by its name, or 0. */
 struct rp_image *rp_image_find(const char *name);
 /* Its place in GS memory for the frame being built (sent there if it was

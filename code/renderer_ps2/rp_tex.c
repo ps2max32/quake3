@@ -101,6 +101,8 @@ void rp_image_ready(struct rp_image *im) {
 	mx_dcache_writeback(im->m.tail_mem, im->m.tail_bytes + (im->psm == MX_GS_PSM_T4 ? 64 : 1024));
 }
 
+struct rp_image *rp_image_at(u32 i) { return i < image_hi && images[i].used ? &images[i] : 0; }
+
 struct rp_image *rp_image_find(const char *name) {
 	for (u32 i = 0; i < image_hi; i++) {
 		if (!images[i].used)

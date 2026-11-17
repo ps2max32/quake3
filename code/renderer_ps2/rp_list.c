@@ -1,0 +1,490 @@
+/* rp_list.c: a frame's draws (rp_list.h; PLAN-PS2.md, 5.3 and 5.4).
+
+   A draw is a DMA chain that ends with a RET: VIF1 unpacks its vertices and
+   runs the program its run has set up. The runs are kept in the order they
+   were made. At the frame's end each strip of beam racing gets, in its own
+   record, the draws that touch it: a CALL each, before the first one of a
+   run a CALL of the run's matrix (if it is another than the last one's) and
+   of its set-up (the GIF tags of its passes into VU1's context, its GS
+   registers as a packet the set-up's program kicks). So VIF1, VU1 and the
+   GS see a strip's draws in a pass, not the frame's. Matrices, set-ups and
+   the draws built for a frame lie in memory of this file's (rp_dyn), kept
+   until the frame is done. */
+
+#include <mx/frame.h>
+#include <mx/gif.h>
+#include <mx/hires.h>
+#include <mx/mem.h>
+#include <mx/mx.h>
+#include <mx/tex.h>
+#include <mx/vif.h>
+
+#include "rp_list.h"
+#include "vu/q3vu.h"
+
+unsigned rp_debug;
+struct rp_view rp_view;
+struct rp_list_stats rp_list_stats;
+
+#define ZNEAR 4.0f
+#define ZFAR 65536.0f
+#define ZMAX 65280.0f   /* 16-bit Z, with room for a cut vertex's rounding at the near plane */
+#define GUARD 2040.0f   /* pixels from the GS's centre that a vertex may be */
+
+static inline float dot3(const float *a, const float *b) { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; }
+
+static u32 fbits(float f) {
+	union {
+		float f;
+		u32 u;
+	} v = {f};
+	return v.u;
+}
+
+/* ---- memory for a frame's chains: a ring, a frame's part free when it is done ------- */
+
+#define DYN_QW (768 * 1024 / 16)
+#define DYN_FRAMES 16
+static u64 *dyn; /* uncached: written once, read by the DMAC */
+/* the next quadword; those in use, from the oldest frame in flight's first
+   to the head, round the end; the last rp_dyn's first */
+static u32 d_head, d_used, d_last;
+static struct {
+	u32 frame, start;
+} d_fr[DYN_FRAMES];
+static u32 d_nfr;
+
+static void dyn_frame(void) {
+	u32 done = mx_frame_done(), k = 0;
+	while (k < d_nfr && d_fr[k].frame < done)
+		k++;
+	for (u32 i = k; i < d_nfr; i++)
+		d_fr[i - k] = d_fr[i];
+	d_nfr -= k;
+	if (!d_nfr)
+		d_head = d_used = 0;
+	else
+		d_used = (d_head + DYN_QW - d_fr[0].start) % DYN_QW;
+	if (d_nfr == DYN_FRAMES) /* cannot be: beam racing has fewer records */
+		d_nfr--;
+	d_fr[d_nfr].frame = mx_frame_number(), d_fr[d_nfr].start = d_head;
+	d_nfr++;
+}
+
+u64 *rp_dyn(u32 qw) {
+	u32 h = d_head, waste = 0;
+	if (!dyn || !qw)
+		return 0;
+	/* in one piece: round the end, what is left there is not used */
+	if (h + qw > DYN_QW)
+		waste = DYN_QW - h, h = 0;
+	if (d_used + waste + qw >= DYN_QW) {
+		rp_list_stats.lost++;
+		return 0;
+	}
+	d_last = h;
+	d_head = h + qw, d_used += waste + qw;
+	rp_list_stats.dyn_qw += qw;
+	return dyn + 2 * h;
+}
+
+void rp_dyn_end(u64 *end) {
+	u32 e = (u32)(end - dyn) / 2;
+	if (e >= d_last && e <= d_head) {
+		rp_list_stats.dyn_qw -= d_head - e, d_used -= d_head - e;
+		d_head = e;
+	}
+}
+
+/* ---- the view --------------------------------------------------------------------- */
+
+/* tan of deg degrees, 0 .. 89: the FPU has no such instruction and libm's is
+   software floating point */
+static float tan_deg(float deg) {
+	float x = deg * 0.017453292f, x2 = x * x;
+	float s = x * (1 - x2 * (1.0f / 6 - x2 * (1.0f / 120 - x2 * (1.0f / 5040 - x2 * (1.0f / 362880)))));
+	float c = 1 - x2 * (0.5f - x2 * (1.0f / 24 - x2 * (1.0f / 720 - x2 * (1.0f / 40320 - x2 * (1.0f / 3628800)))));
+	return s / c;
+}
+
+void rp_view_rect(const struct rp_cam *cam, float x, float y, float w, float h) {
+	struct rp_view *v = &rp_view;
+	float tx = tan_deg(cam->fov_x * 0.5f), ty = tan_deg(cam->fov_y * 0.5f);
+	v->fx = w * 0.5f / tx, v->fy = h * 0.5f / ty;
+	v->cx = 2048.0f + x + w * 0.5f - (float)mx_gs.w * 0.5f;
+	v->cy = 2048.0f + y + h * 0.5f - (float)mx_gs.h * 0.5f;
+	/* the planes of the guard band, as tangents from the view's centre: the
+	   nearer of the band's two sides each way */
+	float gl = v->cx - (2048.0f - GUARD), gr = 2048.0f + GUARD - v->cx;
+	float gt = v->cy - (2048.0f - GUARD), gbm = 2048.0f + GUARD - v->cy;
+	float gx = (gl < gr ? gl : gr) / v->fx, gy = (gt < gbm ? gt : gbm) / v->fy;
+	for (int k = 0; k < 3; k++) {
+		float F = cam->axis[0][k], L = cam->axis[1][k], U = cam->axis[2][k];
+		v->org[k] = cam->org[k], v->F[k] = F, v->L[k] = L, v->U[k] = U;
+		v->rowx[k] = v->cx * F - v->fx * L;
+		v->rowy[k] = v->cy * F - v->fy * U;
+		v->fr[0].n[k] = F;
+		v->fr[1].n[k] = tx * F + L, v->fr[2].n[k] = tx * F - L;
+		v->fr[3].n[k] = ty * F + U, v->fr[4].n[k] = ty * F - U;
+		v->gb[0].n[k] = F;
+		v->gb[1].n[k] = gx * F + L, v->gb[2].n[k] = gx * F - L;
+		v->gb[3].n[k] = gy * F + U, v->gb[4].n[k] = gy * F - U;
+	}
+	for (int p = 0; p < 5; p++)
+		v->fr[p].d = dot3(v->fr[p].n, v->org), v->gb[p].d = dot3(v->gb[p].n, v->org);
+	v->fr[0].d += ZNEAR, v->gb[0].d += ZNEAR + 0.5f;
+	v->nstrip = mx_hires_passes(), v->strip_h = mx_hires_strip_height();
+	if (!v->nstrip || !v->strip_h || !mx_hires_strip_record_bytes() || (rp_debug & 256))
+		v->nstrip = 0;
+	v->all = !v->nstrip ? 1 : v->nstrip >= 32 ? ~0u : (1u << v->nstrip) - 1;
+	v->serial++;
+}
+
+void rp_view_set(const struct rp_cam *cam) { rp_view_rect(cam, 0, 0, (float)mx_gs.w, (float)mx_gs.h); }
+
+/* The lines its corners fall on, a line more each way (the lower field is
+   drawn half a line lower). */
+u32 rp_strip_lines(float lo, float hi) {
+	const struct rp_view *v = &rp_view;
+	if (!v->nstrip)
+		return 1;
+	s32 k0 = lo < 1.5f ? 0 : (s32)(lo - 1.5f) / (s32)v->strip_h, k1 = hi < 0 ? -1 : (s32)(hi + 1.5f) / (s32)v->strip_h;
+	if (k1 >= (s32)v->nstrip)
+		k1 = (s32)v->nstrip - 1;
+	return k1 < k0 ? 0 : ((2u << k1) - 1) & ~((1u << k0) - 1);
+}
+
+/* A box that reaches behind the near plane may be anywhere. */
+u32 rp_strip_mask(const float *mins, const float *maxs) {
+	const struct rp_view *v = &rp_view;
+	if (!v->nstrip)
+		return 1;
+	if (rp_box_dist(&v->fr[0], mins, maxs, 0) < 0)
+		return v->all;
+	float lo = 1e9f, hi = -1e9f, top = v->cy - 2048.0f + (float)mx_gs.h * 0.5f;
+	for (int c8 = 0; c8 < 8; c8++) {
+		float d[3] = {(c8 & 1 ? maxs[0] : mins[0]) - v->org[0], (c8 & 2 ? maxs[1] : mins[1]) - v->org[1],
+		              (c8 & 4 ? maxs[2] : mins[2]) - v->org[2]};
+		float y = top - v->fy * dot3(v->U, d) / dot3(v->F, d);
+		lo = y < lo ? y : lo, hi = y > hi ? y : hi;
+	}
+	return rp_strip_lines(lo, hi);
+}
+
+/* ---- matrices ------------------------------------------------------------------------- */
+
+/* A position of the run to GS coordinates times w (x, y in pixels from the
+   GS's corner; z = ZNEAR * ZMAX / w, larger nearer), a sixteenth of them in
+   z: FTOI4 gives 12.4. With it the test of the programs that cut: CS * P +
+   CN * w inside -w .. w is inside the guard band and between the depth
+   planes. The chain: wait for the program before (it reads the context),
+   then the six quadwords. */
+const void *rp_matrix(float scale, const float *origin, const float (*axis)[3]) {
+	const struct rp_view *v = &rp_view;
+	static const float ident[3][3] = {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}}, zero[3] = {0, 0, 0};
+	float m[4][4], d[3];
+	axis = axis ? axis : ident, origin = origin ? origin : zero;
+	for (int k = 0; k < 3; k++) {
+		m[k][0] = scale * dot3(v->rowx, axis[k]), m[k][1] = scale * dot3(v->rowy, axis[k]);
+		m[k][2] = 0, m[k][3] = scale * dot3(v->F, axis[k]);
+		d[k] = origin[k] - v->org[k];
+	}
+	m[3][0] = dot3(v->rowx, d), m[3][1] = dot3(v->rowy, d), m[3][2] = ZNEAR * ZMAX / 16.0f, m[3][3] = dot3(v->F, d);
+	float zc = (ZFAR + ZNEAR) / (ZFAR - ZNEAR), zd = -2.0f * ZFAR * ZNEAR / (ZFAR - ZNEAR);
+	u64 *c0 = rp_dyn(9), *c = c0;
+	if (!c)
+		return 0;
+	c = mx_e_cnt(c, 0, mx_vif_flushe(), mx_vif_stcycl(1, 1));
+	c = mx_e_cnt(c, 6, mx_vif_nop(), mx_vif_unpack(MX_UNPACK_V4_32, Q3VU_CTX_C0, 6, 0));
+	for (int k = 0; k < 4; k++)
+		c = mx_e_w4(c, fbits(m[k][0]), fbits(m[k][1]), fbits(m[k][2]), fbits(m[k][3]));
+	c = mx_e_w4(c, fbits(1.0f / GUARD), fbits(1.0f / GUARD), fbits(zd / m[3][2]), 0);
+	c = mx_e_w4(c, fbits(-2048.0f / GUARD), fbits(-2048.0f / GUARD), fbits(zc), 0);
+	mx_e_ret(c, 0, 0, 0);
+	return c0;
+}
+
+/* ---- runs and draws ---------------------------------------------------------------------- */
+
+#define MAX_RUN 1024
+#define MAX_DRAW 6144
+#define LIST_MAX 256
+static struct run {
+	const void *matrix;
+	struct rp_state s;
+	const void *setup[2][2]; /* [the programs that cut][with the state] */
+	u16 first, n;
+} run[MAX_RUN];
+static struct draw {
+	const void *chain;
+	u16 mask, verts;
+	u8 clip, batches;
+} draw[MAX_DRAW];
+static u32 nrun, ndraw;
+
+int rp_run(const void *matrix, const struct rp_state *s) {
+	if (nrun == MAX_RUN || (!matrix && s->prog != RP_PROG_GS)) {
+		rp_list_stats.lost++;
+		return -1;
+	}
+	struct run *r = &run[nrun];
+	r->matrix = matrix, r->s = *s;
+	r->setup[0][0] = r->setup[0][1] = r->setup[1][0] = r->setup[1][1] = 0;
+	r->first = (u16)ndraw, r->n = 0;
+	return (int)nrun++;
+}
+
+int rp_run_last(void) { return (int)nrun - 1; }
+
+void rp_draw(const void *chain, u32 mask, int clip, u32 verts, u32 batches) {
+	if (!nrun || ndraw == MAX_DRAW || !chain) {
+		rp_list_stats.lost++;
+		return;
+	}
+	if (rp_debug & 12)
+		clip = rp_debug >> 3 & 1;
+	struct draw *d = &draw[ndraw++];
+	d->chain = chain, d->mask = (u16)mask, d->verts = (u16)verts, d->clip = (u8)clip, d->batches = (u8)batches;
+	run[nrun - 1].n++;
+}
+
+/* The set-up of a run's program (cut 1: the one that cuts): the GIF tags of
+   its passes into the context, its GS registers as a packet the set-up's
+   program kicks; state 0: the same registers as the set-up before it in the
+   strip (the run's other program): an empty packet. */
+static u64 blend_reg(const struct rp_state *s) {
+	return s->blend == RP_BLEND_ADD         ? mx_gs_alpha(0, 2, 2, 1, 0x80)
+	       : s->blend == RP_BLEND_ALPHA     ? mx_gs_alpha(0, 1, 0, 1, 0)
+	       : s->blend == RP_BLEND_ADD_ALPHA ? mx_gs_alpha(0, 2, 0, 1, 0)
+	       : s->blend == RP_BLEND_INVFILTER ? mx_gs_alpha(2, 1, 0, 1, 0)
+	                                        : mx_gs_alpha(1, 2, 0, 2, 0);
+}
+
+/* The set-up of a run of GIF packets: its GS registers, context 2's (no Z
+   is written), after what VU1 still sends. */
+static const void *setup_gs(const struct rp_state *s) {
+	u64 *c0 = rp_dyn(12), *c = c0;
+	if (!c)
+		return 0;
+	int tex = s->tex_ok && !(rp_debug & 32), blend = s->blend != RP_BLEND_NONE;
+	u64 *tag = c;
+	c += 2;
+	u64 *gif = c;
+	c += 2;
+	u32 n = 0;
+	if (tex) {
+		c = mx_tex_e_regs(c, &s->tex, 1, mx_tex_tex0(&s->tex, s->tcc, 0), mx_gs_tex1(1, 0, 1, 1, 0, 0, 0));
+		c = mx_e_ad(c, MX_GS_REG_CLAMP_2, s->clamp ? mx_gs_clamp(1, 1, 0, 0, 0, 0) : 0);
+		n += 5;
+	}
+	u32 atst = s->alpha == RP_ALPHA_GT0 ? 6 : s->alpha == RP_ALPHA_LT128 ? 1 : 5;
+	c = mx_e_ad(c, MX_GS_REG_TEST_2, mx_gs_test(s->alpha != RP_ALPHA_NONE, atst, s->alpha == RP_ALPHA_GT0 ? 0 : 0x40, 0, 0, 0,
+	                                            1, s->z == RP_Z_NONE ? 1 : 2));
+	c = mx_e_ad(c, MX_GS_REG_ALPHA_2, blend_reg(s));
+	c = mx_e_ad(c, MX_GS_REG_PRIM, mx_gs_prim(MX_GS_PRIM_SPRITE, 0, tex, 0, blend, 0, 0, 1, 0));
+	n += 3;
+	mx_e_giftag(gif, n, 1, -1, MX_GIF_FLG_PACKED, 1, MX_GIF_REG_AD);
+	mx_e_cnt(tag, n + 1, mx_vif_flush(), mx_vif_direct(n + 1));
+	c = mx_e_ret(c, 0, 0, 0);
+	rp_dyn_end(c);
+	return c0;
+}
+
+static const void *setup_chain(const struct rp_state *s, int cut, int state) {
+	if (s->prog == RP_PROG_GS)
+		return setup_gs(s);
+	u64 *c0 = rp_dyn(28), *c = c0;
+	if (!c)
+		return 0;
+	int lit = s->lm_ok && !(rp_debug & (2 | 128)), tex = s->tex_ok && !(rp_debug & (32 | 128));
+	u64 regs = rp_debug & 16 ? 0xD12 : 0x512; /* ST, RGBAQ, XYZ2 (XYZ3: no drawing) */
+	int blend = s->blend != RP_BLEND_NONE || (rp_debug & 128);
+	u32 entry = lit ? (cut ? Q3W2C_SETUP : Q3W2_SETUP) : (cut ? Q3W1C_SETUP : Q3W1_SETUP);
+	/* context 2 writes no Z (beam racing's): blended draws, and those without depth */
+	int ctx = blend || s->z != RP_Z_WRITE ? 1 : 0;
+	if (state) {
+		/* the passes' tags: a batch's strips (the program adds the count), then a
+		   triangle of its own (q3clip's) */
+		c = mx_e_cnt(c, 0, mx_vif_flushe(), mx_vif_stcycl(1, 1));
+		c = mx_e_cnt(c, 4, mx_vif_nop(), mx_vif_unpack(MX_UNPACK_V4_32, Q3VU_CTX_TA, 4, 0));
+		for (int tri = 0; tri < 2; tri++) {
+			u32 prim = tri ? MX_GS_PRIM_TRIANGLE : MX_GS_PRIM_TRISTRIP, n = tri ? 3 : 0;
+			c = mx_e_qw(c, mx_giftag(n, tri, (s32)mx_gs_prim(prim, 1, tex, 0, blend, 0, 0, ctx, 0), MX_GIF_FLG_PACKED, 3),
+			            regs);
+			c = mx_e_qw(c, mx_giftag(n, tri, (s32)mx_gs_prim(prim, 0, 1, 0, 1, 0, 0, 1, 0), MX_GIF_FLG_PACKED, 3), regs);
+		}
+		u64 *tag = c;
+		c += 2; /* the packet's cnt tag, written when its size is known */
+		u64 *gif = c;
+		c += 2;
+		u32 n = 0;
+		if (tex) {
+			const struct mx_tex *t = &s->tex;
+			s32 k = mx_tex_lod_k(s->texels, rp_view.fx, 0);
+			u64 t1 = (rp_debug & 1) || s->nomip ? mx_gs_tex1(1, 0, 1, 1, 0, 0, 0)
+			                                    : mx_tex_tex1(t, 1, t->levels > 1 ? 4 : 1, 0, k);
+			/* a texture without alpha of its own: its CLUT's alpha is the
+			   lightmaps' (tools/ps2map.py, gs_texture), not read here (TCC 0) */
+			u64 t0 = mx_tex_tex0(t, s->tcc, 0);
+			if (rp_debug & 1024)
+				t0 &= ~((u64)7 << 61);
+			c = mx_tex_e_regs(c, t, ctx, t0, t1);
+			c = mx_e_ad(c, ctx ? MX_GS_REG_CLAMP_2 : MX_GS_REG_CLAMP_1, s->clamp ? mx_gs_clamp(1, 1, 0, 0, 0, 0) : 0);
+			n += 5;
+		}
+		if (lit) {
+			/* the lightmap with its texture's CLUT (the GS has one CLUT
+			   buffer for both contexts): brightness in the alpha */
+			c = mx_e_ad(c, MX_GS_REG_TEX1_1 + 1, mx_gs_tex1(1, 0, 1, 1, 0, 0, 0));
+			c = mx_e_ad(c, MX_GS_REG_TEX0_2, mx_tex_tex0(&s->lm, 1, 1) & ~(rp_debug & (1024 | 2048) ? (u64)7 << 61 : 0));
+			c = mx_e_ad(c, MX_GS_REG_CLAMP_2, 0);
+			c = mx_e_ad(c, MX_GS_REG_TEST_2, mx_gs_test(0, 0, 0, 0, 0, 0, 1, 2));
+			n += 4;
+		}
+		u32 atst = s->alpha == RP_ALPHA_GT0 ? 6 : s->alpha == RP_ALPHA_LT128 ? 1 : 5;
+		c = mx_e_ad(c, ctx ? MX_GS_REG_TEST_2 : MX_GS_REG_TEST_1,
+		            rp_debug & 128 ? mx_gs_test(0, 0, 0, 0, 0, 0, 1, 1)
+		                           : mx_gs_test(s->alpha != RP_ALPHA_NONE, atst, s->alpha == RP_ALPHA_GT0 ? 0 : 0x40, 0, 0, 0, 1,
+		                                        s->z == RP_Z_NONE ? 1 : 2));
+		n++;
+		if (blend || lit) {
+			/* context 2's blend: the lightmap's product, or the run's */
+			u64 a = blend_reg(s);
+			if (rp_debug & 128)
+				a = mx_gs_alpha(0, 2, 2, 1, 8); /* Cs * 8 / 128 + Cd */
+			c = mx_e_ad(c, MX_GS_REG_ALPHA_2, a);
+			n++;
+		}
+		mx_e_giftag(gif, n, 1, -1, MX_GIF_FLG_PACKED, 1, MX_GIF_REG_AD);
+		mx_e_cnt(tag, n + 1, mx_vif_nop(), mx_vif_unpack(MX_UNPACK_V4_32, 0, n + 1, MX_UNPACK_FLG));
+	} else {
+		c = mx_e_cnt(c, 0, mx_vif_nop(), mx_vif_stcycl(1, 1));
+		c = mx_e_cnt(c, 1, mx_vif_nop(), mx_vif_unpack(MX_UNPACK_V4_32, 0, 1, MX_UNPACK_FLG));
+		c = mx_e_giftag(c, 0, 1, -1, MX_GIF_FLG_PACKED, 1, MX_GIF_REG_AD);
+	}
+	/* the batch before has left its buffer (FLUSH: its transfers to the GS
+	   are done) before a program runs while the VIF fills that buffer again */
+	c = mx_e_cnt(c, 0, mx_vif_flush(), mx_vif_mscal(entry));
+	c = mx_e_ret(c, 0, 0, 0);
+	rp_dyn_end(c);
+	return c0;
+}
+
+/* CALLs into the record being written */
+static void calls(const void **chain, u32 n) {
+	while (n) {
+		u32 k = n > 96 ? 96 : n;
+		u64 *c = mx_frame_reserve(k);
+		for (u32 i = 0; i < k; i++)
+			c = mx_e_call(c, chain[i], 0, 0, 0);
+		mx_frame_commit(c);
+		rp_list_stats.qw += k;
+		chain += k, n -= k;
+	}
+}
+
+static u64 dimx(void) {
+	/* the GS manual's 4 x 4 matrix */
+	static const s8 m[16] = {-4, 2, -3, 3, 0, -2, 1, -1, -3, 3, -4, 2, 1, -1, 0, -2};
+	u64 v = 0;
+	for (int i = 0; i < 16; i++)
+		v |= (u64)(m[i] & 7) << (4 * i);
+	return v;
+}
+
+void rp_list_init(void) {
+	if (!dyn) {
+		void *p = mx_dma_alloc(DYN_QW * 16);
+		dyn = p ? (u64 *)MX_UCAB((u8 *)p) : 0;
+	}
+	d_nfr = d_head = d_used = 0;
+	nrun = ndraw = 0;
+}
+
+/* The frame's GS registers and VU1 set-up, in the record every pass plays
+   before its strip's own. */
+void rp_list_begin(void) {
+	dyn_frame();
+	nrun = ndraw = 0;
+	u64 *c = mx_frame_reserve(1);
+	c = mx_e_cnt(c, 0, mx_vif_base(Q3VU_BASE), mx_vif_offset(Q3VU_BUF));
+	mx_frame_commit(c);
+	mx_frame_mpg(q3vu_vu, (u32)(q3vu_vu_end - q3vu_vu), 0);
+	/* the packet that sets nothing, which q3clip kicks to wait for the ones before
+	   it (0x7F: the GS's NOP register) */
+	c = mx_frame_reserve(4);
+	c = mx_e_cnt(c, 0, mx_vif_flushe(), mx_vif_stcycl(1, 1));
+	c = mx_e_cnt(c, 2, mx_vif_nop(), mx_vif_unpack(MX_UNPACK_V4_32, Q3VU_CTX_NOP, 2, 0));
+	c = mx_e_ad_tag(c, 1, 1);
+	c = mx_e_ad(c, 0x7F, 0);
+	mx_frame_commit(c);
+	c = mx_frame_direct(14);
+	c = mx_e_ad_tag(c, 13, 1);
+	c = mx_e_ad(c, MX_GS_REG_PRMODECONT, 1);
+	c = mx_e_ad(c, MX_GS_REG_COLCLAMP, 1);
+	c = mx_e_ad(c, MX_GS_REG_DTHE, !(rp_debug & 128));
+	c = mx_e_ad(c, MX_GS_REG_DIMX, dimx());
+	c = mx_e_ad(c, MX_GS_REG_TEXA, 0x80 | (u64)0x80 << 32);
+	c = mx_e_ad(c, MX_GS_REG_PABE, 0);
+	c = mx_e_ad(c, MX_GS_REG_FBA_1, 0);
+	c = mx_e_ad(c, MX_GS_REG_FBA_2, 0);
+	c = mx_e_ad(c, MX_GS_REG_TEST_1, mx_gs_test(0, 0, 0, 0, 0, 0, 1, 2));
+	c = mx_e_ad(c, MX_GS_REG_TEST_2, mx_gs_test(0, 0, 0, 0, 0, 0, 1, 2));
+	c = mx_e_ad(c, MX_GS_REG_CLAMP_1, mx_gs_clamp(0, 0, 0, 0, 0, 0));
+	c = mx_e_ad(c, MX_GS_REG_CLAMP_2, mx_gs_clamp(0, 0, 0, 0, 0, 0));
+	/* context 2's blend until a run sets another: Cd * As (the lightmap pass) */
+	c = mx_e_ad(c, MX_GS_REG_ALPHA_2, mx_gs_alpha(1, 2, 0, 2, 0));
+	mx_frame_commit(c);
+}
+
+/* Every strip's own record gets the draws that touch it (without strip
+   records: all of them into the frame's record, once). */
+void rp_list_end(void) {
+	static const void *list[2][LIST_MAX];
+	u32 nstrip = rp_view.nstrip;
+	rp_list_stats.runs += nrun, rp_list_stats.draws += ndraw;
+	for (u32 k = 0; k < (nstrip ? nstrip : 1); k++) {
+		u32 bit = 1u << k;
+		const void *matrix = 0;
+		if (nstrip)
+			mx_hires_strip((int)k);
+		for (u32 r = 0; r < nrun; r++) {
+			struct run *rn = &run[r];
+			const struct draw *d = &draw[rn->first];
+			u32 n[2] = {0, 0};
+			int set = 0;
+			for (u32 i = 0; i <= rn->n; i++) {
+				/* a list full, or the run over: sent */
+				if (i == rn->n || n[0] == LIST_MAX || n[1] == LIST_MAX) {
+					for (int v = 0; v < 2; v++) {
+						if (!n[v])
+							continue;
+						const void *pre[2];
+						u32 np = 0;
+						if (rn->matrix && matrix != rn->matrix)
+							pre[np++] = matrix = rn->matrix;
+						if (!rn->setup[v][!set])
+							rn->setup[v][!set] = setup_chain(&rn->s, v, !set);
+						if (!rn->setup[v][!set])
+							break; /* no memory: the run is left out */
+						pre[np++] = rn->setup[v][!set];
+						calls(pre, np);
+						calls(list[v], n[v]);
+						rp_list_stats.setups++;
+						set = 1, n[v] = 0;
+					}
+					n[0] = n[1] = 0;
+					if (i == rn->n)
+						break;
+				}
+				if (d[i].mask & bit) {
+					list[d[i].clip][n[d[i].clip]++] = d[i].chain;
+					rp_list_stats.sent += d[i].verts, rp_list_stats.batches += d[i].batches;
+				}
+			}
+		}
+	}
+	if (nstrip)
+		mx_hires_strip(-1);
+	nrun = ndraw = 0;
+}

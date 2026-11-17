@@ -7,20 +7,13 @@
 
 #include <mx/types.h>
 
-struct rp_cam {
-	float org[3];
-	float axis[3][3]; /* forward, left, up */
-	float fov_x, fov_y; /* degrees */
-};
+#include "rp_list.h"
 
 struct rp_world_stats {
 	u32 cluster;                 /* the camera's (0xFFFFFFFF: outside) */
 	u32 seen, groups;            /* groups the cluster sees; of those in the frustum */
 	u32 drawn, clip, back;       /* their chunks: drawn; of those across a plane; facing away (not drawn) */
 	u32 verts;                   /* strip vertices of the chunks drawn */
-	u32 sent, batches;           /* strip vertices and VU1 batches sent, over all strips of beam racing */
-	u32 setups;                  /* program set-ups (a material, or the other program for it) */
-	u32 qw;                      /* quadwords written into the frame's stream */
 };
 
 /* The map at p (the whole file, locked in memory: the DMAC reads its chunks
@@ -29,10 +22,10 @@ struct rp_world_stats {
    flight may still draw it). */
 int rp_world_load(const void *p, u32 size);
 void rp_world_free(void);
-/* In a frame: the frame's GS registers and VU1 set-up, once a frame before
-   anything is drawn. */
-void rp_frame_setup(void);
-/* In a frame: the world seen by cam. */
-void rp_world_draw(const struct rp_cam *cam, struct rp_world_stats *st);
+/* In a frame, after rp_view_set: what of the world the view sees. Then its
+   draws into the frame's list: those that write depth (blended 0), and the
+   blended ones. */
+void rp_world_cull(struct rp_world_stats *st);
+void rp_world_add(int blended);
 
 #endif

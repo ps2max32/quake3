@@ -24,6 +24,7 @@
 #include <mx/mx.h>
 #include <mx/vm.h>
 
+#include "rp_list.h"
 #include "rp_tex.h"
 #include "rp_world.h"
 
@@ -50,6 +51,7 @@ static void screen_init(void) {
 	ri.Printf(PRINT_ALL, "ps2: renderer: 1080i, %u strips of %u lines, a strip's record %u KB\n", mx_hires_passes(),
 	          mx_hires_strip_height(), sbytes / 1024);
 	rp_tex_init();
+	rp_list_init();
 	screen_on = 1;
 }
 
@@ -247,9 +249,12 @@ static void RP_RenderScene(const refdef_t *fd) {
 		VectorCopy(fd->vieworg, cam.org);
 		memcpy(cam.axis, fd->viewaxis, sizeof cam.axis);
 		cam.fov_x = fd->fov_x, cam.fov_y = fd->fov_y;
-		rp_world_draw(&cam, &world_st);
+		rp_view_set(&cam);
+		rp_world_cull(&world_st);
+		rp_world_add(0);
+		rp_world_add(1);
 #define ACC(f) world_sum.f += world_st.f
-		ACC(seen), ACC(groups), ACC(drawn), ACC(clip), ACC(back), ACC(verts), ACC(sent), ACC(batches), ACC(setups), ACC(qw);
+		ACC(seen), ACC(groups), ACC(drawn), ACC(clip), ACC(back), ACC(verts);
 #undef ACC
 	}
 	int df = ps2_demo_frame();
@@ -283,11 +288,12 @@ static void RP_BeginFrame(stereoFrame_t stereoFrame) {
 	in_frame = 1;
 	rp_tex_frame();
 	mx_hires_clear(0, 0, 0);
-	rp_frame_setup();
+	rp_list_begin();
 }
 
 static void RP_EndFrame(int *frontEndMsec, int *backEndMsec) {
 	if (in_frame) {
+		rp_list_end();
 		mx_frame_end();
 		in_frame = 0;
 	}
@@ -297,8 +303,11 @@ static void RP_EndFrame(int *frontEndMsec, int *backEndMsec) {
 		*backEndMsec = 0;
 	/* the counts are the timedemo's: from its first frame on */
 	int df = ps2_demo_frame();
-	if (df && !st_frames)
+	if (df && !st_frames) {
 		st_at = st;
+		rp_list_stats = (struct rp_list_stats){0};
+		rp_tex_stats = (struct rp_tex_stats){0};
+	}
 	if (df)
 		st_frames++;
 }
@@ -334,9 +343,15 @@ void ps2_ren_report(void) {
 	unsigned v = st.views - st_at.views;
 	if (v && world_sum.drawn)
 		Com_Printf("ps2: renderer: the world, a view: %u groups in view, %u chunks (%u across a plane, %u more facing "
-		           "away), %u vertices; over the strips %u vertices in %u batches, %u set-ups, %u quadwords\n",
-		           world_sum.groups / v, world_sum.drawn / v, world_sum.clip / v, world_sum.back / v, world_sum.verts / v,
-		           world_sum.sent / v, world_sum.batches / v, world_sum.setups / v, world_sum.qw / v);
+		           "away), %u vertices\n", world_sum.groups / v, world_sum.drawn / v, world_sum.clip / v,
+		           world_sum.back / v, world_sum.verts / v);
+	if (st_frames)
+		Com_Printf("ps2: renderer: a frame: %u runs, %u draws; over the strips %u vertices in %u batches, %u set-ups, %u "
+		           "quadwords of records, %u of chains; %u draws left out (no memory); textures sent %u (%u KB), %u "
+		           "found no room\n", rp_list_stats.runs / st_frames, rp_list_stats.draws / st_frames,
+		           rp_list_stats.sent / st_frames, rp_list_stats.batches / st_frames, rp_list_stats.setups / st_frames,
+		           rp_list_stats.qw / st_frames, rp_list_stats.dyn_qw / st_frames, rp_list_stats.lost,
+		           rp_tex_stats.uploads, rp_tex_stats.upload_kb, rp_tex_stats.full);
 	if (ncams) {
 		FILE *f = fopen("quake3.cam", "wb");
 		int head[4] = {0x4d414351 /* "QCAM" */, 1, ncams, sizeof *cams};
