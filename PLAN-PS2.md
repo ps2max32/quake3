@@ -395,6 +395,14 @@ TEX0 with its CLUT) are the next thing to cut: fewer runs a strip (the
 world's runs by material are split into a cut and an uncut list, each with
 its own set-up), and set-ups that do not wait.
 
+Tried next, the same timedemo: the runs' GS registers left out (rp_debug
+65536: TEX0, CLUT, tests and blends of every set-up) 12.4 ms a field; no
+CLUT loads (1024) 11.9 ms; as it is 11.9 ms. So the set-ups' GS registers
+and CLUT loads cost nothing measurable; the fit's set-ups stand for the
+amount of world in a strip. What is left as the GS's cost (6 ms a field of
+the 11.9; 5.8 ms when it draws nothing) is its triangles of the world,
+both passes, at small pixel counts: about 16,000 set-ups a frame.
+
 The view weapon now goes through `q3mc` with the cut: a triangle with a
 vertex outside the guard band is left out of the piece's packet and cut
 after it (`q3mclip`, the world's routines), where it was dropped before

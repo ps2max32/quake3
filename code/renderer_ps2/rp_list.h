@@ -156,7 +156,8 @@ void rp_list_end(void);
    without texture, lightmap or depth test (with a black clear: a pixel's
    largest channel times 31 / 255 is about the triangles drawn over it),
    256 no strip records (everything in every pass), 1024 no CLUT is loaded
-   (TEX0.CLD 0: wrong colours), 2048 none for the lightmap */
+   (TEX0.CLD 0: wrong colours), 2048 none for the lightmap, 65536 the runs'
+   GS registers left out (wrong textures and blends: what they cost) */
 extern unsigned rp_debug;
 
 #endif

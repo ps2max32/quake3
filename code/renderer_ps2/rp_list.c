@@ -415,6 +415,10 @@ static const void *setup_chain(const struct rp_state *s, int cut, int state) {
 		u64 *gif = c;
 		c += 2;
 		u32 n = 0;
+		/* rp_debug 65536: the run's GS registers left out (what a set-up costs the GS) */
+		int regs_on = !(rp_debug & 65536);
+		if (!regs_on)
+			tex = lit = 0;
 		if (tex) {
 			const struct mx_tex *t = &s->tex;
 			s32 k = lod_k(s->texels, rp_view.fx);
@@ -439,6 +443,7 @@ static const void *setup_chain(const struct rp_state *s, int cut, int state) {
 			n += 4;
 		}
 		u32 atst = s->alpha == RP_ALPHA_GT0 ? 6 : s->alpha == RP_ALPHA_LT128 ? 1 : 5;
+		if (regs_on) {
 		c = mx_e_ad(c, ctx ? MX_GS_REG_TEST_2 : MX_GS_REG_TEST_1,
 		            rp_debug & 128 ? mx_gs_test(0, 0, 0, 0, 0, 0, 1, 1)
 		                           : mx_gs_test(s->alpha != RP_ALPHA_NONE, atst, s->alpha == RP_ALPHA_GT0 ? 0 : 0x40, 0, 0, 0, 1,
@@ -451,6 +456,7 @@ static const void *setup_chain(const struct rp_state *s, int cut, int state) {
 				a = mx_gs_alpha(0, 2, 2, 1, 8); /* Cs * 8 / 128 + Cd */
 			c = mx_e_ad(c, MX_GS_REG_ALPHA_2, a);
 			n++;
+		}
 		}
 		mx_e_giftag(gif, n, 1, -1, MX_GIF_FLG_PACKED, 1, MX_GIF_REG_AD);
 		mx_e_cnt(tag, n + 1, mx_vif_nop(), mx_vif_unpack(MX_UNPACK_V4_32, 0, n + 1, MX_UNPACK_FLG));
