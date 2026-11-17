@@ -15,12 +15,13 @@ all: $(OUT)/q3view.elf
 include $(MAXSDK)/mk/maxsdk.mk
 
 CFLAGS += -I$(REN) -mvu0 -ffast-math -cl-single-precision-constant
-OBJS   := $(OUT)/q3view.o $(OUT)/rp_world.o
+OBJS   := $(OUT)/q3view.o $(OUT)/rp_world.o $(OUT)/rp_tex.o
+REN_H  := $(wildcard $(REN)/*.h) $(REN)/vu/q3vu.h
 
-$(OUT)/q3view.o: $(HERE)/q3view.c $(REN)/rp_world.h $(MX_HDRS)
+$(OUT)/q3view.o: $(HERE)/q3view.c $(REN_H) $(MX_HDRS)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c $< -o $@
-$(OUT)/rp_world.o: $(REN)/rp_world.c $(REN)/rp_world.h $(REN)/vu/q3vu.h $(MX_HDRS)
+$(OUT)/rp_%.o: $(REN)/rp_%.c $(REN_H) $(MX_HDRS)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c $< -o $@
 

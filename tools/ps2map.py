@@ -31,7 +31,7 @@ What is made of the BSP:
 File layout (little-endian; "off" are bytes from the file's start):
 
   head (128 bytes):
-    u32 magic "PMAP", version 2
+    u32 magic "PMAP", version 3
     u32 nmat, ntex, nchunk, nmodel, nlightmap, ncluster, vis_bytes
     u32 nplane, nnode, nleaf
     u32 off_mat, off_tex, off_chunk, off_model, off_lightmap, off_vis,
@@ -71,9 +71,11 @@ buffer of VU1's double buffering, VU_* below, shared with the programs):
     STCYCL cl 3 wl 1
     UNPACK V3-16  n -> VU_A + 0 + 3 i   texture s, t (4.12) and 4096
     UNPACK V4-8   n -> VU_A + 1 + 3 i   colour (unsigned)
-    UNPACK V4-16  n -> VU_A + 2 + 3 i   position, and w: 0x8000 the vertex
-                                        ends no triangle (ADC), 0x4000 its
-                                        triangle is wound the other way
+    UNPACK V4-16  n -> VU_A + 2 + 3 i   position, and w: 0xA000 the vertex
+                                        ends no triangle (ADC, and bit 13 for
+                                        the programs that set ADC themselves),
+                                        0x4000 its triangle is wound the other
+                                        way
     UNPACK V3-16  n -> VU_B + 0 + 3 i   lightmap s, t and 4096 (CH_LIGHTMAP)
     ITOP n, FLUSH, MSCNT
 
@@ -93,9 +95,12 @@ import zipfile
 import numpy as np
 
 # ---- shared with the VU1 programs (code/renderer_ps2) ---------------------------
-BATCH = 72      # vertices a batch at most
-VU_A = 20       # the texture pass's first vertex in a buffer (after the pad and its GIF tag)
-VU_B = 256      # the lightmap pass's
+BATCH = 70      # vertices a batch at most
+VU_A = 18       # the texture pass's first vertex in a buffer (after the pad and its GIF tag)
+VU_B = 247      # the lightmap pass's
+W_NONE = 0xA000  # a position's w: the vertex ends no triangle (bit 15 is the GS's ADC; bit 13 says
+                 # it to the programs that cut, which set ADC themselves)
+W_REV = 0x4000   # its triangle is wound the other way
 
 MAT_LIGHTMAP, MAT_SKY, MAT_NODRAW, MAT_DEFORM, MAT_TCMOD, MAT_SCRIPT, MAT_VERTEX, MAT_ENV = (
     1, 2, 4, 8, 16, 32, 64, 128)
@@ -758,26 +763,26 @@ def build(args):
         stream = []  # (vertex, w)
         for st in strips:
             for i, r in st:
-                stream.append((vlist[i], 0x8000 if r is None else 0x4000 if r else 0))
+                stream.append((vlist[i], W_NONE if r is None else W_REV if r else 0))
         # batches: a strip that goes on in the next one starts there with its last two vertices
         batches, pos = [], 0
         while pos < len(stream):
             b = stream[pos:pos + BATCH]
-            if pos and stream[pos][1] != 0x8000:
+            if pos and stream[pos][1] != W_NONE:
                 # mid-strip: the two vertices before, as a strip's first two
-                b = [(stream[pos - 2][0], 0x8000), (stream[pos - 1][0], 0x8000)] + stream[pos:pos + BATCH - 2]
+                b = [(stream[pos - 2][0], W_NONE), (stream[pos - 1][0], W_NONE)] + stream[pos:pos + BATCH - 2]
                 pos += BATCH - 2
             else:
                 pos += BATCH
             # a batch does not end on a strip's first or second vertex
-            while b and b[-1][1] == 0x8000:
+            while b and b[-1][1] == W_NONE:
                 b.pop()
                 pos -= 1
             if b:
                 # an even count (the programs take two vertices a turn): the last one again,
                 # ending no triangle
                 if len(b) & 1:
-                    b.append((b[-1][0], 0x8000))
+                    b.append((b[-1][0], W_NONE))
                 batches.append(b)
         lit = lm >= 0
         body = bytearray()
@@ -901,7 +906,7 @@ def build(args):
     sec["model"] = b"".join(struct.pack("<6fII", *mn, *mx, f, n) for mn, mx, f, n in models)
     sec["lightmap"], sec["vis"], sec["plane"], sec["node"], sec["leaf"] = lmdata, vis.tobytes(), planes, nodes, leafs
     sec["texdata"], sec["data"] = bytes(texdata), bytes(blob)
-    head = struct.pack("<4sI7I3I11IfIII", b"PMAP", 2, len(mats), len(textures), len(recs), len(models),
+    head = struct.pack("<4sI7I3I11IfIII", b"PMAP", 3, len(mats), len(textures), len(recs), len(models),
                        len(bsp.lightmaps), ncl, vis_bytes, len(bsp.planes), len(bsp.nodes), len(bsp.leafs),
                        off["mat"], off["tex"], off["chunk"], off["model"], off["lightmap"], off["vis"], off["plane"],
                        off["node"], off["leaf"], off["data"], total, 1.0 / q, BATCH, len(grecs), off["group"])

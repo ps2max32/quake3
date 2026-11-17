@@ -341,7 +341,7 @@ nothing).
 | `w1` | one-pass surfaces and every further stage: a texture matrix (all affine `tcMod`s as one 2 x 3 a frame), `col * cmul + cadd` (`rgbGen`/`alphaGen` wave, const, entity, vertex), `tcGen environment`; entry points with `tcMod turb`, with fog (the GS's own, `PRIM.FGE`, F from the fog plane: no fog pass), with dynamic lights |
 | `m` | MD3: the two frames blended, the normal decoded, ambient and directed light, optional environment coordinates (today's `q3model.hlsl`, by hand) |
 | `d` | dynamic batches: float vertices from the EE |
-| clip variants of `w2`, `w1`, `m` | chunks and models across the near plane or the guard band: the three-pass clipper of libgl's `mxglc.i`. Chunks inside take the fast entries, which test nothing |
+| clip variants of `w2`, `w1`, `m` | chunks and models across the near plane or the guard band: the loop leaves a triangle with a vertex outside out of the strip, and after the batch `q3clip` cuts those (the polygon as weights of the triangle's corners, a quadword a vertex; each piece a packet of its own). Chunks inside take the fast entries, which test nothing |
 | cull variants | chunks whose normals face both ways: back faces get ADC |
 
 Dynamic lights do not make a surface dynamic: the chunks a light's sphere

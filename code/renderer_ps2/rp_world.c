@@ -9,9 +9,10 @@
    records of the strips its group's bounds touch on the screen. No vertex
    is touched and nothing is sorted: the groups lie in the file by material.
 
-   Not yet: the chunks across the near plane or the guard band are drawn
-   with the programs that leave such triangles out (q3w2c, q3w1c) in place
-   of cutting them; sky, fog, doors (areas) and the brush models. */
+   A group across the near plane or the guard band is drawn with the programs
+   that cut such triangles (q3w2c, q3w1c, tools/ps2vu.py).
+
+   Not yet: sky, fog, doors (areas) and the brush models. */
 
 #include <mx/frame.h>
 #include <mx/gif.h>
@@ -21,6 +22,7 @@
 #include <mx/vif.h>
 #include <mx/vm.h>
 
+#include "rp_tex.h"
 #include "rp_world.h"
 #include "vu/q3vu.h"
 
@@ -100,132 +102,67 @@ static struct {
 	const struct pm_leaf *leaf;
 } pm;
 
-/* ---- textures in GS memory --------------------------------------------------------- */
+/* ---- its textures and lightmap pages ------------------------------------------------ */
 
 #define MAX_TEX 512
 #define MAX_LM 64
-static struct mx_tex gtex[MAX_TEX], glm[MAX_LM];
-static u8 gtex_ok[MAX_TEX], glm_ok[MAX_LM];
+static struct rp_image *wtex[MAX_TEX], *wlm[MAX_LM];
 /* the lightmaps' CLUT for a surface without a texture (one with a texture
    has it in its texture's CLUT): entry i's alpha is brightness i as the
    blend's factor (Cd * As, 0x80 is 1.0): twice the lightmap's value, the
    map's overbright range; in CSM1's order */
 static u32 lm_clut[256] MX_CORE_BSS MX_ALIGNED(64);
+static u64 lm_clut_key;
 
-struct upload {
-	u32 dbp;
-	u8 dbw, psm;
-	u16 w, h;
-	u32 qwc;
-	const void *data;
-};
-#define MAX_UPLOAD 2048
-static struct upload uploads[MAX_UPLOAD];
-static u32 nupload, upload_at;
-
-/* the free blocks of GS memory: below beam racing's buffer and above it */
-static u32 vr_at[2], vr_end[2];
-
-static void add_upload(u32 dbp, u32 dbw, u32 psm, u32 w, u32 h, u32 bytes, const void *data) {
-	if (nupload < MAX_UPLOAD)
-		uploads[nupload++] = (struct upload){dbp, (u8)dbw, (u8)psm, (u16)w, (u16)h, bytes / 16, data};
+static void images_free(void) {
+	for (u32 i = 0; i < MAX_TEX; i++)
+		rp_image_free(wtex[i]), wtex[i] = 0;
+	for (u32 i = 0; i < MAX_LM; i++)
+		rp_image_free(wlm[i]), wlm[i] = 0;
 }
 
-static int vr_blocks(u32 n, u32 align, u32 *at) {
-	for (int r = 0; r < 2; r++) {
-		u32 a = (vr_at[r] + align - 1) & ~(align - 1);
-		if (a + n <= vr_end[r]) {
-			*at = a;
-			vr_at[r] = a + n;
-			return 0;
-		}
-	}
-	return -1;
-}
-
-static int place(struct mx_tex *t, u32 psm, u32 tw, u32 th, u32 levels) {
-	for (int r = 0; r < 2; r++) {
-		u32 n = mx_tex_init(t, vr_at[r], psm, tw, th, levels, MX_TEX_PACKED);
-		if (vr_at[r] + n <= vr_end[r]) {
-			vr_at[r] += n;
-			return 0;
-		}
-	}
-	return -1;
-}
-
-static u32 log2u(u32 v) {
-	u32 n = 0;
-	while ((1u << n) < v)
-		n++;
-	return n;
-}
-
-static void textures_place(void) {
+static void images_load(void) {
 	const struct pm_head *h = pm.h;
-	u32 total = 0, lost = 0;
-	vr_at[0] = 0, vr_end[0] = mx_gs.fbp[0] * 32;
-	vr_at[1] = mx_gs.tbp, vr_end[1] = 16384;
-	nupload = upload_at = 0;
-	/* the largest first: they start on pages */
-	for (u32 size = 256; size >= 8; size >>= 1)
-		for (u32 i = 0; i < h->ntex && i < MAX_TEX; i++) {
-			const struct pm_tex *x = &pm.tex[i];
-			u32 big = x->w > x->h ? x->w : x->h;
-			if (big != size && !(size == 256 && big > 256))
-				continue;
-			struct mx_tex *t = &gtex[i];
-			u32 ncol = x->psm == MX_GS_PSM_T4 ? 16 : 256, cbp;
-			gtex_ok[i] = 0;
-			if (place(t, x->psm, log2u(x->w), log2u(x->h), x->levels) < 0 ||
-			    vr_blocks(ncol == 256 ? 4 : 1, ncol == 256 ? 4 : 1, &cbp) < 0) {
-				lost++;
-				continue;
-			}
-			t->cbp = cbp;
-			gtex_ok[i] = 1;
-			total += t->blocks + (ncol == 256 ? 4 : 1);
-			add_upload(cbp, 1, MX_GS_PSM_CT32, ncol == 256 ? 16 : 8, ncol == 256 ? 16 : 2, ncol * 4,
-			           pm.base + x->off_clut);
-			u32 off = x->off_level[0];
-			for (u32 l = 0; l < x->levels; l++) {
-				u32 w = x->w >> l, hh = x->h >> l;
-				u32 bytes = x->psm == MX_GS_PSM_T4 ? w * hh / 2 : w * hh;
-				if (l < 3)
-					off = x->off_level[l];
-				add_upload(t->tbp[l], t->tbw[l], x->psm, w, hh, bytes, pm.base + off);
-				off += (bytes + 15) & ~15u;
-			}
+	u32 bytes = 0;
+	for (u32 i = 0; i < h->ntex && i < MAX_TEX; i++) {
+		const struct pm_tex *x = &pm.tex[i];
+		const u8 *level[MX_TEX_LEVELS];
+		u32 off = x->off_level[0], levels = x->levels > MX_TEX_LEVELS ? MX_TEX_LEVELS : x->levels;
+		for (u32 l = 0; l < levels; l++) {
+			u32 w = x->w >> l, hh = x->h >> l;
+			u32 n = x->psm == MX_GS_PSM_T4 ? w * hh / 2 : w * hh;
+			if (l < 3)
+				off = x->off_level[l];
+			level[l] = pm.base + off;
+			off += (n + 15) & ~15u;
+			bytes += n;
 		}
-	/* the lightmap pages and their CLUT */
-	u32 lcbp = 0;
-	int lc = vr_blocks(4, 4, &lcbp);
+		wtex[i] = rp_image_static(x->name, x->psm, x->w, x->h, levels, x->alpha, level, pm.base + x->off_clut);
+	}
+	for (u32 i = 0; i < h->nlightmap && i < MAX_LM; i++) {
+		const u8 *level = pm.base + h->off_lightmap + i * 16384;
+		wlm[i] = rp_image_static("*lightmap", MX_GS_PSM_T8, 128, 128, 1, 0, &level, 0);
+	}
 	for (u32 i = 0; i < 256; i++) {
 		u32 a = i * 2 > 255 ? 255 : i * 2;
 		u32 k = (i & 0x18) == 0x08 ? i + 8 : (i & 0x18) == 0x10 ? i - 8 : i;
 		lm_clut[k] = a << 24 | 0x808080;
 	}
 	mx_dcache_writeback(lm_clut, sizeof lm_clut);
-	if (lc == 0)
-		add_upload(lcbp, 1, MX_GS_PSM_CT32, 16, 16, 1024, lm_clut);
-	for (u32 i = 0; i < h->nlightmap && i < MAX_LM; i++) {
-		glm_ok[i] = 0;
-		if (lc < 0 || place(&glm[i], MX_GS_PSM_T8, 7, 7, 1) < 0) {
-			lost++;
-			continue;
-		}
-		glm[i].cbp = lcbp;
-		glm_ok[i] = 1;
-		total += glm[i].blocks;
-		add_upload(glm[i].tbp[0], glm[i].tbw[0], MX_GS_PSM_T8, 128, 128, 16384, pm.base + h->off_lightmap + i * 16384);
-	}
-	mx_printf("rp: %u textures and %u lightmap pages in %u KB of GS memory (%u KB free), %u did not fit; %u uploads\n",
-	          h->ntex, h->nlightmap, total / 4, (vr_end[0] - vr_at[0] + vr_end[1] - vr_at[1]) / 4, lost, nupload);
+	if (!lm_clut_key)
+		lm_clut_key = rp_tex_key();
+	mx_printf("rp: %u textures (%u KB) and %u lightmap pages\n", h->ntex, bytes / 1024, h->nlightmap);
+}
+
+void rp_world_free(void) {
+	images_free();
+	pm.h = 0;
 }
 
 int rp_world_load(const void *p, u32 size) {
 	const struct pm_head *h = p;
-	if (size < sizeof *h || h->magic != PM_MAGIC || h->version != 2 || h->size > size || h->batch != Q3VU_BATCH)
+	rp_world_free();
+	if (size < sizeof *h || h->magic != PM_MAGIC || h->version != 3 || h->size > size || h->batch != Q3VU_BATCH)
 		return -1;
 	pm.base = p, pm.h = h;
 	pm.mat = (const void *)(pm.base + h->off_mat);
@@ -237,50 +174,8 @@ int rp_world_load(const void *p, u32 size) {
 	pm.plane = (const void *)(pm.base + h->off_plane);
 	pm.node = (const void *)(pm.base + h->off_node);
 	pm.leaf = (const void *)(pm.base + h->off_leaf);
-	textures_place();
+	images_load();
 	return 0;
-}
-
-/* an IMAGE transfer into GS memory, its data read where it lies */
-static void image_xfer(const struct upload *u) {
-	u32 qwc = u->qwc;
-	u64 *c = mx_frame_reserve(6 + 3 * (qwc / 0x7FFF + 1));
-	const u8 *d = u->data;
-	c = mx_e_cnt(c, 5, mx_vif_nop(), mx_vif_direct(5));
-	c = mx_e_ad_tag(c, 4, 0);
-	c = mx_e_ad(c, MX_GS_REG_BITBLTBUF, mx_gs_bitbltbuf(0, 0, 0, u->dbp, u->dbw, u->psm));
-	c = mx_e_ad(c, MX_GS_REG_TRXPOS, mx_gs_trxpos(0, 0, 0, 0, 0));
-	c = mx_e_ad(c, MX_GS_REG_TRXREG, mx_gs_trxreg(u->w, u->h));
-	c = mx_e_ad(c, MX_GS_REG_TRXDIR, 0);
-	while (qwc) {
-		u32 n = qwc > 0x7FFF ? 0x7FFF : qwc;
-		c = mx_e_cnt(c, 1, mx_vif_nop(), mx_vif_direct(1));
-		c = mx_e_giftag(c, n, n == qwc, -1, MX_GIF_FLG_IMAGE, 0, 0);
-		c = mx_e_ref(c, d, n, mx_vif_nop(), mx_vif_direct(n));
-		d += n * 16;
-		qwc -= n;
-	}
-	mx_frame_commit(c);
-}
-
-int rp_world_upload(void) {
-	if (upload_at >= nupload)
-		return 0;
-	/* beam racing: not in every pass (the once record, sent over PATH3) */
-	mx_hires_once(1);
-	u32 kb = 0;
-	while (upload_at < nupload && kb < 192) {
-		image_xfer(&uploads[upload_at]);
-		kb += uploads[upload_at].qwc / 64 + 1;
-		upload_at++;
-	}
-	u64 *c = mx_frame_reserve(3);
-	c = mx_e_cnt(c, 2, 0, mx_vif_direct(2));
-	c = mx_e_ad_tag(c, 1, 1);
-	c = mx_e_ad(c, MX_GS_REG_TEXFLUSH, 0);
-	mx_frame_commit(c);
-	mx_hires_once(0);
-	return (int)(nupload - upload_at);
 }
 
 /* ---- a frame ---------------------------------------------------------------------- */
@@ -297,7 +192,7 @@ unsigned rp_debug;
 
 #define ZNEAR 4.0f
 #define ZFAR 65536.0f
-#define ZMAX 65535.0f   /* 16-bit Z */
+#define ZMAX 65280.0f   /* 16-bit Z, with room for a cut vertex's rounding at the near plane */
 #define GUARD 2040.0f   /* pixels from the GS's centre that a vertex may be */
 
 static u64 dimx(void) {
@@ -314,6 +209,14 @@ void rp_frame_setup(void) {
 	c = mx_e_cnt(c, 0, mx_vif_base(Q3VU_BASE), mx_vif_offset(Q3VU_BUF));
 	mx_frame_commit(c);
 	mx_frame_mpg(q3vu_vu, (u32)(q3vu_vu_end - q3vu_vu), 0);
+	/* the packet that sets nothing, which q3clip kicks to wait for the ones before
+	   it (0x7F: the GS's NOP register) */
+	c = mx_frame_reserve(4);
+	c = mx_e_cnt(c, 0, mx_vif_flushe(), mx_vif_stcycl(1, 1));
+	c = mx_e_cnt(c, 2, mx_vif_nop(), mx_vif_unpack(MX_UNPACK_V4_32, Q3VU_CTX_NOP, 2, 0));
+	c = mx_e_ad_tag(c, 1, 1);
+	c = mx_e_ad(c, 0x7F, 0);
+	mx_frame_commit(c);
 	c = mx_frame_direct(14);
 	c = mx_e_ad_tag(c, 13, 1);
 	c = mx_e_ad(c, MX_GS_REG_PRMODECONT, 1);
@@ -383,33 +286,41 @@ static u32 cam_cluster(const float *org) {
 static struct rp_world_stats *cur_st;
 static float cur_fx;
 
+/* a run's texture and lightmap page in GS memory, this frame */
+struct run_tex {
+	struct mx_tex tex, lm;
+	u8 tex_ok, lm_ok;
+};
+
 /* the set-up of a material's program: the GIF tags of its passes into the
    context, its GS registers as a packet the set-up kicks; fast 0: the
    program that tests its vertices */
-static u64 *material_packet(u64 *c, const struct pm_chunk *ch, int fast, int state) {
+static u64 *material_packet(u64 *c, const struct pm_chunk *ch, int fast, int state, const struct run_tex *rt) {
 	const struct pm_mat *m = &pm.mat[ch->mat];
-	int lit = (ch->flags & CH_LIGHTMAP) && ch->lightmap >= 0 && ch->lightmap < MAX_LM && glm_ok[ch->lightmap] &&
-	          !(rp_debug & (2 | 128));
-	int tex = m->tex >= 0 && m->tex < MAX_TEX && gtex_ok[m->tex] && !(rp_debug & (32 | 128));
+	int lit = rt->lm_ok, tex = rt->tex_ok;
 	u64 regs = rp_debug & 16 ? 0xD12 : 0x512; /* ST, RGBAQ, XYZ2 (XYZ3: no drawing) */
 	int blend = m->blend != BLEND_NONE || (rp_debug & 128);
 	u32 entry = lit ? (fast ? Q3W2_SETUP : Q3W2C_SETUP) : (fast ? Q3W1_SETUP : Q3W1C_SETUP);
 	/* blended surfaces write no Z: context 2 */
 	int ctx = blend ? 1 : 0;
-	u64 ta = mx_giftag(0, 0, (s32)mx_gs_prim(MX_GS_PRIM_TRISTRIP, 1, tex, 0, blend, 0, 0, ctx, 0), MX_GIF_FLG_PACKED, 3);
-	u64 tb = mx_giftag(0, 0, (s32)mx_gs_prim(MX_GS_PRIM_TRISTRIP, 0, 1, 0, 1, 0, 0, 1, 0), MX_GIF_FLG_PACKED, 3);
 	if (state) {
+		/* the passes' tags: a batch's strips (the program adds the count), then a
+		   triangle of its own (q3clip's) */
 		c = mx_e_cnt(c, 0, mx_vif_flushe(), mx_vif_stcycl(1, 1));
-		c = mx_e_cnt(c, 2, mx_vif_nop(), mx_vif_unpack(MX_UNPACK_V4_32, Q3VU_CTX_TA, 2, 0));
-		c = mx_e_qw(c, ta, regs);
-		c = mx_e_qw(c, tb, regs);
+		c = mx_e_cnt(c, 4, mx_vif_nop(), mx_vif_unpack(MX_UNPACK_V4_32, Q3VU_CTX_TA, 4, 0));
+		for (int tri = 0; tri < 2; tri++) {
+			u32 prim = tri ? MX_GS_PRIM_TRIANGLE : MX_GS_PRIM_TRISTRIP, n = tri ? 3 : 0;
+			c = mx_e_qw(c, mx_giftag(n, tri, (s32)mx_gs_prim(prim, 1, tex, 0, blend, 0, 0, ctx, 0), MX_GIF_FLG_PACKED, 3),
+			            regs);
+			c = mx_e_qw(c, mx_giftag(n, tri, (s32)mx_gs_prim(prim, 0, 1, 0, 1, 0, 0, 1, 0), MX_GIF_FLG_PACKED, 3), regs);
+		}
 		u64 *tag = c;
 		c += 2; /* the packet's cnt tag, written when its size is known */
 		u64 *gif = c;
 		c += 2;
 		u32 n = 0;
 		if (tex) {
-			const struct mx_tex *t = &gtex[m->tex];
+			const struct mx_tex *t = &rt->tex;
 			s32 k = mx_tex_lod_k(m->texels, cur_fx, 0);
 			u64 t1 = rp_debug & 1 ? mx_gs_tex1(1, 0, 1, 1, 0, 0, 0) : mx_tex_tex1(t, 1, t->levels > 1 ? 4 : 1, 0, k);
 			/* a texture without alpha of its own: its CLUT's alpha is the
@@ -423,11 +334,8 @@ static u64 *material_packet(u64 *c, const struct pm_chunk *ch, int fast, int sta
 		if (lit) {
 			/* the lightmap with its texture's CLUT (the GS has one CLUT
 			   buffer for both contexts): brightness in the alpha */
-			struct mx_tex t = glm[ch->lightmap];
-			if (tex)
-				t.cbp = gtex[m->tex].cbp;
 			c = mx_e_ad(c, MX_GS_REG_TEX1_1 + 1, mx_gs_tex1(1, 0, 1, 1, 0, 0, 0));
-			c = mx_e_ad(c, MX_GS_REG_TEX0_2, mx_tex_tex0(&t, 1, 1) & ~(rp_debug & (1024 | 2048) ? (u64)7 << 61 : 0));
+			c = mx_e_ad(c, MX_GS_REG_TEX0_2, mx_tex_tex0(&rt->lm, 1, 1) & ~(rp_debug & (1024 | 2048) ? (u64)7 << 61 : 0));
 			n += 2;
 		}
 		u32 atst = m->alpha == ALPHA_GT0 ? 6 : m->alpha == ALPHA_LT128 ? 1 : 5;
@@ -464,12 +372,31 @@ static u64 *material_packet(u64 *c, const struct pm_chunk *ch, int fast, int sta
 #define MAX_RUN 512
 static u64 setup_pkt[MAX_RUN][2][2][SETUP_QW * 2];
 static u8 setup_n[MAX_RUN][2][2];
+static struct run_tex run_tex[MAX_RUN];
+
+/* the places of a run's texture and lightmap page in GS memory (sent there
+   if they were not) */
+static void run_place(u32 r, const struct pm_chunk *ch) {
+	const struct pm_mat *m = &pm.mat[ch->mat];
+	struct run_tex *rt = &run_tex[r];
+	const struct mx_tex *t;
+	rt->tex_ok = rt->lm_ok = 0;
+	if (m->tex >= 0 && m->tex < MAX_TEX && wtex[m->tex] && !(rp_debug & (32 | 128)) && (t = rp_image_place(wtex[m->tex])))
+		rt->tex = *t, rt->tex_ok = 1;
+	if ((ch->flags & CH_LIGHTMAP) && ch->lightmap >= 0 && ch->lightmap < MAX_LM && wlm[ch->lightmap] &&
+	    !(rp_debug & (2 | 128)) && (t = rp_image_place(wlm[ch->lightmap]))) {
+		rt->lm = *t;
+		rt->lm.cbp = rt->tex_ok ? rt->tex.cbp : rp_clut_place(lm_clut_key, lm_clut);
+		rt->lm.cpsm = MX_GS_PSM_CT32, rt->lm.csm = 0;
+		rt->lm_ok = rt->lm.cbp != 0;
+	}
+}
 
 static void material_setup(u32 r, const struct pm_chunk *ch, int fast, int state) {
 	u8 *n = &setup_n[r][!fast][state];
 	u64 *pkt = setup_pkt[r][!fast][state];
 	if (!*n)
-		*n = (u8)((material_packet(pkt, ch, fast, state) - pkt) / 2);
+		*n = (u8)((material_packet(pkt, ch, fast, state, &run_tex[r]) - pkt) / 2);
 	u64 *c = mx_frame_reserve(*n);
 	for (u32 i = 0; i < 2u * *n; i++)
 		c[i] = pkt[i];
@@ -560,17 +487,15 @@ void rp_world_draw(const struct rp_cam *cam, struct rp_world_stats *st) {
 	float zc = (ZFAR + ZNEAR) / (ZFAR - ZNEAR), zd = -2.0f * ZFAR * ZNEAR / (ZFAR - ZNEAR);
 	float cs[4] = {1.0f / GUARD, 1.0f / GUARD, zd / m[3][2], 0};
 	float cn[4] = {-2048.0f / GUARD, -2048.0f / GUARD, zc, 0};
-	u64 *c = mx_frame_reserve(10);
+	u64 *c = mx_frame_reserve(8);
 	c = mx_e_cnt(c, 0, mx_vif_flushe(), mx_vif_stcycl(1, 1));
-	c = mx_e_cnt(c, 8, mx_vif_nop(), mx_vif_unpack(MX_UNPACK_V4_32, 0, 8, 0));
+	c = mx_e_cnt(c, 6, mx_vif_nop(), mx_vif_unpack(MX_UNPACK_V4_32, Q3VU_CTX_C0, 6, 0));
 	for (int k = 0; k < 4; k++)
 		c = mx_e_w4(c, fbits(m[k][0]), fbits(m[k][1]), fbits(m[k][2]), fbits(m[k][3]));
-	c = mx_e_w4(c, 0, 0, 0, 0); /* the tags' places */
-	c = mx_e_w4(c, 0, 0, 0, 0);
 	c = mx_e_w4(c, fbits(cs[0]), fbits(cs[1]), fbits(cs[2]), 0);
 	c = mx_e_w4(c, fbits(cn[0]), fbits(cn[1]), fbits(cn[2]), 0);
 	mx_frame_commit(c);
-	st->qw += 10;
+	st->qw += 8;
 
 	/* the frustum's planes (out: wholly outside one), then the planes a chunk
 	   must be wholly inside of for the programs that test nothing */
@@ -625,6 +550,10 @@ void rp_world_draw(const struct rp_cam *cam, struct rp_world_stats *st) {
 					continue;
 				for (int p = 0; p < 5 && !cross; p++)
 					cross = box_dist(&gb[p], gr->mins, gr->maxs, 0) < 0;
+				/* partly in view: its chunks are tested each */
+				int part = 0;
+				for (int p = 0; p < 5 && !part && gr->nchunk > 1; p++)
+					part = box_dist(&fr[p], gr->mins, gr->maxs, 0) < 0;
 				if (rp_debug & 12)
 					cross = rp_debug >> 3 & 1;
 				st->groups++;
@@ -647,10 +576,24 @@ void rp_world_draw(const struct rp_cam *cam, struct rp_world_stats *st) {
 							continue;
 						}
 					}
+					if (part) {
+						int gone = 0;
+						for (int p = 0; p < 5 && !gone; p++)
+							gone = box_dist(&fr[p], ch->mins, ch->maxs, 1) < 0;
+						if (gone)
+							continue;
+					}
+					/* a group across a plane: which of its chunks are */
+					int cut = cross;
+					if (cut && gr->nchunk > 1 && !(rp_debug & 8)) {
+						cut = 0;
+						for (int p = 0; p < 5 && !cut; p++)
+							cut = box_dist(&gb[p], ch->mins, ch->maxs, 0) < 0;
+					}
 					st->drawn++;
-					st->clip += (u32)cross;
+					st->clip += (u32)cut;
 					st->verts += ch->nverts;
-					item[nitem].chunk = (u16)j, item[nitem].clip = (u8)cross;
+					item[nitem].chunk = (u16)j, item[nitem].clip = (u8)cut;
 					item[nitem].mask = (u16)(binned ? strip_mask(ch->mins, ch->maxs, &fr[0]) : all);
 					nitem++;
 				}
@@ -662,6 +605,8 @@ void rp_world_draw(const struct rp_cam *cam, struct rp_world_stats *st) {
 			}
 		}
 	}
+	for (u32 r = 0; r < nrun; r++)
+		run_place(r, &pm.chunk[item[run[r].first].chunk]);
 	/* sent: every strip's own record gets the chunks that touch it (without
 	   strip records: all of them into the main record, once) */
 	static u16 list[2][RUN_MAX];

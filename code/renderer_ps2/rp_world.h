@@ -24,14 +24,11 @@ struct rp_world_stats {
 };
 
 /* The map at p (the whole file, locked in memory: the DMAC reads its chunks
-   and textures from it) for a picture of w x h pixels in GS memory (mx_gs.w,
-   mx_gs.h): its textures get their places in GS memory. Returns 0, or -1 if
-   it is no map of this version. */
+   and textures from it), after rp_tex_init. Returns 0, or -1 if it is no map
+   of this version. rp_world_free: before the file goes (and no frame in
+   flight may still draw it). */
 int rp_world_load(const void *p, u32 size);
-/* In a frame, before drawing: sends the next textures to GS memory (beam
-   racing: in the frame's once record). Returns how many are left; draw the
-   world when it is 0. */
-int rp_world_upload(void);
+void rp_world_free(void);
 /* In a frame: the frame's GS registers and VU1 set-up, once a frame before
    anything is drawn. */
 void rp_frame_setup(void);

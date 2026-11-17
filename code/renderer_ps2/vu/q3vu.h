@@ -11,23 +11,33 @@ extern const unsigned char q3vu_vu[], q3vu_vu_end[];
 #define Q3W1_BATCH 66
 #define Q3W2C_SETUP 105
 #define Q3W2C_BATCH 117
-#define Q3W1C_SETUP 157
-#define Q3W1C_BATCH 168
+#define Q3W1C_SETUP 173
+#define Q3W1C_BATCH 184
 
-#define Q3VU_CTX_QW 32 /* the context, at 0 */
+#define Q3VU_CTX_QW 72 /* the context, at 0 */
 #define Q3VU_CTX_C0 0
 #define Q3VU_CTX_C1 1
 #define Q3VU_CTX_C2 2
 #define Q3VU_CTX_C3 3
-#define Q3VU_CTX_TA 4
-#define Q3VU_CTX_TB 5
-#define Q3VU_CTX_CS 6
-#define Q3VU_CTX_CN 7
-#define Q3VU_BASE 32
-#define Q3VU_BUF 496
-#define Q3VU_A 20
-#define Q3VU_B 256
-#define Q3VU_BATCH 72
-#define Q3VU_REGS_QW 19 /* a set-up's packet at most */
+#define Q3VU_CTX_CS 4
+#define Q3VU_CTX_CN 5
+#define Q3VU_CTX_TA 6
+#define Q3VU_CTX_TB 7
+#define Q3VU_CTX_TA3 8
+#define Q3VU_CTX_TB3 9
+#define Q3VU_CTX_NOP 10
+#define Q3VU_ROOM_PL 12
+#define Q3VU_ROOM_CO 18
+#define Q3VU_ROOM_WA 30
+#define Q3VU_ROOM_WB 39
+#define Q3VU_ROOM_R0 48
+#define Q3VU_ROOM_R1 58
+#define Q3VU_ROOM_SAVE 68
+#define Q3VU_BASE 72
+#define Q3VU_BUF 476
+#define Q3VU_A 18
+#define Q3VU_B 247
+#define Q3VU_BATCH 70
+#define Q3VU_REGS_QW 17 /* a set-up's packet at most */
 
 #endif

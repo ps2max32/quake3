@@ -424,12 +424,17 @@ static u32 cyc_us(u32 c) { return (u32)((u64)c * 1000 / (MX_EE_HZ / 1000)); }
 
 /* beam racing's counts */
 static void ps2_beam_report(void) {
-	if (mx_hires_stats.fields)
-		mx_printf("ps2: beam: fields %u, passes %u, late %u, records shown %u, held %u; longest pass "
-		          "%u/%u/%u us, largest record %u KB, %u frames cut off (too large)\n", mx_hires_stats.fields,
-		          mx_hires_stats.passes, mx_hires_stats.late, mx_hires_stats.shown, mx_hires_stats.held,
-		          mx_hires_stats.pass_us[0], mx_hires_stats.pass_us[1], mx_hires_stats.pass_us[2],
-		          mx_hires_stats.rec_max / 1024, mx_hires_stats.rec_full);
+	if (!mx_hires_stats.fields)
+		return;
+	u32 sum = 0;
+	for (u32 k = 0; k < mx_hires_passes(); k++)
+		sum += mx_hires_stats.pass_sum_us[k];
+	mx_printf("ps2: beam: fields %u, passes %u, left out %u, still drawn when the beam came %u, records shown %u, "
+	          "held %u; a field's passes together %u us, longest pass %u/%u/%u us; largest record %u KB, a strip's %u "
+	          "KB, %u frames cut off (too large)\n", mx_hires_stats.fields, mx_hires_stats.passes, mx_hires_stats.late,
+	          mx_hires_stats.over, mx_hires_stats.shown, mx_hires_stats.held, sum / mx_hires_stats.fields,
+	          mx_hires_stats.pass_us[0], mx_hires_stats.pass_us[1], mx_hires_stats.pass_us[2],
+	          mx_hires_stats.rec_max / 1024, mx_hires_stats.strip_max / 1024, mx_hires_stats.rec_full);
 }
 
 /* A run nobody watches must end and say where it was (AUTOQUIT builds): a
@@ -572,9 +577,17 @@ int main(int argc, char **argv) {
 			mx_pccr_write(0x80000000u | (u32)perf_ev[frame % 3][0] << 5 | 0x1Eu |
 			              (u32)perf_ev[frame % 3][1] << 15 | 0x7800u);
 		}
+#ifdef PS2_REN_PS2
+		/* the wait for a free record of beam racing is not the frame's work */
+		extern unsigned ps2_ren_wait;
+		ps2_ren_wait = 0;
+#endif
 		u32 c0 = mx_count();
 		Com_Frame();
 		u32 cyc = mx_count() - c0;
+#ifdef PS2_REN_PS2
+		cyc -= ps2_ren_wait;
+#endif
 		if (PS2_PERF && window) {
 			mx_pccr_write(0);
 			perf_sum[frame % 3][0] += mx_pcr0(), perf_sum[frame % 3][1] += mx_pcr1();

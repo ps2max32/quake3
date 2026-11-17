@@ -1,20 +1,87 @@
 /* rp_main.c: the PS2's own renderer (PLAN-PS2.md): the engine's refexport_t
    (renderercommon/tr_public.h) on maxsdk, without renderergl1 and libgl.
 
-   Phase 0: it registers what the game asks for and counts what a frame
-   hands it, and draws nothing. A timedemo with it costs what the game side
-   costs (game, cgame, client, sound, collision): the frame every renderer
-   starts from. Models are loaded (the file as it is, in the hunk), since
-   cgame places its entities by their tags and bounds. Each main view's
-   camera goes into quake3.cam (ps2_ren_report), for a viewer to fly the
-   same path. */
+   The screen is 1080i by beam racing (<mx/hires.h>: a field of 1920 x 540,
+   drawn in strips ahead of the beam, each strip from a record of its own).
+   A map's world is rp_world.c's, from maps/<name>.pmap beside the paks
+   (tools/ps2map.py makes it from the BSP; a map without one is not drawn).
+
+   Not yet: models, sprites and polys, 2D pictures, lights. They are
+   registered and counted: models are loaded (the file as it is, in the
+   hunk), since cgame places its entities by their tags and bounds. Each
+   main view's camera goes into quake3.cam (ps2_ren_report), for the viewer
+   (tools/q3view) to fly the same path. r_ps2draw 0: nothing is drawn, a
+   timedemo then costs what the game side costs (game, cgame, client, sound,
+   collision). */
 
 #include "../qcommon/q_shared.h"
 #include "../qcommon/qfiles.h"
 #include "../qcommon/qcommon.h"
 #include "../renderercommon/tr_public.h"
 
+#include <mx/frame.h>
+#include <mx/hires.h>
+#include <mx/mx.h>
+#include <mx/vm.h>
+
+#include "rp_tex.h"
+#include "rp_world.h"
+
 static refimport_t ri;
+static cvar_t *r_ps2draw;
+
+/* ---- the screen ------------------------------------------------------------------- */
+
+/* beam racing's records, read by the DMAC: four frames, and four of each of
+   the three strips */
+static u8 rec[4 * 128 * 1024] MX_CORE_BSS MX_ALIGNED(64);
+static u8 srec[4 * 3 * 96 * 1024] MX_CORE_BSS MX_ALIGNED(64);
+static int screen_on, in_frame;
+/* cycles a frame waited for a free record: not the frame's work (sys_ps2.c) */
+unsigned ps2_ren_wait;
+
+static void screen_init(void) {
+	if (screen_on)
+		return;
+	mx_hires_strip_lines(192);
+	if (mx_hires_init(&mx_video_1080i, 1920, 540, MX_GS_PSM_CT16S, rec, sizeof rec, (void *)0x70002000, 0x2000) < 0)
+		ri.Error(ERR_FATAL, "ps2: no 1080i, or its buffer does not fit");
+	u32 sbytes = mx_hires_strip_records(srec, sizeof srec);
+	ri.Printf(PRINT_ALL, "ps2: renderer: 1080i, %u strips of %u lines, a strip's record %u KB\n", mx_hires_passes(),
+	          mx_hires_strip_height(), sbytes / 1024);
+	rp_tex_init();
+	screen_on = 1;
+}
+
+/* ---- the world ---------------------------------------------------------------------- */
+
+static const void *world_map;
+static u32 world_size;
+static int world_ok;
+static struct rp_world_stats world_st, world_sum;
+
+/* Nothing a frame in flight reads may go: an empty frame, and the wait until
+   it is the one beam racing plays. */
+static void frames_flush(void) {
+	if (!screen_on || in_frame)
+		return;
+	mx_frame_begin_n();
+	mx_hires_clear(0, 0, 0);
+	u32 f = mx_frame_number();
+	mx_frame_end();
+	while (mx_frame_done() <= f)
+		mx_sleep_us(2000);
+}
+
+static void world_free(void) {
+	if (world_map) {
+		frames_flush();
+		rp_world_free();
+		mx_vm_unlock(world_map, world_size);
+		mx_vm_unmap_file(world_map);
+	}
+	world_map = NULL, world_ok = 0;
+}
 int ps2_demo_frame(void); /* sys_ps2.c: the timedemo's frame, 0: none */
 
 /* ---- names to handles ------------------------------------------------------- */
@@ -175,6 +242,16 @@ static void RP_RenderScene(const refdef_t *fd) {
 		return;
 	}
 	st.views++;
+	if (in_frame && world_ok && r_ps2draw->integer) {
+		struct rp_cam cam;
+		VectorCopy(fd->vieworg, cam.org);
+		memcpy(cam.axis, fd->viewaxis, sizeof cam.axis);
+		cam.fov_x = fd->fov_x, cam.fov_y = fd->fov_y;
+		rp_world_draw(&cam, &world_st);
+#define ACC(f) world_sum.f += world_st.f
+		ACC(seen), ACC(groups), ACC(drawn), ACC(clip), ACC(back), ACC(verts), ACC(sent), ACC(batches), ACC(setups), ACC(qw);
+#undef ACC
+	}
 	int df = ps2_demo_frame();
 	if (!df)
 		return;
@@ -197,9 +274,23 @@ static void RP_DrawStretchPic(float x, float y, float w, float h, float s1, floa
 	st.pics++;
 }
 
-static void RP_BeginFrame(stereoFrame_t stereoFrame) {}
+static void RP_BeginFrame(stereoFrame_t stereoFrame) {
+	if (!screen_on || in_frame)
+		return;
+	u32 t0 = mx_count();
+	mx_frame_begin_n();
+	ps2_ren_wait += mx_count() - t0;
+	in_frame = 1;
+	rp_tex_frame();
+	mx_hires_clear(0, 0, 0);
+	rp_frame_setup();
+}
 
 static void RP_EndFrame(int *frontEndMsec, int *backEndMsec) {
+	if (in_frame) {
+		mx_frame_end();
+		in_frame = 0;
+	}
 	if (frontEndMsec)
 		*frontEndMsec = 0;
 	if (backEndMsec)
@@ -240,6 +331,12 @@ void ps2_ren_report(void) {
 #undef A
 	Com_Printf("ps2: renderer: %d models, %d shaders, %d skins registered; %u tags asked\n", nmodels ? nmodels - 1 : 0,
 	           shaders.n ? shaders.n - 1 : 0, skins.n ? skins.n - 1 : 0, st_tags);
+	unsigned v = st.views - st_at.views;
+	if (v && world_sum.drawn)
+		Com_Printf("ps2: renderer: the world, a view: %u groups in view, %u chunks (%u across a plane, %u more facing "
+		           "away), %u vertices; over the strips %u vertices in %u batches, %u set-ups, %u quadwords\n",
+		           world_sum.groups / v, world_sum.drawn / v, world_sum.clip / v, world_sum.back / v, world_sum.verts / v,
+		           world_sum.sent / v, world_sum.batches / v, world_sum.setups / v, world_sum.qw / v);
 	if (ncams) {
 		FILE *f = fopen("quake3.cam", "wb");
 		int head[4] = {0x4d414351 /* "QCAM" */, 1, ncams, sizeof *cams};
@@ -252,7 +349,7 @@ void ps2_ren_report(void) {
 	}
 }
 
-int ps2_ren_screenshot(const char *path) { return -1; }
+int ps2_ren_screenshot(const char *path) { return screen_on ? mx_hires_save_tga(path) : -1; }
 
 /* ---- the rest of the interface -------------------------------------------------------- */
 
@@ -268,7 +365,9 @@ static void RP_BeginRegistration(glconfig_t *config) {
 	memset(config, 0, sizeof *config);
 	Q_strncpyz(config->renderer_string, "PS2 GS (maxsdk)", sizeof config->renderer_string);
 	Q_strncpyz(config->vendor_string, "ps2max", sizeof config->vendor_string);
-	Q_strncpyz(config->version_string, "renderer_ps2, phase 0: draws nothing", sizeof config->version_string);
+	Q_strncpyz(config->version_string, "renderer_ps2", sizeof config->version_string);
+	r_ps2draw = ri.Cvar_Get("r_ps2draw", "1", 0);
+	screen_init();
 	config->maxTextureSize = 128;
 	config->numTextureUnits = 1;
 	config->colorBits = 16, config->depthBits = 16;
@@ -283,7 +382,27 @@ static void RP_BeginRegistration(glconfig_t *config) {
 
 static qhandle_t RP_RegisterSkin(const char *name) { return name_handle(&skins, name); }
 static qhandle_t RP_RegisterShader(const char *name) { return name_handle(&shaders, name); }
-static void RP_LoadWorld(const char *name) { ri.Printf(PRINT_ALL, "ps2: renderer: world %s (not loaded)\n", name); }
+/* maps/<name>.bsp: its world is maps/<name>.pmap, a file beside the paks, mapped
+   and locked in memory (the DMAC reads its chunks and textures where they lie) */
+static void RP_LoadWorld(const char *name) {
+	char path[MAX_OSPATH], base[MAX_QPATH];
+	world_free();
+	COM_StripExtension(name, base, sizeof base);
+	Com_sprintf(path, sizeof path, "%s/%s/%s.pmap", ri.Cvar_Get("fs_basepath", "", 0)->string, BASEGAME, base);
+	world_map = mx_vm_map_file(path[0] == '.' && path[1] == '/' ? path + 2 : path, &world_size);
+	if (!world_map) {
+		ri.Printf(PRINT_WARNING, "ps2: renderer: no %s (tools/ps2map.py makes it): the world is not drawn\n", path);
+		return;
+	}
+	int lk = mx_vm_lock(world_map, world_size);
+	if (lk < 0 || rp_world_load(world_map, world_size) < 0) {
+		ri.Printf(PRINT_WARNING, "ps2: renderer: %s: %s\n", path, lk < 0 ? "no memory to keep it in" : "not a map of this version");
+		world_free();
+		return;
+	}
+	world_ok = 1;
+	ri.Printf(PRINT_ALL, "ps2: renderer: world %s, %u KB\n", path, world_size / 1024);
+}
 static void RP_SetWorldVisData(const byte *vis) {}
 static void RP_EndRegistration(void) {}
 static int RP_LightForPoint(vec3_t point, vec3_t ambientLight, vec3_t directedLight, vec3_t lightDir) { return qfalse; }

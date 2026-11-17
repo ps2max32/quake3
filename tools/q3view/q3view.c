@@ -9,12 +9,14 @@
    a REN=ps2 build of the game writes it during a timedemo; shot: the camera
    whose picture is saved as q3view.tga when the flight is over (0: none);
    first, count: the cameras flown (default all). Each camera is one frame.
-   A sixth argument: rp_world.c's rp_debug. */
+   A sixth argument: rp_world.c's rp_debug (and 4096: a profile of the flight). */
 
 #include <mx/hires.h>
 #include <mx/mx.h>
+#include <mx/prof.h>
 #include <mx/vm.h>
 
+#include "rp_tex.h"
 #include "rp_world.h"
 
 struct cam {
@@ -69,6 +71,7 @@ int main(int argc, char **argv) {
 		return 1;
 	}
 	u32 sbytes = lines ? mx_hires_strip_records(srec, sizeof srec) : 0;
+	rp_tex_init();
 	if (rp_world_load(map, msize) < 0) {
 		mx_printf("q3view: %s is not a map of this version\n", mapname);
 		MX_TEST_END(1);
@@ -76,17 +79,27 @@ int main(int argc, char **argv) {
 	}
 	mx_printf("q3view: %s %u bytes (lock %d), %u cameras, %u strips of %u lines, their own records %u bytes\n", mapname,
 	          msize, lk, ncam, mx_hires_passes(), mx_hires_strip_height(), sbytes);
-	/* the textures, over a few frames */
-	int left;
-	do {
+	/* the first camera's textures into GS memory before the flight is timed */
+	for (int k = 0; k < 2 && count; k++) {
+		struct rp_cam c;
+		const struct cam *cm = &cams[first];
+		for (int a = 0; a < 3; a++) {
+			c.org[a] = cm->org[a];
+			for (int j = 0; j < 3; j++)
+				c.axis[a][j] = cm->axis[a][j];
+		}
+		c.fov_x = cm->fov_x, c.fov_y = cm->fov_y;
 		mx_frame_begin_n();
+		rp_tex_frame();
 		mx_hires_clear(0, 0, 0);
-		left = rp_world_upload();
+		rp_frame_setup();
+		rp_world_draw(&c, 0);
 		mx_frame_end();
-	} while (left);
+	}
 	for (u32 v = mx_gs.vsync; mx_gs.vsync - v < 6;)
-		;
+		mx_sleep_us(2000);
 	mx_hires_stats = (struct mx_hires_stats){0};
+	rp_tex_stats = (struct rp_tex_stats){0};
 
 	u64 build = 0, wait = 0;
 	u32 build_max = 0, over = 0;
@@ -103,6 +116,9 @@ int main(int argc, char **argv) {
 	struct rp_world_stats prev_st = {0};
 	struct rp_world_stats st, sum = {0}, max = {0};
 	u32 t_start = mx_gs.vsync, shot_at = ~0u;
+	/* rp_debug 4096: where the EE's time goes */
+	if (rp_debug & 4096)
+		mx_prof_start(4000);
 	for (u32 i = 0; i < count; i++) {
 		const struct cam *cm = &cams[first + i];
 		struct rp_cam c;
@@ -115,6 +131,7 @@ int main(int argc, char **argv) {
 		u32 t0 = mx_count();
 		mx_frame_begin_n();
 		u32 t1 = mx_count();
+		rp_tex_frame();
 		if (rp_debug & 128)
 			mx_hires_clear(0, 0, 0);
 		else
@@ -152,9 +169,13 @@ int main(int argc, char **argv) {
 		}
 	}
 	u32 n = shot_at != ~0u ? shot_at + 1 : count;
+	if (rp_debug & 4096) {
+		mx_prof_stop();
+		mx_prof_report(30);
+	}
 	/* the last record's passes */
 	for (u32 v = mx_gs.vsync; mx_gs.vsync - v < 4;)
-		;
+		mx_sleep_us(2000);
 	u32 fields = mx_gs.vsync - t_start;
 	n = n ? n : 1;
 	mx_printf("q3view: %u frames in %u fields; the EE a frame: %u cycles (%u us), the longest %u us, %u over a field; "
@@ -165,6 +186,8 @@ int main(int argc, char **argv) {
 	          "most %u chunks, %u vertices (%u sent), %u set-ups, %u quadwords\n", sum.seen / n, sum.groups / n,
 	          sum.drawn / n, sum.clip / n, sum.back / n, sum.verts / n, sum.sent / n, sum.batches / n, sum.setups / n,
 	          sum.qw / n, max.drawn, max.verts, max.sent, max.setups, max.qw);
+	mx_printf("q3view: textures sent to GS memory in the flight: %u (%u KB), %u found no room\n", rp_tex_stats.uploads,
+	          rp_tex_stats.upload_kb, rp_tex_stats.full);
 	mx_printf("q3view: beam: fields %u, passes %u, left out %u, still drawn when the beam came %u, records shown %u, "
 	          "held %u; largest record %u KB, a strip's %u KB, %u cut off\n", mx_hires_stats.fields,
 	          mx_hires_stats.passes, mx_hires_stats.late, mx_hires_stats.over, mx_hires_stats.shown, mx_hires_stats.held,
