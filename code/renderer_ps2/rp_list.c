@@ -275,6 +275,7 @@ static struct run {
 	const void *matrix;
 	struct rp_state s;
 	const void *setup[2][2]; /* [the programs that cut][with the state] */
+	const void *ghost[2];    /* rp_debug 131072: the same, drawing nothing */
 	u16 first, n;
 } run[MAX_RUN];
 static struct draw {
@@ -292,6 +293,7 @@ int rp_run(const void *matrix, const struct rp_state *s) {
 	struct run *r = &run[nrun];
 	r->matrix = matrix, r->s = *s;
 	r->setup[0][0] = r->setup[0][1] = r->setup[1][0] = r->setup[1][1] = 0;
+	r->ghost[0] = r->ghost[1] = 0;
 	r->first = (u16)ndraw, r->n = 0;
 	return (int)nrun++;
 }
@@ -367,6 +369,7 @@ static const void *setup_gs(const struct rp_state *s) {
 	return c0;
 }
 
+static int ghost; /* the set-up being made draws nothing (rp_debug 131072) */
 static const void *setup_chain(const struct rp_state *s, int cut, int state) {
 	if (s->prog == RP_PROG_GS)
 		return setup_gs(s);
@@ -375,7 +378,7 @@ static const void *setup_chain(const struct rp_state *s, int cut, int state) {
 		return 0;
 	int lit = s->lm_ok && s->prog == RP_PROG_WORLD && !(rp_debug & (2 | 128)), tex = s->tex_ok && !(rp_debug & (32 | 128));
 	_Static_assert(Q3VU_T_TM0 + 1 == Q3VU_T_TM1 && Q3VU_T_TM0 + 4 == Q3VU_T_CADD, "q3w1t's uniforms in a row");
-	u64 regs = rp_debug & 16 ? 0xD12 : 0x512; /* ST, RGBAQ, XYZ2 (XYZ3: no drawing) */
+	u64 regs = (rp_debug & 16) || ghost ? 0xD12 : 0x512; /* ST, RGBAQ, XYZ2 (XYZ3: no drawing) */
 	int blend = s->blend != RP_BLEND_NONE || (rp_debug & 128);
 	u32 entry = s->prog == RP_PROG_MODEL   ? (cut ? Q3MC_SETUP : Q3M_SETUP)
 	            : s->prog == RP_PROG_STAGE ? (cut ? Q3W1TC_SETUP : Q3W1T_SETUP)
@@ -643,9 +646,24 @@ void rp_list_end(void) {
 						pre[np++] = rn->setup[v][!set];
 						calls(pre, np);
 						calls(list[v], n[v]);
+						/* rp_debug 131072: the list again, its vertices as XYZ3: VIF1 and VU1
+						   work twice, the GS draws once (do they wait for each other?) */
+						int again = 0;
+						if ((rp_debug & 131072) && rn->s.prog != RP_PROG_GS) {
+							if (!rn->ghost[v]) {
+								ghost = 1;
+								rn->ghost[v] = setup_chain(&rn->s, v, 1);
+								ghost = 0;
+							}
+							if (rn->ghost[v]) {
+								calls(&rn->ghost[v], 1);
+								calls(list[v], n[v]);
+								again = 1; /* the context's tags are the ghost's: the next list sets its own */
+							}
+						}
 						rp_list_stats.setups++;
 						rp_list_stats.p_setups[rn->s.prog]++;
-						set = 1, n[v] = 0;
+						set = !again, n[v] = 0;
 					}
 					n[0] = n[1] = 0;
 					if (i == rn->n)

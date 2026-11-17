@@ -157,7 +157,9 @@ void rp_list_end(void);
    largest channel times 31 / 255 is about the triangles drawn over it),
    256 no strip records (everything in every pass), 1024 no CLUT is loaded
    (TEX0.CLD 0: wrong colours), 2048 none for the lightmap, 65536 the runs'
-   GS registers left out (wrong textures and blends: what they cost) */
+   GS registers left out (wrong textures and blends: what they cost), 131072
+   every list sent twice, the second time not drawn (VIF1 and VU1 work
+   twice, the GS once: whether they wait for each other) */
 extern unsigned rp_debug;
 
 #endif

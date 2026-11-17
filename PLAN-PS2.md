@@ -403,6 +403,23 @@ amount of world in a strip. What is left as the GS's cost (6 ms a field of
 the 11.9; 5.8 ms when it draws nothing) is its triangles of the world,
 both passes, at small pixel counts: about 16,000 set-ups a frame.
 
+**Do VU1 and the GS overlap?** rp_debug 131072 sends every list twice,
+the second time as XYZ3 (VIF1 and VU1 work twice, the GS draws once; the
+picture is the same to the pixel). The same timedemo, a field's passes:
+
+| | Once | Twice | Added |
+|---|---|---|---|
+| The GS drawing nothing (VIF1, VU1, GIF alone) | 5.8 ms | 9.3 ms | 3.5 ms |
+| The GS drawing | 11.9 ms | 14.5 ms | 2.6 ms |
+
+Three quarters of VU1's added time shows in the passes: VU1 and the GS
+mostly take turns. With them overlapped a field would be near the GS's
+own share (about 12 - 0.75 x 5.8 = 7.6 ms), where the run without the
+lightmap pass (9.1 ms) already had only 51 late passes. So the next step
+is the overlap: set-ups that do not wait for the program before (FLUSHE:
+the context is shared), no FLUSH between the models' programs and the
+others, larger batches.
+
 The view weapon now goes through `q3mc` with the cut: a triangle with a
 vertex outside the guard band is left out of the piece's packet and cut
 after it (`q3mclip`, the world's routines), where it was dropped before
