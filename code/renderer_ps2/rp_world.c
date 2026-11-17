@@ -329,7 +329,7 @@ void rp_world_add(int blended) {
 		if ((c0->flags & CH_LIGHTMAP) && c0->lightmap >= 0 && c0->lightmap < MAX_LM && wlm[c0->lightmap] &&
 		    (t = rp_image_place(wlm[c0->lightmap]))) {
 			s.lm = *t;
-			s.lm.cbp = s.tex_ok ? s.tex.cbp : rp_clut_place(lm_clut_key, lm_clut);
+			s.lm.cbp = s.tex_ok ? s.tex.cbp : rp_clut_place(lm_clut_key, lm_clut, 0);
 			s.lm.cpsm = MX_GS_PSM_CT32, s.lm.csm = 0;
 			s.lm_ok = s.lm.cbp != 0;
 		}

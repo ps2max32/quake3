@@ -15,8 +15,8 @@ all: $(OUT)/q3view.elf
 include $(MAXSDK)/mk/maxsdk.mk
 
 CFLAGS += -I$(REN) -mvu0 -ffast-math -cl-single-precision-constant
-# the renderer's files but the one that is the game's side of it
-OBJS   := $(OUT)/q3view.o $(patsubst $(REN)/%.c,$(OUT)/%.o,$(filter-out $(REN)/rp_main.c,$(wildcard $(REN)/rp_*.c)))
+# the renderer's files but the game's side of it (rp_main, rp_shader)
+OBJS   := $(OUT)/q3view.o $(patsubst %,$(OUT)/rp_%.o,list tex world poly)
 REN_H  := $(wildcard $(REN)/*.h) $(REN)/vu/q3vu.h
 
 $(OUT)/q3view.o: $(HERE)/q3view.c $(REN_H) $(MX_HDRS)

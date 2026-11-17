@@ -1,15 +1,18 @@
 #!/usr/bin/env python3
 """Quake 3's textures as 8-bit (or 4-bit) paletted textures for the PS2.
 
-    ps2pak.py OUT.pk3 BASEQ3_DIR [--max 128] [--dirs textures,models] [-j N]
+    ps2pak.py OUT.pk3 BASEQ3_DIR [--max 128] [--max2d 256] [--dirs DIR,...] [-j N]
 
 Reads the pak*.pk3 of BASEQ3_DIR in order (a later pak's file replaces an
 earlier one's; a .tga is taken before a .jpg of the same name, as the renderer
-does), and writes for each image under --dirs a <name>.p8 into OUT.pk3. The
-renderer (tr_image.c, PS2) loads a .p8 for a mipmapped image before the
-original, and uploads it with one glCompressedTexImage2D: libgl keeps it as
-T8 with the texture's own CLUT, so GS memory and the core copy take a byte a
-texel (16 bits before).
+does), and writes for each image (under --dirs, if given) a <name>.p8 into
+OUT.pk3. renderergl1 (tr_image.c, PS2) loads a .p8 for a mipmapped image
+before the original, and uploads it with one glCompressedTexImage2D: libgl
+keeps it as T8 with the texture's own CLUT, so GS memory and the core copy
+take a byte a texel (16 bits before). The PS2's own renderer
+(code/renderer_ps2) draws with nothing else: an image without a .p8 is not
+drawn. The pictures of the screen (gfx/2d, menu, ui, icons: the font, the
+HUD) are kept up to --max2d a side.
 
 Each image is made the size the renderer would (sides rounded down to powers
 of two: r_roundImagesDown 1), then halved on both sides until it fits --max
@@ -166,10 +169,12 @@ def main():
     ap.add_argument("out")
     ap.add_argument("baseq3")
     ap.add_argument("--max", type=int, default=128)
-    ap.add_argument("--dirs", default="textures,models")
+    ap.add_argument("--max2d", type=int, default=256)
+    ap.add_argument("--dirs", default="")
     ap.add_argument("-j", type=int, default=os.cpu_count())
     o = ap.parse_args()
-    dirs = tuple(d.strip("/") + "/" for d in o.dirs.split(","))
+    dirs = tuple(d.strip("/") + "/" for d in o.dirs.split(",") if d.strip("/")) or ("",)
+    dirs2d = ("gfx/2d/", "menu/", "ui/", "icons/")
     paks = sorted(f for f in os.listdir(o.baseq3) if f.lower().endswith(".pk3") and f.lower().startswith("pak"))
     # name without extension -> (pak, member); .tga before .jpg in a pak
     src = {}
@@ -188,7 +193,7 @@ def main():
     zips = {}
     for base, (pak, m) in sorted(src.items()):
         z = zips.setdefault(pak, zipfile.ZipFile(os.path.join(o.baseq3, pak)))
-        jobs.append((base, z.read(m), o.max))
+        jobs.append((base, z.read(m), o.max2d if base.startswith(dirs2d) else o.max))
     tmp = o.out + ".tmp"
     n = bytes_out = worse = 0
     s8 = s16 = 0.0

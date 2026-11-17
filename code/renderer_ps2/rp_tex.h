@@ -24,6 +24,8 @@ struct rp_image {
 	u8 from;                /* the level that is t's level 0 (a texture whose first levels
 	                           are not in memory yet) */
 	u8 ok;
+	u32 *luma[2];           /* rp_image_luma's CLUTs */
+	u64 luma_key[2];
 };
 
 struct rp_tex_stats {
@@ -53,9 +55,15 @@ struct rp_image *rp_image_find(const char *name);
    not: beam racing's once record), or 0 if there is no room. Not while a
    strip's record is written (mx_hires_strip). */
 const struct mx_tex *rp_image_place(struct rp_image *im);
-/* A CLUT that is no image's (16 x 16, CT32, the GS's order, where it is
-   read from): its block in GS memory for this frame, or 0. */
-u32 rp_clut_place(u64 key, const void *clut);
+/* A CLUT that is no image's (16 x 16, or 8 x 2 with small; CT32, the GS's
+   order, where it is read from): its block in GS memory for this frame, or
+   0. */
+u32 rp_clut_place(u64 key, const void *clut, int small);
+/* A CLUT of the image's colours whose alpha is their brightness (0x80: white;
+   twice: 0x80 from half white on): for blends that are a product with the
+   picture, which the GS does with a source alpha. Its block in GS memory for
+   this frame, or 0. */
+u32 rp_image_luma(struct rp_image *im, int twice);
 /* Free an image; all of them (nothing in flight may read them: after a
    frame without them is the one shown). */
 void rp_image_free(struct rp_image *im);

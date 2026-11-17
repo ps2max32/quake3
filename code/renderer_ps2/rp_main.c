@@ -6,13 +6,16 @@
    A map's world is rp_world.c's, from maps/<name>.pmap beside the paks
    (tools/ps2map.py makes it from the BSP; a map without one is not drawn).
 
-   Not yet: models, sprites and polys, 2D pictures, lights. They are
-   registered and counted: models are loaded (the file as it is, in the
-   hunk), since cgame places its entities by their tags and bounds. Each
-   main view's camera goes into quake3.cam (ps2_ren_report), for the viewer
-   (tools/q3view) to fly the same path. r_ps2draw 0: nothing is drawn, a
-   timedemo then costs what the game side costs (game, cgame, client, sound,
-   collision). */
+   The game's shaders are rp_shader.c's; sprites and the engine's polys are
+   built on the EE (rp_poly.c), the pictures of the screen are GS sprites.
+
+   Not yet: models, beams, lights, marks. They are counted: models are
+   loaded (the file as it is, in the hunk), since cgame places its entities
+   by their tags and bounds. Each main view's camera goes into quake3.cam
+   (ps2_ren_report), for the viewer (tools/q3view) to fly the same path.
+   r_ps2draw 0: nothing is drawn, a timedemo then costs what the game side
+   costs (game, cgame, client, sound, collision). r_ps2shot n: the picture
+   of the timedemo's frame n is saved as quake3.tga and the game quits. */
 
 #include "../qcommon/q_shared.h"
 #include "../qcommon/qfiles.h"
@@ -25,11 +28,13 @@
 #include <mx/vm.h>
 
 #include "rp_list.h"
+#include "rp_poly.h"
+#include "rp_shader.h"
 #include "rp_tex.h"
 #include "rp_world.h"
 
-static refimport_t ri;
-static cvar_t *r_ps2draw;
+refimport_t ri;
+static cvar_t *r_ps2draw, *r_ps2shot;
 
 /* ---- the screen ------------------------------------------------------------------- */
 
@@ -71,7 +76,8 @@ static void frames_flush(void) {
 	mx_hires_clear(0, 0, 0);
 	u32 f = mx_frame_number();
 	mx_frame_end();
-	while (mx_frame_done() <= f)
+	/* the frames before it are done when it has replaced them */
+	while (mx_frame_done() < f)
 		mx_sleep_us(2000);
 }
 
@@ -93,7 +99,7 @@ struct names {
 	char name[RP_NAMES][MAX_QPATH];
 	int n;
 };
-static struct names shaders, skins;
+static struct names skins;
 
 /* 1 .. RP_NAMES - 1; 0 is the engine's "none" */
 static qhandle_t name_handle(struct names *t, const char *name) {
@@ -220,43 +226,203 @@ struct cam {
 static struct cam *cams;
 static int ncams;
 
-static void RP_ClearScene(void) { cur_ents = cur_polys = cur_polyverts = cur_lights = 0; }
+/* ---- a scene ---------------------------------------------------------------------------- */
+
+/* what the game added since the last scene was drawn: sprites (the entities
+   that are not models are kept as they come), polys and their vertices */
+#define MAX_SPRITE 1024
+#define MAX_POLY 2048
+#define MAX_POLYVERT 12288
+static refEntity_t sprites[MAX_SPRITE];
+static struct {
+	qhandle_t shader;
+	u16 first, n;
+} polys[MAX_POLY];
+static struct rp_vert polyverts[MAX_POLYVERT];
+static u32 nsprite, npoly, npolyvert;          /* in the frame */
+static u32 first_sprite, first_poly;           /* of the scene */
+static unsigned st_nostage, st_quads;
+
+static void RP_ClearScene(void) {
+	cur_ents = cur_polys = cur_polyverts = cur_lights = 0;
+	first_sprite = nsprite, first_poly = npoly;
+}
 
 static void RP_AddRefEntityToScene(const refEntity_t *e) {
 	if ((unsigned)e->reType < RT_MAX_REF_ENTITY_TYPE)
 		st.ents[e->reType]++;
 	cur_ents++;
+	if (e->reType == RT_SPRITE && e->radius > 0 && nsprite < MAX_SPRITE && in_frame)
+		sprites[nsprite++] = *e;
 }
 
 static void RP_AddPolyToScene(qhandle_t shader, int numVerts, const polyVert_t *verts, int num) {
 	st.polys += num, st.polyverts += numVerts * num;
 	cur_polys += num, cur_polyverts += numVerts * num;
+	if (!in_frame || numVerts < 3 || numVerts > 16)
+		return;
+	for (int j = 0; j < num; j++) {
+		if (npoly == MAX_POLY || npolyvert + numVerts > MAX_POLYVERT)
+			return;
+		polys[npoly].shader = shader, polys[npoly].first = (u16)npolyvert, polys[npoly].n = (u16)numVerts;
+		memcpy(&polyverts[npolyvert], verts + j * numVerts, numVerts * sizeof *verts);
+		npolyvert += numVerts, npoly++;
+	}
 }
 
 static void RP_AddLightToScene(const vec3_t org, float intensity, float r, float g, float b) {
 	st.lights++, cur_lights++;
 }
 
+/* a scene's quads in the order they are drawn: by their shader's sort, then
+   as they came */
+struct quad {
+	qhandle_t shader;
+	u8 sort;
+	u8 ent[4];           /* the entity's colour */
+	float time;          /* the shader's */
+	const struct rp_vert *v;
+	u32 n;
+};
+#define MAX_QUAD (MAX_SPRITE + MAX_POLY)
+static struct quad quad[MAX_QUAD];
+static u16 quad_order[MAX_QUAD];
+static struct rp_vert sprite_vert[MAX_SPRITE][4];
+
+float rp_sin1(float turns);
+
+static u32 scene_quads(const refdef_t *fd) {
+	u32 n = 0;
+	float now = fd->time * 0.001f;
+	for (u32 i = first_poly; i < npoly; i++) {
+		struct rp_shader *sh = rp_shader_get(polys[i].shader);
+		if (!sh || !sh->nstage)
+			continue;
+		struct quad *q = &quad[n++];
+		q->shader = polys[i].shader, q->sort = sh->sort, q->time = now;
+		q->ent[0] = q->ent[1] = q->ent[2] = q->ent[3] = 255;
+		q->v = &polyverts[polys[i].first], q->n = polys[i].n;
+	}
+	for (u32 i = first_sprite; i < nsprite; i++) {
+		const refEntity_t *e = &sprites[i];
+		struct rp_shader *sh = rp_shader_get(e->customShader);
+		if (!sh || !sh->nstage)
+			continue;
+		/* the square faces the eye, turned by its rotation */
+		float left[3], up[3];
+		if (e->rotation == 0) {
+			VectorScale(fd->viewaxis[1], e->radius, left);
+			VectorScale(fd->viewaxis[2], e->radius, up);
+		} else {
+			float sn = rp_sin1(e->rotation * (1.0f / 360.0f)), cs = rp_sin1(e->rotation * (1.0f / 360.0f) + 0.25f);
+			VectorScale(fd->viewaxis[1], cs * e->radius, left);
+			VectorMA(left, -sn * e->radius, fd->viewaxis[2], left);
+			VectorScale(fd->viewaxis[2], cs * e->radius, up);
+			VectorMA(up, sn * e->radius, fd->viewaxis[1], up);
+		}
+		struct rp_vert *v = sprite_vert[i - first_sprite];
+		static const float sg[4][4] = {{1, 1, 0, 0}, {-1, 1, 1, 0}, {-1, -1, 1, 1}, {1, -1, 0, 1}};
+		for (int k = 0; k < 4; k++) {
+			for (int a = 0; a < 3; a++)
+				v[k].xyz[a] = e->origin[a] + sg[k][0] * left[a] + sg[k][1] * up[a];
+			v[k].st[0] = sg[k][2], v[k].st[1] = sg[k][3];
+			memcpy(v[k].rgba, e->shaderRGBA, 4);
+		}
+		struct quad *q = &quad[n++];
+		q->shader = e->customShader, q->sort = sh->sort, q->time = now - e->shaderTime;
+		memcpy(q->ent, e->shaderRGBA, 4);
+		q->v = v, q->n = 4;
+	}
+	/* by sort, the order kept (few, and nearly in order: insertion) */
+	for (u32 i = 0; i < n; i++) {
+		u32 j = i;
+		for (; j > 0 && quad[quad_order[j - 1]].sort > quad[i].sort; j--)
+			quad_order[j] = quad_order[j - 1];
+		quad_order[j] = (u16)i;
+	}
+	return n;
+}
+
+/* the quads from..to of the order: the ones of one shader after each other
+   are drawn a stage at a time */
+static void quads_draw(u32 from, u32 to) {
+	for (u32 i = from; i < to;) {
+		const struct quad *q0 = &quad[quad_order[i]];
+		struct rp_shader *sh = rp_shader_get(q0->shader);
+		u32 end = i + 1;
+		while (end < to && quad[quad_order[end]].shader == q0->shader)
+			end++;
+		for (int s = 0; s < sh->nstage; s++) {
+			const struct rp_stage *stg = &sh->st[s];
+			struct rp_state state;
+			float m[6];
+			if (!rp_stage_state(stg, q0->time, &state)) {
+				st_nostage++;
+				continue;
+			}
+			rp_poly_state(&state);
+			for (u32 k = i; k < end; k++) {
+				const struct quad *q = &quad[quad_order[k]];
+				struct rp_vert v[16];
+				int moved = rp_stage_tcmod(stg, q->time, m);
+				for (u32 a = 0; a < q->n; a++) {
+					v[a] = q->v[a];
+					rp_stage_colour(stg, q->time, q->v[a].rgba, q->ent, v[a].rgba);
+					if (moved) {
+						float ss = v[a].st[0], tt = v[a].st[1];
+						v[a].st[0] = m[0] * ss + m[1] * tt + m[2], v[a].st[1] = m[3] * ss + m[4] * tt + m[5];
+					}
+				}
+				rp_poly(v, q->n);
+				st_quads++;
+			}
+		}
+		i = end;
+	}
+	rp_poly_flush();
+}
+
+static struct {
+	qhandle_t shader;
+	int stage;
+} last2d;
+
 static void RP_RenderScene(const refdef_t *fd) {
 	st.scenes++;
-	if (fd->rdflags & RDF_NOWORLDMODEL) {
+	int world = !(fd->rdflags & RDF_NOWORLDMODEL);
+	if (world)
+		st.views++;
+	else
 		st.small++;
-		return;
-	}
-	st.views++;
-	if (in_frame && world_ok && r_ps2draw->integer) {
+	if (in_frame && r_ps2draw->integer) {
 		struct rp_cam cam;
+		rp_poly_flush();
+		last2d.shader = 0;
 		VectorCopy(fd->vieworg, cam.org);
 		memcpy(cam.axis, fd->viewaxis, sizeof cam.axis);
 		cam.fov_x = fd->fov_x, cam.fov_y = fd->fov_y;
-		rp_view_set(&cam);
-		rp_world_cull(&world_st);
-		rp_world_add(0);
-		rp_world_add(1);
+		/* the game's 1080 lines are a field's 540 */
+		float ys = (float)mx_gs.h / 1080.0f;
+		rp_view_rect(&cam, (float)fd->x, (float)fd->y * ys, (float)fd->width, (float)fd->height * ys);
+		u32 nq = scene_quads(fd), decals = 0;
+		while (decals < nq && quad[quad_order[decals]].sort <= SORT_DECAL)
+			decals++;
+		if (world && world_ok) {
+			rp_world_cull(&world_st);
+			rp_world_add(0);
 #define ACC(f) world_sum.f += world_st.f
-		ACC(seen), ACC(groups), ACC(drawn), ACC(clip), ACC(back), ACC(verts);
+			ACC(seen), ACC(groups), ACC(drawn), ACC(clip), ACC(back), ACC(verts);
 #undef ACC
+		}
+		/* the marks on the walls, the world's blended surfaces, then the rest */
+		quads_draw(0, decals);
+		if (world && world_ok)
+			rp_world_add(1);
+		quads_draw(decals, nq);
 	}
+	first_sprite = nsprite, first_poly = npoly;
+	if (!world)
+		return;
 	int df = ps2_demo_frame();
 	if (!df)
 		return;
@@ -273,11 +439,51 @@ static void RP_RenderScene(const refdef_t *fd) {
 	c->ents = cur_ents, c->polys = cur_polys, c->polyverts = cur_polyverts, c->lights = cur_lights;
 }
 
-static void RP_SetColor(const float *rgba) {}
+/* ---- the screen's pictures ------------------------------------------------------------- */
+
+static u8 color2d[4] = {255, 255, 255, 255};
+
+static void RP_SetColor(const float *rgba) {
+	for (int k = 0; k < 4; k++) {
+		float v = rgba ? rgba[k] * 255.0f : 255.0f;
+		color2d[k] = (u8)(v < 0 ? 0 : v > 255 ? 255 : v);
+	}
+}
+
+/* x, y, w, h in the game's 1920 x 1080 */
 static void RP_DrawStretchPic(float x, float y, float w, float h, float s1, float t1, float s2, float t2,
                               qhandle_t shader) {
 	st.pics++;
+	struct rp_shader *sh = rp_shader_get(shader);
+	if (!in_frame || !sh || !r_ps2draw->integer)
+		return;
+	float now = (float)ri.Milliseconds() * 0.001f, ys = (float)mx_gs.h / 1080.0f;
+	for (int k = 0; k < sh->nstage; k++) {
+		const struct rp_stage *stg = &sh->st[k];
+		/* the state again only when it is another than the last picture's */
+		if (last2d.shader != shader || last2d.stage != k || stg->nimg > 1) {
+			struct rp_state state;
+			last2d.shader = 0;
+			if (!rp_stage_state(stg, now, &state)) {
+				st_nostage++;
+				continue;
+			}
+			state.nomip = 1;
+			rp_pic_state(&state);
+			last2d.shader = shader, last2d.stage = k;
+		}
+		u8 c[4];
+		float m[6], a1 = s1, b1 = t1, a2 = s2, b2 = t2;
+		rp_stage_colour(stg, now, color2d, color2d, c);
+		if (rp_stage_tcmod(stg, now, m)) {
+			a1 = m[0] * s1 + m[1] * t1 + m[2], b1 = m[3] * s1 + m[4] * t1 + m[5];
+			a2 = m[0] * s2 + m[1] * t2 + m[2], b2 = m[3] * s2 + m[4] * t2 + m[5];
+		}
+		rp_pic(x, y * ys, w, h * ys, a1, b1, a2, b2,
+		       ((u32)c[0] + 1) >> 1 | ((u32)c[1] + 1) >> 1 << 8 | ((u32)c[2] + 1) >> 1 << 16 | ((u32)c[3] + 1) >> 1 << 24);
+	}
 }
+
 
 static void RP_BeginFrame(stereoFrame_t stereoFrame) {
 	if (!screen_on || in_frame)
@@ -289,13 +495,31 @@ static void RP_BeginFrame(stereoFrame_t stereoFrame) {
 	rp_tex_frame();
 	mx_hires_clear(0, 0, 0);
 	rp_list_begin();
+	nsprite = npoly = npolyvert = first_sprite = first_poly = 0;
+	last2d.shader = 0;
+	/* the pictures before a scene: over the whole picture */
+	struct rp_cam none = {{0, 0, 0}, {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}}, 90, 60};
+	rp_view_set(&none);
 }
 
 static void RP_EndFrame(int *frontEndMsec, int *backEndMsec) {
+	int shot = in_frame && r_ps2shot->integer && ps2_demo_frame() == r_ps2shot->integer;
 	if (in_frame) {
+		rp_poly_flush();
 		rp_list_end();
+		u32 f = mx_frame_number();
 		mx_frame_end();
 		in_frame = 0;
+		if (shot) {
+			/* the frame's picture: when it is the one played, and a field more */
+			while (mx_frame_done() < f)
+				mx_sleep_us(2000);
+			for (u32 v = mx_gs.vsync; mx_gs.vsync - v < 6;)
+				mx_sleep_us(2000);
+			int r = mx_hires_save_tga("quake3.tga");
+			ri.Printf(PRINT_ALL, "ps2: renderer: the picture of frame %d: quake3.tga (%d)\n", r_ps2shot->integer, r);
+			ri.Cmd_ExecuteText(EXEC_APPEND, "quit\n");
+		}
 	}
 	if (frontEndMsec)
 		*frontEndMsec = 0;
@@ -339,7 +563,10 @@ void ps2_ren_report(void) {
 	           A(polys), A(polyverts), A(lights), A(pics), A(marks));
 #undef A
 	Com_Printf("ps2: renderer: %d models, %d shaders, %d skins registered; %u tags asked\n", nmodels ? nmodels - 1 : 0,
-	           shaders.n ? shaders.n - 1 : 0, skins.n ? skins.n - 1 : 0, st_tags);
+	           rp_shader_count(), skins.n ? skins.n - 1 : 0, st_tags);
+	Com_Printf("ps2: renderer: polygons: %u drawn (%u across a plane), %u out of view; %u pictures; %u stages without "
+	           "an image in GS memory\n", rp_poly_stats.polys, rp_poly_stats.cut, rp_poly_stats.culled,
+	           rp_poly_stats.pics, st_nostage);
 	unsigned v = st.views - st_at.views;
 	if (v && world_sum.drawn)
 		Com_Printf("ps2: renderer: the world, a view: %u groups in view, %u chunks (%u across a plane, %u more facing "
@@ -376,13 +603,18 @@ static void RP_Shutdown(qboolean destroyWindow) {
 static void RP_BeginRegistration(glconfig_t *config) {
 	static int pad;
 	/* the hunk was cleared: nothing registered is left */
-	nmodels = 0, shaders.n = 0, skins.n = 0;
+	nmodels = 0, skins.n = 0;
 	memset(config, 0, sizeof *config);
 	Q_strncpyz(config->renderer_string, "PS2 GS (maxsdk)", sizeof config->renderer_string);
 	Q_strncpyz(config->vendor_string, "ps2max", sizeof config->vendor_string);
 	Q_strncpyz(config->version_string, "renderer_ps2", sizeof config->version_string);
 	r_ps2draw = ri.Cvar_Get("r_ps2draw", "1", 0);
+	r_ps2shot = ri.Cvar_Get("r_ps2shot", "0", 0);
 	screen_init();
+	/* no frame in flight draws what goes now: the map, the images */
+	world_free();
+	frames_flush();
+	rp_shaders_begin();
 	config->maxTextureSize = 128;
 	config->numTextureUnits = 1;
 	config->colorBits = 16, config->depthBits = 16;
@@ -396,7 +628,9 @@ static void RP_BeginRegistration(glconfig_t *config) {
 }
 
 static qhandle_t RP_RegisterSkin(const char *name) { return name_handle(&skins, name); }
-static qhandle_t RP_RegisterShader(const char *name) { return name_handle(&shaders, name); }
+static qhandle_t RP_RegisterShader(const char *name) { return rp_shader_register(name, -1, 1); }
+/* the screen's pictures (LIGHTMAP_2D) */
+static qhandle_t RP_RegisterShaderNoMip(const char *name) { return rp_shader_register(name, -4, 0); }
 /* maps/<name>.bsp: its world is maps/<name>.pmap, a file beside the paks, mapped
    and locked in memory (the DMAC reads its chunks and textures where they lie) */
 static void RP_LoadWorld(const char *name) {
@@ -443,7 +677,7 @@ refexport_t *GetRefAPI(int apiVersion, refimport_t *rimp) {
 	re.RegisterModel = RP_RegisterModel;
 	re.RegisterSkin = RP_RegisterSkin;
 	re.RegisterShader = RP_RegisterShader;
-	re.RegisterShaderNoMip = RP_RegisterShader;
+	re.RegisterShaderNoMip = RP_RegisterShaderNoMip;
 	re.LoadWorld = RP_LoadWorld;
 	re.SetWorldVisData = RP_SetWorldVisData;
 	re.EndRegistration = RP_EndRegistration;

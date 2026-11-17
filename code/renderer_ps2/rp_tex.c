@@ -116,9 +116,38 @@ struct rp_image *rp_image_find(const char *name) {
 	return 0;
 }
 
+u32 rp_image_luma(struct rp_image *im, int twice) {
+	u32 n = im->psm == MX_GS_PSM_T4 ? 16 : 256;
+	twice = twice != 0;
+	if (!im->clut)
+		return 0;
+	if (!im->luma[twice]) {
+		u32 *c = heap_pin ? mx_heap_alloc(heap_pin, n * 4, 64) : 0;
+		const u32 *src = im->clut;
+		if (!c)
+			return 0;
+		for (u32 i = 0; i < n; i++) {
+			u32 r = src[i] & 0xFF, g = src[i] >> 8 & 0xFF, b = src[i] >> 16 & 0xFF;
+			u32 m = r > g ? r : g;
+			m = ((b > m ? b : m) + 1) >> (twice ? 0 : 1);
+			c[i] = (src[i] & 0xFFFFFF) | (m > 0x80 ? 0x80 : m) << 24;
+		}
+		mx_dcache_writeback(c, n * 4);
+		im->luma[twice] = c, im->luma_key[twice] = rp_tex_key();
+	}
+	return rp_clut_place(im->luma_key[twice], im->luma[twice], n == 16);
+}
+
+static void luma_free(struct rp_image *im) {
+	for (int k = 0; k < 2; k++)
+		if (im->luma[k])
+			mx_heap_free(heap_pin, im->luma[k]), im->luma[k] = 0;
+}
+
 void rp_image_free(struct rp_image *im) {
 	if (!im || !im->used)
 		return;
+	luma_free(im);
 	for (u32 f = 0; f < im->levels; f++)
 		mx_vcache_drop(mx_vcache_tex_key(im->key, f));
 	if (im->split)
@@ -127,9 +156,13 @@ void rp_image_free(struct rp_image *im) {
 }
 
 void rp_images_free(void) {
-	for (u32 i = 0; i < image_hi; i++)
-		if (images[i].used && images[i].split)
+	for (u32 i = 0; i < image_hi; i++) {
+		if (!images[i].used)
+			continue;
+		luma_free(&images[i]);
+		if (images[i].split)
 			mx_tex_mem_free(&images[i].m, heap_pin, heap_asset);
+	}
 	image_hi = 0;
 	mx_vcache_reset();
 }
@@ -202,14 +235,14 @@ const struct mx_tex *rp_image_place(struct rp_image *im) {
 	return &im->t;
 }
 
-u32 rp_clut_place(u64 key, const void *clut) {
-	u32 bp = 0;
-	int r = mx_vcache_buf(key, 16, 16, MX_GS_PSM_CT32, &bp);
+u32 rp_clut_place(u64 key, const void *clut, int small) {
+	u32 bp = 0, w = small ? 8 : 16, h = small ? 2 : 16;
+	int r = mx_vcache_buf(key, w, h, MX_GS_PSM_CT32, &bp);
 	if (r == MX_VCACHE_FULL)
 		return 0;
 	if (r == MX_VCACHE_MISS) {
 		mx_hires_once(1);
-		image_xfer(bp, 1, MX_GS_PSM_CT32, 16, 16, 1024, clut);
+		image_xfer(bp, 1, MX_GS_PSM_CT32, w, h, w * h * 4, clut);
 		texflush();
 		mx_hires_once(0);
 	}
