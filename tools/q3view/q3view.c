@@ -28,9 +28,9 @@ struct cam {
 	unsigned ents, polys, polyverts, lights;
 };
 
-static u8 rec[4 * 128 * 1024] MX_CORE_BSS MX_ALIGNED(64);
+static u8 rec[4 * 128 * 1024] MX_FAST_BSS MX_ALIGNED(64);
 /* the strips' own records: four frames of up to 16 strips */
-static u8 srec[4 * 16 * 24 * 1024] MX_CORE_BSS MX_ALIGNED(64);
+static u8 srec[4 * 16 * 24 * 1024] MX_FAST_BSS MX_ALIGNED(64);
 
 static u32 num(const char *s) {
 	u32 v = 0;

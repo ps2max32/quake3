@@ -15,8 +15,11 @@
    are counted. Each main view's camera goes into quake3.cam
    (ps2_ren_report), for the viewer (tools/q3view) to fly the same path.
    r_ps2draw 0: nothing is drawn, a timedemo then costs what the game side
-   costs (game, cgame, client, sound, collision). r_ps2shot n: the picture
-   of the timedemo's frame n is saved as quake3.tga and the game quits. */
+   costs (game, cgame, client, sound, collision); 1 and a sum of: 2 no world,
+   4 no models, 8 no sprites and polys, 16 no view weapon, 32 no pictures
+   (what each costs a pass). r_ps2debug: rp_list.h's rp_debug. r_ps2shot n: the picture
+   of the timedemo's frame n is saved as quake3.tga and the game quits.
+   r_ps2passes 1: the timedemo's passes of beam racing as quake3.pass. */
 
 #include "../qcommon/q_shared.h"
 #include "../qcommon/qfiles.h"
@@ -25,6 +28,7 @@
 
 #include <mx/frame.h>
 #include <mx/hires.h>
+#include <mx/mem.h>
 #include <mx/mx.h>
 #include <mx/vm.h>
 
@@ -38,7 +42,7 @@
 
 refimport_t ri;
 static float scene_time; /* the scene's being drawn, for its shaders */
-static cvar_t *r_ps2draw, *r_ps2shot;
+static cvar_t *r_ps2draw, *r_ps2shot, *r_ps2passes;
 
 /* ---- the screen ------------------------------------------------------------------- */
 
@@ -46,8 +50,8 @@ static cvar_t *r_ps2draw, *r_ps2shot;
    the three strips. They hold CALLs (the draws lie elsewhere: rp_list.c): a
    frame of the game is a few KB a strip, and its texture uploads (at most
    rp_tex.c's a frame) fit the frame's own record. */
-static u8 rec[4 * 64 * 1024] MX_CORE_BSS MX_ALIGNED(64);
-static u8 srec[4 * 3 * 32 * 1024] MX_CORE_BSS MX_ALIGNED(64);
+static u8 rec[4 * 64 * 1024] MX_FAST_BSS MX_ALIGNED(64);
+static u8 srec[4 * 3 * 32 * 1024] MX_FAST_BSS MX_ALIGNED(64);
 static int screen_on, in_frame;
 /* cycles a frame waited for a free record: not the frame's work (sys_ps2.c) */
 unsigned ps2_ren_wait;
@@ -55,7 +59,7 @@ unsigned ps2_ren_wait;
 static void screen_init(void) {
 	if (screen_on)
 		return;
-	mx_hires_strip_lines(192);
+	mx_hires_strip_lines((u32)ri.Cvar_Get("r_ps2strip", "192", CVAR_LATCH)->integer);
 	if (mx_hires_init(&mx_video_1080i, 1920, 540, MX_GS_PSM_CT16S, rec, sizeof rec, (void *)0x70002000, 0x2000) < 0)
 		ri.Error(ERR_FATAL, "ps2: no 1080i, or its buffer does not fit");
 	u32 sbytes = mx_hires_strip_records(srec, sizeof srec);
@@ -327,7 +331,9 @@ static void RP_RenderScene(const refdef_t *fd) {
 		while (decals < nq && quad[quad_order[decals]].sort <= SORT_DECAL)
 			decals++;
 		rp_scene_world = world;
-		if (world && world_ok) {
+		int skip = r_ps2draw->integer;
+		int draw_world = world && world_ok && !(skip & 2);
+		if (draw_world) {
 			rp_world_cull(&world_st);
 			rp_world_add(0);
 #define ACC(f) world_sum.f += world_st.f
@@ -345,13 +351,17 @@ static void RP_RenderScene(const refdef_t *fd) {
 		for (u32 i = first_ment; i < nment; i++) {
 			const refEntity_t *e = &ments[i];
 			kind[i] = (u8)(rp_model_blended(e) | (e->renderfx & RF_DEPTHHACK ? 2 : 0));
-			if (kind[i] & 2)
+			if ((skip & 4) || ((skip & 16) && (kind[i] & 2)))
+				kind[i] = 4;
+			else if (kind[i] & 2)
 				hack = 1;
 			else if (!kind[i])
 				rp_model_draw(e, now - e->shaderTime);
 		}
+		if (skip & 8)
+			nq = decals = 0;
 		quads_draw(0, decals);
-		if (world && world_ok)
+		if (draw_world)
 			rp_world_add(1);
 		for (u32 i = first_ment; i < nment; i++)
 			if (kind[i] == 1)
@@ -406,7 +416,7 @@ static void RP_SetColor(const float *rgba) {
 static void RP_DrawStretchPic(float x, float y, float w, float h, float s1, float t1, float s2, float t2,
                               qhandle_t shader) {
 	st.pics++;
-	if (!in_frame || !r_ps2draw->integer)
+	if (!in_frame || !r_ps2draw->integer || (r_ps2draw->integer & 32))
 		return;
 	float now = frame_time, ys = (float)mx_gs.h / 1080.0f;
 	u32 col = (u32)color2d[0] | (u32)color2d[1] << 8 | (u32)color2d[2] << 16 | (u32)color2d[3] << 24;
@@ -466,6 +476,64 @@ static void RP_BeginFrame(stereoFrame_t stereoFrame) {
 	rp_view_set(&none);
 }
 
+/* r_ps2passes 1: beam racing's passes of the timedemo's frames (maxsdk's log
+   of them) with what each frame put into each strip, as a file: which passes
+   the beam overtook, and what was in them. */
+#define PASS_LOG 8192
+#define FRAME_LOG 2048
+static struct mx_hires_pass *pass_log;
+static struct {
+	u32 frame;
+	u16 demo, tex_kb;
+	u16 sent[8], batches[8], setups[8];
+} frame_log[FRAME_LOG];
+static u32 pass_tex_kb;
+
+static void passes_frame(u32 frame, int df) {
+	if (!pass_log) {
+		pass_log = mx_dma_alloc(PASS_LOG * sizeof *pass_log);
+		if (!pass_log)
+			return;
+		mx_hires_log(pass_log, PASS_LOG);
+	}
+	typeof(frame_log[0]) *f = &frame_log[frame % FRAME_LOG];
+	f->frame = frame, f->demo = (u16)df;
+	f->tex_kb = (u16)(rp_tex_stats.upload_kb - pass_tex_kb);
+	pass_tex_kb = rp_tex_stats.upload_kb;
+	for (int k = 0; k < 8; k++) {
+		f->sent[k] = (u16)rp_list_stats.k_sent[k], f->batches[k] = (u16)rp_list_stats.k_batches[k];
+		f->setups[k] = (u16)rp_list_stats.k_setups[k];
+	}
+}
+
+static void passes_report(void) {
+	if (!pass_log)
+		return;
+	u32 n = mx_hires_stats.logged, first = n > PASS_LOG ? n - PASS_LOG : 0;
+	mx_hires_log(0, 0);
+	static char text[64 * 96];
+	FILE *fo = fopen("quake3.pass", "w");
+	int len = sprintf(text, "# frame demo strip wait_us run_us over out sent batches setups tex_kb\n");
+	for (u32 i = first; i < n && fo; i++) {
+		const struct mx_hires_pass *e = &pass_log[i % PASS_LOG];
+		const typeof(frame_log[0]) *f = &frame_log[e->frame % FRAME_LOG];
+		u32 k = e->strip & 7;
+		int known = f->frame == e->frame;
+		len += sprintf(text + len, "%u %u %u %u %u %u %u %u %u %u %u\n", e->frame, known ? f->demo : 0, e->strip,
+		               e->wait_us, e->run_us, e->over, e->out, known ? f->sent[k] : 0, known ? f->batches[k] : 0,
+		               known ? f->setups[k] : 0, known ? f->tex_kb : 0);
+		if (len > (int)sizeof text - 96) {
+			fwrite(text, 1, len, fo);
+			len = 0;
+		}
+	}
+	if (fo) {
+		fwrite(text, 1, len, fo);
+		fclose(fo);
+	}
+	Com_Printf("ps2: renderer: quake3.pass: %u passes%s\n", n - first, fo ? "" : " (not written)");
+}
+
 static void RP_EndFrame(int *frontEndMsec, int *backEndMsec) {
 	int shot = in_frame && r_ps2shot->integer && ps2_demo_frame() == r_ps2shot->integer;
 	if (in_frame) {
@@ -492,10 +560,13 @@ static void RP_EndFrame(int *frontEndMsec, int *backEndMsec) {
 		*backEndMsec = 0;
 	/* the counts are the timedemo's: from its first frame on */
 	int df = ps2_demo_frame();
+	if (df && r_ps2passes->integer && mx_hires_passes())
+		passes_frame(mx_frame_number() - 1, df);
 	if (df && !st_frames) {
 		st_at = st;
 		rp_list_stats = (struct rp_list_stats){0};
 		rp_tex_stats = (struct rp_tex_stats){0};
+		pass_tex_kb = 0;
 		u32 kb = rp_model_stats.kb;
 		rp_model_stats = (struct rp_model_stats){.kb = kb};
 	}
@@ -543,13 +614,12 @@ void ps2_ren_report(void) {
 	Com_Printf("ps2: renderer: %d models (%u KB of vertices; %u frames of surfaces made, %u given up), %d shaders "
 	           "registered\n", rp_model_count(), rp_model_stats.kb, rp_model_stats.made, rp_model_stats.evicted,
 	           rp_shader_count());
-	Com_Printf("ps2: renderer: models, a frame: %u on VU1 (%u surfaces, %u pieces, %u vertices), %u across a plane "
-	           "(on the EE), %u out of view; in all %u surfaces without a stage, %u later stages not drawn, %u "
+	Com_Printf("ps2: renderer: models, a frame: %u drawn (%u surfaces, %u pieces, %u vertices), %u of them across a "
+	           "plane (cut on VU1), %u out of view; in all %u surfaces without a stage, %u later stages not drawn, %u "
 	           "times a surface's frame was not ready\n",
-	           rp_model_stats.drawn / n, rp_model_stats.surfs / n, rp_model_stats.pieces / n, rp_model_stats.verts / n,
+	           (rp_model_stats.drawn + rp_model_stats.cut) / n, rp_model_stats.surfs / n, rp_model_stats.pieces / n, rp_model_stats.verts / n,
 	           rp_model_stats.cut / n, rp_model_stats.culled / n, rp_model_stats.nostage, rp_model_stats.stages,
 	           rp_model_stats.paged);
-	rp_model_report();
 	rp_shader_report();
 	{
 		struct mx_vcache_stats vs;
@@ -583,6 +653,14 @@ void ps2_ren_report(void) {
 		           rp_list_stats.sent / st_frames, rp_list_stats.batches / st_frames, rp_list_stats.setups / st_frames,
 		           rp_list_stats.qw / st_frames, rp_list_stats.dyn_qw / st_frames, rp_list_stats.lost,
 		           rp_tex_stats.uploads, rp_tex_stats.upload_kb, rp_tex_stats.full, rp_tex_stats.later);
+	if (st_frames) {
+		static const char *const prog[4] = {"the world's", "GS packets", "the models'", "the stages'"};
+		for (int k = 0; k < 4; k++)
+			Com_Printf("ps2: renderer: a frame, %s program: %u vertices (%u through the one that cuts) in %u batches, %u "
+			           "set-ups\n", prog[k], rp_list_stats.p_sent[k] / st_frames, rp_list_stats.p_clip[k] / st_frames,
+			           rp_list_stats.p_batches[k] / st_frames, rp_list_stats.p_setups[k] / st_frames);
+	}
+	passes_report();
 	if (ncams) {
 		FILE *f = fopen("quake3.cam", "wb");
 		int head[4] = {0x4d414351 /* "QCAM" */, 1, ncams, sizeof *cams};
@@ -613,6 +691,8 @@ static void RP_BeginRegistration(glconfig_t *config) {
 	Q_strncpyz(config->version_string, "renderer_ps2", sizeof config->version_string);
 	r_ps2draw = ri.Cvar_Get("r_ps2draw", "1", 0);
 	r_ps2shot = ri.Cvar_Get("r_ps2shot", "0", 0);
+	r_ps2passes = ri.Cvar_Get("r_ps2passes", "0", 0);
+	rp_debug = (unsigned)ri.Cvar_Get("r_ps2debug", "0", 0)->integer;
 	screen_init();
 	/* no frame in flight draws what goes now: the map, the images */
 	world_free();

@@ -435,11 +435,14 @@ static void ps2_beam_report(void) {
 	u32 sum = 0;
 	for (u32 k = 0; k < mx_hires_passes(); k++)
 		sum += mx_hires_stats.pass_sum_us[k];
+	char longest[MX_HIRES_PASSES * 8];
+	int len = 0;
+	for (u32 k = 0; k < mx_hires_passes(); k++)
+		len += sprintf(longest + len, "%s%u", k ? "/" : "", mx_hires_stats.pass_us[k]);
 	mx_printf("ps2: beam: fields %u, passes %u, left out %u, still drawn when the beam came %u, records shown %u, "
-	          "held %u; a field's passes together %u us, longest pass %u/%u/%u us; largest record %u KB, a strip's %u "
+	          "held %u; a field's passes together %u us, longest pass %s us; largest record %u KB, a strip's %u "
 	          "KB, %u frames cut off (too large)\n", mx_hires_stats.fields, mx_hires_stats.passes, mx_hires_stats.late,
-	          mx_hires_stats.over, mx_hires_stats.shown, mx_hires_stats.held, sum / mx_hires_stats.fields,
-	          mx_hires_stats.pass_us[0], mx_hires_stats.pass_us[1], mx_hires_stats.pass_us[2],
+	          mx_hires_stats.over, mx_hires_stats.shown, mx_hires_stats.held, sum / mx_hires_stats.fields, longest,
 	          mx_hires_stats.rec_max / 1024, mx_hires_stats.strip_max / 1024, mx_hires_stats.rec_full);
 }
 
@@ -451,7 +454,7 @@ static void ps2_beam_report(void) {
    ends the program. It cannot help when interrupts are off. */
 #include <mx/thread.h>
 static volatile u32 wd_beat;
-static u8 wd_stack[16384] MX_CORE_BSS MX_ALIGNED(16);
+static u8 wd_stack[16384] MX_FAST_BSS MX_ALIGNED(16);
 static void watchdog(void *arg) {
 	u32 last = wd_beat;
 	int still = 0;

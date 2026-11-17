@@ -57,6 +57,8 @@ static inline float rp_box_dist(const struct rp_plane *p, const float *mins, con
 /* The strips a box (world coordinates; mins, a number between, maxs: as a
    map's group and chunk have them) is drawn in, as a mask. */
 u32 rp_strip_mask(const float *box);
+/* The same for the hull of n points. */
+u32 rp_strip_points(const float (*p)[3], u32 n);
 /* The strips of the picture's lines y0 .. y1. */
 u32 rp_strip_lines(float y0, float y1);
 
@@ -127,6 +129,9 @@ struct rp_list_stats {
 	u32 qw;            /* quadwords written into the records */
 	u32 dyn_qw;        /* and into rp_dyn's memory */
 	u32 lost;          /* draws left out: no room */
+	u32 k_sent[16], k_batches[16], k_setups[16]; /* the last frame's, by strip */
+	u32 p_sent[4], p_batches[4], p_setups[4];    /* sent, batches and setups by program (RP_PROG_*) */
+	u32 p_clip[4];                               /* of p_sent, by the programs that cut */
 };
 extern struct rp_list_stats rp_list_stats;
 

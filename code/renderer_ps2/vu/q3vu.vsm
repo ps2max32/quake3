@@ -159,8 +159,8 @@ q3mc_loop:
 	itof0.xyz vf04, vf04            iaddiu vi02, vi01, 0x7fff         ; ib.0 stage 1; adc.0 stage 3
 	maddax.xyzw ACC, vf25, vf01x    mfir.w vf09, vi02                 ; lx.0 stage 1; mfir.0 stage 3
 	madday.xyzw ACC, vf24, vf01y    sq.xyzw vf05, -7(vi04)            ; ly.0 stage 1; sqc.0 stage 2
-	maddz.xyzw vf01, vf23, vf01z    iaddiu vi04, vi04, 4              ; lz.0 stage 1
-	sub.xyz vf04, vf04, vf03        nop                               ; sub.0 stage 1
+	maddz.xyzw vf01, vf23, vf01z    sq.xyzw vf07, -5(vi04)            ; lz.0 stage 1; sqw.0 stage 2
+	sub.xyz vf04, vf04, vf03        iaddiu vi04, vi04, 4              ; sub.0 stage 1
 	mulaw.xyz ACC, vf20, vf07w      sq.xyzw vf09, -14(vi04)           ; ca.0 stage 2; sqp.0 stage 3
 	mulq.xyz vf05, vf07, Q          nop                               ; mulq.0 stage 2
 	max.xyzw vf01, vf01, vf26       nop                               ; cmax.0 stage 1
@@ -179,6 +179,8 @@ q3mc_loop:
 	nop                             iaddiu vi06, vi08, 18             
 	nop                             iaddiu vi07, vi08, 346            
 	nop                             iaddiu vi11, vi00, 0x7fff         
+	nop                             iaddiu vi11, vi11, 1              
+	nop                             iadd vi07, vi07, vi11             
 	nop                             iadd vi05, vi13, vi04             
 	nop                             iadd vi12, vi13, vi13             
 	nop                             iadd vi12, vi12, vi12             
@@ -191,7 +193,7 @@ q3mc_gather:
 	nop                             ilw.y vi02, 0(vi04)               
 	nop                             ilw.z vi03, 0(vi04)               
 	nop                             ilw.w vi09, 0(vi04)               
-	nop                             iand vi10, vi01, vi11             
+	nop                             ior vi10, vi01, vi11              
 	nop                             iadd vi10, vi10, vi07             
 	nop                             lq.xyzw vf12, 0(vi10)             
 	nop                             lq.xyzw vf13, 1(vi10)             
@@ -202,11 +204,12 @@ q3mc_gather:
 	nop                             sq.xyz vf14, 2(vi06)              
 	nop                             ior vi10, vi13, vi14              
 	nop                             ior vi10, vi10, vi15              
+	nop                             iand vi10, vi10, vi11             
 	nop                             ior vi10, vi10, vi01              
 	nop                             isw.w vi10, 2(vi06)               
 	nop                             iaddiu vi15, vi14, 0              
 	nop                             iaddiu vi14, vi13, 0              
-	nop                             iand vi10, vi02, vi11             
+	nop                             ior vi10, vi02, vi11              
 	nop                             iadd vi10, vi10, vi07             
 	nop                             lq.xyzw vf12, 0(vi10)             
 	nop                             lq.xyzw vf13, 1(vi10)             
@@ -217,11 +220,12 @@ q3mc_gather:
 	nop                             sq.xyz vf14, 5(vi06)              
 	nop                             ior vi10, vi13, vi14              
 	nop                             ior vi10, vi10, vi15              
+	nop                             iand vi10, vi10, vi11             
 	nop                             ior vi10, vi10, vi02              
 	nop                             isw.w vi10, 5(vi06)               
 	nop                             iaddiu vi15, vi14, 0              
 	nop                             iaddiu vi14, vi13, 0              
-	nop                             iand vi10, vi03, vi11             
+	nop                             ior vi10, vi03, vi11              
 	nop                             iadd vi10, vi10, vi07             
 	nop                             lq.xyzw vf12, 0(vi10)             
 	nop                             lq.xyzw vf13, 1(vi10)             
@@ -232,11 +236,12 @@ q3mc_gather:
 	nop                             sq.xyz vf14, 8(vi06)              
 	nop                             ior vi10, vi13, vi14              
 	nop                             ior vi10, vi10, vi15              
+	nop                             iand vi10, vi10, vi11             
 	nop                             ior vi10, vi10, vi03              
 	nop                             isw.w vi10, 8(vi06)               
 	nop                             iaddiu vi15, vi14, 0              
 	nop                             iaddiu vi14, vi13, 0              
-	nop                             iand vi10, vi09, vi11             
+	nop                             ior vi10, vi09, vi11              
 	nop                             iadd vi10, vi10, vi07             
 	nop                             lq.xyzw vf12, 0(vi10)             
 	nop                             lq.xyzw vf13, 1(vi10)             
@@ -247,6 +252,7 @@ q3mc_gather:
 	nop                             sq.xyz vf14, 11(vi06)             
 	nop                             ior vi10, vi13, vi14              
 	nop                             ior vi10, vi10, vi15              
+	nop                             iand vi10, vi10, vi11             
 	nop                             ior vi10, vi10, vi09              
 	nop                             isw.w vi10, 11(vi06)              
 	nop                             iaddiu vi15, vi14, 0              
@@ -264,6 +270,9 @@ q3mc_gather:
 	nop                             nop                               
 	nop                             nop                               
 	nop                             xgkick vi07                       
+	nop                             bal vi15, q3mclip                 
+	nop                             nop                               
+	nop                             lq.xyzw vf20, 5(vi00)             
 	nop[e]                          nop                               
 	nop                             nop                               
 	nop                             b q3mc_batch                      
@@ -710,7 +719,7 @@ q3w1tc_whole:
 	nop                             nop                               
 	nop                             b q3w1tc_batch                    
 	nop                             nop                               
-; q3clip: what is left of the triangles q3w2c and q3w1c left out of a batch
+; q3clip, q3mclip: what is left of the triangles the programs that cut left out
 q3clip:
 	nop                             isw.x vi15, 68(vi00)              
 	nop                             isw.y vi14, 68(vi00)              
@@ -738,6 +747,123 @@ q3clip_scan:
 	nop                             lq.xyzw vf09, 152(vi11)           
 	nop                             lq.xyzw vf12, 155(vi11)           
 	nop                             lq.xyzw vf13, 158(vi11)           
+	nop                             bal vi15, q3cut_test              
+	nop                             nop                               
+	nop                             nop                               
+	nop                             ibeq vi01, vi00, q3clip_next      
+	nop                             nop                               
+	nop                             lq.xyz vf01, -6(vi11)             
+	nop                             lq.xyz vf02, -3(vi11)             
+	nop                             lq.xyz vf03, 0(vi11)              
+	mulw.xyz vf01, vf01, vf09w      nop                               
+	mulw.xyz vf02, vf02, vf12w      nop                               
+	mulw.xyz vf03, vf03, vf13w      nop                               
+	nop                             nop                               
+	nop                             sq.xyz vf01, 21(vi00)             
+	nop                             sq.xyz vf02, 22(vi00)             
+	nop                             sq.xyz vf03, 23(vi00)             
+	nop                             lq.xyz vf01, 151(vi11)            
+	nop                             lq.xyz vf02, 154(vi11)            
+	nop                             lq.xyz vf03, 157(vi11)            
+	mulw.xyz vf01, vf01, vf09w      nop                               
+	mulw.xyz vf02, vf02, vf12w      nop                               
+	mulw.xyz vf03, vf03, vf13w      nop                               
+	nop                             nop                               
+	nop                             sq.xyz vf01, 27(vi00)             
+	nop                             sq.xyz vf02, 28(vi00)             
+	nop                             sq.xyz vf03, 29(vi00)             
+	nop                             lq.xyzw vf01, -5(vi11)            
+	nop                             lq.xyzw vf02, -2(vi11)            
+	nop                             lq.xyzw vf03, 1(vi11)             
+	itof0.xyzw vf01, vf01           nop                               
+	itof0.xyzw vf02, vf02           nop                               
+	itof0.xyzw vf03, vf03           nop                               
+	nop                             nop                               
+	nop                             sq.xyzw vf01, 24(vi00)            
+	nop                             sq.xyzw vf02, 25(vi00)            
+	nop                             sq.xyzw vf03, 26(vi00)            
+	nop                             bal vi15, q3cut_poly              
+	nop                             nop                               
+q3clip_next:
+	nop                             iaddiu vi11, vi11, 3              
+	nop                             isubiu vi12, vi12, 1              
+	nop                             nop                               
+	nop                             ibne vi12, vi00, q3clip_scan      
+	nop                             nop                               
+q3clip_ret:
+	nop                             ilw.x vi15, 68(vi00)              
+	nop                             nop                               
+	nop                             nop                               
+	nop                             nop                               
+	nop                             nop                               
+	nop                             jr vi15                           
+	nop                             nop                               
+q3mclip:
+	nop                             isw.x vi15, 68(vi00)              
+	nop                             isw.y vi00, 68(vi00)              
+	nop                             lq.xyzw vf01, 8(vi00)             
+	nop                             xtop vi08                         
+	nop                             nop                               
+	nop                             ilw.y vi12, 306(vi08)             
+	nop                             sq.xyzw vf01, 48(vi00)            
+	nop                             iaddiu vi11, vi08, 24             
+	nop                             nop                               
+	nop                             iblez vi12, q3clip_ret            
+	nop                             nop                               
+q3mclip_scan:
+	nop                             ilw.w vi05, 2(vi11)               
+	nop                             ilw.w vi02, -4(vi11)              
+	nop                             ilw.w vi03, -1(vi11)              
+	nop                             iaddiu vi01, vi00, 0x7fff         
+	nop                             xtop vi07                         
+	nop                             ibgez vi05, q3mclip_next          
+	nop                             iaddiu vi07, vi07, 346            
+	nop                             iand vi02, vi02, vi01             
+	nop                             iand vi03, vi03, vi01             
+	nop                             iand vi04, vi05, vi01             
+	nop                             iadd vi02, vi02, vi07             
+	nop                             iadd vi03, vi03, vi07             
+	nop                             iadd vi04, vi04, vi07             
+	nop                             nop                               
+	nop                             lq.xyzw vf09, 3(vi02)             
+	nop                             lq.xyzw vf12, 3(vi03)             
+	nop                             lq.xyzw vf13, 3(vi04)             
+	nop                             bal vi15, q3cut_test              
+	nop                             nop                               
+	nop                             nop                               
+	nop                             ibeq vi01, vi00, q3mclip_next     
+	nop                             nop                               
+	nop                             lq.xyz vf01, 0(vi02)              
+	nop                             lq.xyz vf02, 0(vi03)              
+	nop                             lq.xyz vf03, 0(vi04)              
+	mulw.xyz vf01, vf01, vf09w      nop                               
+	mulw.xyz vf02, vf02, vf12w      nop                               
+	mulw.xyz vf03, vf03, vf13w      nop                               
+	nop                             nop                               
+	nop                             sq.xyz vf01, 21(vi00)             
+	nop                             sq.xyz vf02, 22(vi00)             
+	nop                             sq.xyz vf03, 23(vi00)             
+	nop                             lq.xyzw vf01, 1(vi02)             
+	nop                             lq.xyzw vf02, 1(vi03)             
+	nop                             lq.xyzw vf03, 1(vi04)             
+	itof0.xyzw vf01, vf01           nop                               
+	itof0.xyzw vf02, vf02           nop                               
+	itof0.xyzw vf03, vf03           nop                               
+	nop                             nop                               
+	nop                             sq.xyzw vf01, 24(vi00)            
+	nop                             sq.xyzw vf02, 25(vi00)            
+	nop                             sq.xyzw vf03, 26(vi00)            
+	nop                             bal vi15, q3cut_poly              
+	nop                             nop                               
+q3mclip_next:
+	nop                             iaddiu vi11, vi11, 9              
+	nop                             isubiu vi12, vi12, 1              
+	nop                             nop                               
+	nop                             ibne vi12, vi00, q3mclip_scan     
+	nop                             nop                               
+	nop                             b q3clip_ret                      
+	nop                             nop                               
+q3cut_test:
 	nop                             lq.xyz vf17, 4(vi00)              
 	nop                             lq.xyz vf18, 5(vi00)              
 	nop                             nop                               
@@ -769,7 +895,7 @@ q3clip_scan:
 	nop                             nop                               
 	nop                             fmand vi01, vi06                  
 	nop                             sq.xyz vf01, 12(vi00)             
-	nop                             ibeq vi01, vi06, q3clip_next      
+	nop                             ibeq vi01, vi06, q3cut_out        
 	nop                             nop                               
 	nop                             ibeq vi01, vi00, q3clip_in0       
 	nop                             nop                               
@@ -781,7 +907,7 @@ q3clip_in0:
 	nop                             nop                               
 	nop                             fmand vi01, vi06                  
 	nop                             sq.xyz vf01, 13(vi00)             
-	nop                             ibeq vi01, vi06, q3clip_next      
+	nop                             ibeq vi01, vi06, q3cut_out        
 	nop                             nop                               
 	nop                             ibeq vi01, vi00, q3clip_in1       
 	nop                             nop                               
@@ -793,7 +919,7 @@ q3clip_in1:
 	nop                             nop                               
 	nop                             fmand vi01, vi06                  
 	nop                             sq.xyz vf01, 14(vi00)             
-	nop                             ibeq vi01, vi06, q3clip_next      
+	nop                             ibeq vi01, vi06, q3cut_out        
 	nop                             nop                               
 	nop                             ibeq vi01, vi00, q3clip_in2       
 	nop                             nop                               
@@ -805,7 +931,7 @@ q3clip_in2:
 	nop                             nop                               
 	nop                             fmand vi01, vi06                  
 	nop                             sq.xyz vf01, 15(vi00)             
-	nop                             ibeq vi01, vi06, q3clip_next      
+	nop                             ibeq vi01, vi06, q3cut_out        
 	nop                             nop                               
 	nop                             ibeq vi01, vi00, q3clip_in3       
 	nop                             nop                               
@@ -817,7 +943,7 @@ q3clip_in3:
 	nop                             nop                               
 	nop                             fmand vi01, vi06                  
 	nop                             sq.xyz vf01, 16(vi00)             
-	nop                             ibeq vi01, vi06, q3clip_next      
+	nop                             ibeq vi01, vi06, q3cut_out        
 	nop                             nop                               
 	nop                             ibeq vi01, vi00, q3clip_in4       
 	nop                             nop                               
@@ -829,45 +955,23 @@ q3clip_in4:
 	nop                             nop                               
 	nop                             fmand vi01, vi06                  
 	nop                             sq.xyz vf01, 17(vi00)             
-	nop                             ibeq vi01, vi06, q3clip_next      
+	nop                             ibeq vi01, vi06, q3cut_out        
 	nop                             nop                               
 	nop                             ibeq vi01, vi00, q3clip_in5       
 	nop                             nop                               
 	nop                             iaddiu vi08, vi08, 1              
 q3clip_in5:
+	nop                             iaddiu vi01, vi00, 1              
+	nop                             jr vi15                           
+	nop                             nop                               
+q3cut_out:
+	nop                             iaddiu vi01, vi00, 0              
+	nop                             jr vi15                           
+	nop                             nop                               
+q3cut_poly:
 	nop                             sq.xyzw vf09, 18(vi00)            
 	nop                             sq.xyzw vf12, 19(vi00)            
 	nop                             sq.xyzw vf13, 20(vi00)            
-	nop                             lq.xyz vf01, -6(vi11)             
-	nop                             lq.xyz vf02, -3(vi11)             
-	nop                             lq.xyz vf03, 0(vi11)              
-	mulw.xyz vf01, vf01, vf09w      nop                               
-	mulw.xyz vf02, vf02, vf12w      nop                               
-	mulw.xyz vf03, vf03, vf13w      nop                               
-	nop                             nop                               
-	nop                             sq.xyz vf01, 21(vi00)             
-	nop                             sq.xyz vf02, 22(vi00)             
-	nop                             sq.xyz vf03, 23(vi00)             
-	nop                             lq.xyz vf01, 151(vi11)            
-	nop                             lq.xyz vf02, 154(vi11)            
-	nop                             lq.xyz vf03, 157(vi11)            
-	mulw.xyz vf01, vf01, vf09w      nop                               
-	mulw.xyz vf02, vf02, vf12w      nop                               
-	mulw.xyz vf03, vf03, vf13w      nop                               
-	nop                             nop                               
-	nop                             sq.xyz vf01, 27(vi00)             
-	nop                             sq.xyz vf02, 28(vi00)             
-	nop                             sq.xyz vf03, 29(vi00)             
-	nop                             lq.xyzw vf01, -5(vi11)            
-	nop                             lq.xyzw vf02, -2(vi11)            
-	nop                             lq.xyzw vf03, 1(vi11)             
-	itof0.xyzw vf01, vf01           nop                               
-	itof0.xyzw vf02, vf02           nop                               
-	itof0.xyzw vf03, vf03           nop                               
-	nop                             nop                               
-	nop                             sq.xyzw vf01, 24(vi00)            
-	nop                             sq.xyzw vf02, 25(vi00)            
-	nop                             sq.xyzw vf03, 26(vi00)            
 	nop                             mr32.xyzw vf03, vf00              
 	nop                             nop                               
 	nop                             nop                               
@@ -995,7 +1099,7 @@ q3clip_gone:
 	nop                             iaddiu vi04, vi14, 0              
 	nop                             isubiu vi14, vi05, 3              
 	nop                             nop                               
-	nop                             ibltz vi14, q3clip_next           
+	nop                             ibltz vi14, q3cut_done            
 	nop                             nop                               
 q3clip_noplane:
 	nop                             iadd vi08, vi08, vi08             
@@ -1032,18 +1136,7 @@ q3clip_one:
 	nop                             nop                               
 	nop                             ibne vi02, vi00, q3clip_tri       
 	nop                             nop                               
-q3clip_next:
-	nop                             iaddiu vi11, vi11, 3              
-	nop                             isubiu vi12, vi12, 1              
-	nop                             nop                               
-	nop                             ibne vi12, vi00, q3clip_scan      
-	nop                             nop                               
-q3clip_ret:
-	nop                             ilw.x vi15, 68(vi00)              
-	nop                             nop                               
-	nop                             nop                               
-	nop                             nop                               
-	nop                             nop                               
+q3cut_done:
 	nop                             jr vi15                           
 	nop                             nop                               
 q3clip_put:

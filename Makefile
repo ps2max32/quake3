@@ -63,7 +63,7 @@ MX_MEMORY ?= vm
 include $(MAXSDK)/mk/maxsdk.mk
 # in VM: Quake III in VM, libgl in core
 ifeq ($(REN),gl1)
-MX_CORE_OBJS = $(MXGL_OBJS)
+MX_FAST_OBJS = $(MXGL_OBJS)
 endif
 
 PICOLIBC ?= $(PS2MAX)/build/libs/picolibc/install
@@ -185,7 +185,7 @@ CORE_TEXT ?= $(REN_OBJS) $(OUT)/cgame.o \
              $(patsubst %,$(OUT)/client/%.o,cl_cgame cl_console cl_input cl_main cl_parse cl_scrn snd_dma snd_main) \
              $(patsubst %,$(OUT)/ps2/%.o,snd_ps2 sys_ps2) \
              $(patsubst %,$(OUT)/zlib/%.o,crc32 inffast inflate)
-MX_CORE_TEXT_OBJS = $(CORE_TEXT)
+MX_FAST_TEXT_OBJS = $(CORE_TEXT)
 endif
 
 # FRAMES: end after that many frames with a picture (host:quake3.tga);

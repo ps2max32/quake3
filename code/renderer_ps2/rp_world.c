@@ -110,7 +110,7 @@ static struct rp_image *wtex[MAX_TEX], *wlm[MAX_LM];
    has it in its texture's CLUT, tools/ps2bin.py): entry 128 + i's alpha is
    brightness i as the blend's factor (Cd * As, 0x80 is 1.0): twice the
    lightmap's value, the map's overbright range; in CSM1's order */
-static u32 lm_clut[256] MX_CORE_BSS MX_ALIGNED(64);
+static u32 lm_clut[256] MX_FAST_BSS MX_ALIGNED(64);
 static u64 lm_clut_key;
 
 static void images_free(void) {

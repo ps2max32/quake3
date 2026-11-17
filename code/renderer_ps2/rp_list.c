@@ -191,16 +191,15 @@ u32 rp_strip_lines(float lo, float hi) {
 	return k1 < k0 ? 0 : ((2u << k1) - 1) & ~((1u << k0) - 1);
 }
 
-/* A box that reaches behind the near plane may be anywhere. Else: it is out
-   of the strips above a line when all of it is below that line (its corner
-   nearest along the line's plane is), and out of those below when all of it
-   is above. */
+/* A box is out of the strips above a line when all of it is below that line
+   (its corner nearest along the line's plane is), and out of those below
+   when all of it is above. The lines are planes through the eye, so this
+   holds for what of the box is seen (in front of the near plane) wherever
+   the rest of it is. */
 u32 rp_strip_mask(const float *b) {
 	const struct rp_view *v = &rp_view;
 	if (!v->nstrip)
 		return 1;
-	if (rp_box_dist(&v->fr[0], b, b + 4, 0) < 0)
-		return v->all;
 	u32 mask = v->all;
 	for (u32 j = 0; j + 1 < v->nstrip; j++) {
 		const struct rp_plane *lo = &v->sb_lo[j], *hi = &v->sb_hi[j];
@@ -209,6 +208,27 @@ u32 rp_strip_mask(const float *b) {
 			mask &= ~((2u << j) - 1); /* below the line: not in strips 0 .. j */
 		if (hi->n[0] * b[f[0]] + hi->n[1] * b[f[1]] + hi->n[2] * b[f[2]] < hi->d)
 			mask &= (2u << j) - 1;    /* above it: not in strips j + 1 .. */
+	}
+	return mask;
+}
+
+/* The same for the points' hull. */
+u32 rp_strip_points(const float (*p)[3], u32 n) {
+	const struct rp_view *v = &rp_view;
+	if (!v->nstrip)
+		return 1;
+	u32 mask = v->all;
+	for (u32 j = 0; j + 1 < v->nstrip; j++) {
+		const struct rp_plane *lo = &v->sb_lo[j], *hi = &v->sb_hi[j];
+		int below = 1, above = 1;
+		for (u32 i = 0; i < n; i++) {
+			below &= dot3(lo->n, p[i]) > lo->d;
+			above &= dot3(hi->n, p[i]) < hi->d;
+		}
+		if (below)
+			mask &= ~((2u << j) - 1);
+		if (above)
+			mask &= (2u << j) - 1;
 	}
 	return mask;
 }
@@ -576,6 +596,7 @@ void rp_list_end(void) {
 			mx_e_ret(c, 0, 0, 0);
 		}
 		int windowed = 0;
+		u32 at_sent = rp_list_stats.sent, at_batches = rp_list_stats.batches, at_setups = rp_list_stats.setups;
 		if (nstrip)
 			mx_hires_strip((int)k);
 		for (u32 r = 0; r < nrun; r++) {
@@ -612,6 +633,7 @@ void rp_list_end(void) {
 						calls(pre, np);
 						calls(list[v], n[v]);
 						rp_list_stats.setups++;
+						rp_list_stats.p_setups[rn->s.prog]++;
 						set = 1, n[v] = 0;
 					}
 					n[0] = n[1] = 0;
@@ -621,9 +643,15 @@ void rp_list_end(void) {
 				if (d[i].mask & bit) {
 					list[d[i].clip][n[d[i].clip]++] = d[i].chain;
 					rp_list_stats.sent += d[i].verts, rp_list_stats.batches += d[i].batches;
+					rp_list_stats.p_sent[rn->s.prog] += d[i].verts, rp_list_stats.p_batches[rn->s.prog] += d[i].batches;
+					if (d[i].clip)
+						rp_list_stats.p_clip[rn->s.prog] += d[i].verts;
 				}
 			}
 		}
+		rp_list_stats.k_sent[k] = rp_list_stats.sent - at_sent;
+		rp_list_stats.k_batches[k] = rp_list_stats.batches - at_batches;
+		rp_list_stats.k_setups[k] = rp_list_stats.setups - at_setups;
 	}
 	if (nstrip)
 		mx_hires_strip(-1);

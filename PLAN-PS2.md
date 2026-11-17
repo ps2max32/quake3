@@ -332,7 +332,7 @@ out in the run):
   (`Q3_VM_HIST`: the refills by page): code 510 a frame, the program's
   statics 646, the hunk 305, the mapped files 59. The code a frame of play
   runs (the renderer, cgame, collision, the client's and the engine's
-  every-frame parts: 650 KB of 1.9 MB) now stays core (`MX_CORE_TEXT_OBJS`
+  every-frame parts: 650 KB of 1.9 MB) now stays core (`MX_FAST_TEXT_OBJS`
   in the Makefile): 670 refills a frame, the EE 3.51 M -> 3.24 M cycles a
   frame, 120 -> 85 of 1258 frames over a field, and no frame of memory
   less (the core is counted in MiB and had the room). All code in core
@@ -348,6 +348,44 @@ Left of phase 3: the models' stages after a shader's first (11,000 skipped
 in the run), the map's doors and platforms, the sky, beams and lightning, marks,
 dynamic lights, texture coordinates that move on world surfaces, strips in
 a model's pieces.
+
+### The late passes (2026-11-17)
+
+About 600 of 6,600 passes a run were still being drawn when the beam came
+(a strip that shows half drawn). maxsdk's pass log (`mx_hires_log`;
+`+set r_ps2passes 1` writes `quake3.pass`: each pass's frame, wait, time,
+and what its strip held) shows that a pass is late when the field's passes
+together are long (median 15.9 ms against 11.8 ms for all fields), not
+because it waited behind another. The timedemo with parts left out
+(`r_ps2draw`, `r_ps2debug`), a field's passes together:
+
+| Variant | Mean | 90 % | Late |
+|---|---|---|---|
+| Everything | 11.9 ms | 15.8 ms | 621 |
+| The GS draws nothing | 5.7 ms | 7.3 ms | 0 |
+| The same, without models | 3.3 ms | 4.6 ms | 0 |
+| A quarter of the pixels, the same triangles | 11.9 ms | 15.7 ms | 593 |
+| No textures | 11.3 ms | 14.9 ms | 376 |
+| No lightmap pass | 9.1 ms | 11.9 ms | 51 |
+| No models | 9.3 ms | 13.1 ms | 116 |
+| No view weapon | 10.4 ms | 14.3 ms | 258 |
+| The world alone | 8.5 ms | 12.5 ms | 45 |
+| Five strips of 128 lines | 13.3 ms | 16.7 ms | 616 |
+
+- The GS is the limit, by triangles, not pixels: a quarter of the pixels
+  changes nothing, the GS drawing nothing leaves no pass late.
+- The models send 14,000 vertices a frame over the strips (three a
+  triangle, both faces), the world 7,200: VIF1 and VU1 spend 2.3 ms a field
+  on them, the GS 0.3 ms more. Next: back faces left out on VU1 and the
+  pieces as strips.
+- The lightmap pass is 2.9 ms a field: every world triangle set up twice.
+- More, lower strips cost more than they give (a chunk is in more strips).
+
+The view weapon now goes through `q3mc` with the cut: a triangle with a
+vertex outside the guard band is left out of the piece's packet and cut
+after it (`q3mclip`, the world's routines), where it was dropped before
+(holes in the weapon near the eye). Models across a plane no longer go the
+EE's way.
 
 ## 3. Why the earlier attempts stalled
 

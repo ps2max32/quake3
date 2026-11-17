@@ -21,10 +21,10 @@
    frame's positions, the entries) and the program's start. The EE touches
    no vertex: VU1 blends the two frames and lights the vertices.
 
-   A model across the near plane or the guard band is built on the EE and
-   goes the polygons' way (rp_poly.c), whose programs cut. But the view
-   weapon: its triangles there are below the screen's edge, and VU1 leaves
-   them out (q3mc).
+   A model across the near plane or the guard band (the view weapon always
+   is) takes the program that tests each vertex (q3mc): a triangle with a
+   vertex outside is left out of the piece's packet and cut after it
+   (q3mclip).
 
    The light is the map's light grid's at the model's origin, as the engine
    has it (R_SetupEntityLighting): an ambient colour, a directed one and its
@@ -167,6 +167,7 @@ void rp_light_at(const vec3_t p, int world, vec3_t ambient, vec3_t directed, vec
 struct piece {
 	u8 nvert, st_qw, pos_qw, nrm_qw;
 	u16 nent, idx_qw;
+	u16 ntri, pad;
 	u32 st, idx;   /* in the surface's fixed memory */
 	u32 pos, nrm;  /* in a frame's block */
 };
@@ -268,6 +269,7 @@ static int surf_make(struct msurf *sf) {
 			/* the piece is whole: a multiple of four entries (the rest end no
 			   triangle), its places */
 			if (p->nent) {
+				p->ntri = p->nent / 3;
 				while (p->nent & 3)
 					pe[np][p->nent++] = 0x8000;
 				p->st_qw = (u8)((p->nvert * 6 + 15) / 16), p->idx_qw = (u16)((8 * (1 + p->nent / 4) + 15) / 16);
@@ -310,7 +312,7 @@ static int surf_make(struct msurf *sf) {
 				d[3 * k + 2] = 4096;
 			}
 			u16 *e = (u16 *)(sf->fixed + p->idx);
-			e[0] = (u16)(p->nent / 4);
+			e[0] = (u16)(p->nent / 4), e[1] = p->ntri; /* the entries' quadwords, the triangles (q3mclip) */
 			memcpy(e + 4, pe[i], p->nent * sizeof *e);
 		}
 		mx_dcache_writeback(sf->fixed, fixed);
@@ -625,22 +627,6 @@ int rp_model_rect(const refEntity_t *e, float *rect) {
 static inline float dot3(const float *a, const float *b) { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; }
 
 int rp_scene_world; /* the scene being drawn has the map's world (rp_main.c) */
-static u16 cut_count[RP_MODELS];
-
-/* the models most often built on the EE, for the run's report */
-void rp_model_report(void) {
-	for (int n = 0; n < 4; n++) {
-		int best = 0;
-		for (int i = 1; i < nmodels; i++)
-			if (cut_count[i] > cut_count[best])
-				best = i;
-		if (!best || !cut_count[best])
-			break;
-		ri.Printf(PRINT_ALL, "ps2: renderer: built on the EE %u times: %s\n", cut_count[best], models[best].name);
-		cut_count[best] = 0;
-	}
-}
-
 /* the surface on VU1: a chain of its pieces */
 static const void *surf_chain(struct msurf *sf, int frame, int oldframe) {
 	/* a frame that is not ready: the other one, or the block drawn last */
@@ -684,45 +670,6 @@ static const void *surf_chain(struct msurf *sf, int frame, int oldframe) {
 	return c0;
 }
 
-/* the surface on the EE: its triangles as polygons, lit here */
-static void surf_polys(const struct msurf *sf, const refEntity_t *e, int frame, int oldframe, const float *amb,
-                       const float *dirc, const float *ld, const u8 *fixed, int lit) {
-	const md3Surface_t *s = sf->md3;
-	const md3Triangle_t *tri = (const md3Triangle_t *)((const u8 *)s + s->ofsTriangles);
-	const md3St_t *st = (const md3St_t *)((const u8 *)s + s->ofsSt);
-	const md3XyzNormal_t *xn = (const md3XyzNormal_t *)((const u8 *)s + s->ofsXyzNormals) + frame * s->numVerts;
-	const md3XyzNormal_t *xo = (const md3XyzNormal_t *)((const u8 *)s + s->ofsXyzNormals) + oldframe * s->numVerts;
-	float back = e->backlerp, keep = 1.0f - back;
-	for (int t = 0; t < s->numTriangles; t++) {
-		struct rp_vert v[3];
-		for (int k = 0; k < 3; k++) {
-			int i = tri[t].indexes[k];
-			if (i < 0 || i >= s->numVerts)
-				i = 0;
-			float p[3];
-			for (int a = 0; a < 3; a++)
-				p[a] = ((float)xn[i].xyz[a] * keep + (float)xo[i].xyz[a] * back) * (float)MD3_XYZ_SCALE;
-			for (int a = 0; a < 3; a++)
-				v[k].xyz[a] = e->origin[a] + p[0] * e->axis[0][a] + p[1] * e->axis[1][a] + p[2] * e->axis[2][a];
-			v[k].st[0] = st[i].st[0], v[k].st[1] = st[i].st[1];
-			if (lit) {
-				u32 lat = (u32)(xn[i].normal >> 8) & 255, lng = (u32)xn[i].normal & 255;
-				float sl = sin_tab[lng];
-				float n[3] = {sin_tab[(lat + 64) & 255] * sl, sin_tab[lat] * sl, sin_tab[(lng + 64) & 255]};
-				float d = dot3(n, ld);
-				d = d < 0 ? 0 : d;
-				for (int a = 0; a < 3; a++) {
-					float cc = amb[a] + dirc[a] * d;
-					v[k].rgba[a] = (u8)(cc > 255 ? 255 : cc);
-				}
-				v[k].rgba[3] = fixed[3];
-			} else
-				memcpy(v[k].rgba, fixed, 4);
-		}
-		rp_poly(v, 3);
-	}
-}
-
 void rp_model_draw(const refEntity_t *e, float t) {
 	const struct rp_view *vw = &rp_view;
 	struct rmodel *m = model_get(e->hModel);
@@ -753,13 +700,19 @@ void rp_model_draw(const refEntity_t *e, float t) {
 		}
 		cut |= dot3(vw->gb[p].n, c) - vw->gb[p].d < r * vw->gb_len[p];
 	}
-	VectorSubtract(c, vw->org, d);
-	float w = dot3(vw->F, d);
-	u32 mask = vw->all;
-	if (!cut && w - r > 4.0f) {
-		float y = vw->cy - 2048.0f + (float)mx_gs.h * 0.5f - vw->fy * dot3(vw->U, d) / w, ry = vw->fy * r / (w - r);
-		mask = rp_strip_lines(y - ry, y + ry);
+	/* the strips its box (the two frames') is in */
+	float pt[8][3];
+	for (int i = 0; i < 8; i++) {
+		float l[3];
+		for (int a = 0; a < 3; a++) {
+			float lo = fn->bounds[0][a] < fo->bounds[0][a] ? fn->bounds[0][a] : fo->bounds[0][a];
+			float hi = fn->bounds[1][a] > fo->bounds[1][a] ? fn->bounds[1][a] : fo->bounds[1][a];
+			l[a] = i >> a & 1 ? hi : lo;
+		}
+		for (int a = 0; a < 3; a++)
+			pt[i][a] = e->origin[a] + l[0] * e->axis[0][a] + l[1] * e->axis[1][a] + l[2] * e->axis[2][a];
 	}
+	u32 mask = rp_strip_points(pt, 8);
 	if (!mask) {
 		rp_model_stats.culled++;
 		return;
@@ -773,10 +726,9 @@ void rp_model_draw(const refEntity_t *e, float t) {
 		ld[a] = dot3(dir, e->axis[a]) / sc;
 	}
 	const void *matrix = 0;
-	if (cut && !(e->renderfx & RF_DEPTHHACK)) {
+	if (cut)
 		rp_model_stats.cut++;
-		cut_count[e->hModel]++;
-	} else
+	else
 		rp_model_stats.drawn++;
 	for (int i = 0; i < h->numSurfaces; i++) {
 		struct msurf *sf = &m->surf[i];
@@ -800,12 +752,6 @@ void rp_model_draw(const refEntity_t *e, float t) {
 		int lit = stg->rgbgen == RGB_LIGHTING;
 		rp_stage_colour(stg, t, e->shaderRGBA, e->shaderRGBA, col);
 		s.texels = 2.0f;
-		if (cut && !(e->renderfx & RF_DEPTHHACK)) {
-			rp_poly_state(&s);
-			surf_polys(sf, e, frame, oldframe, amb, dirc, ld, col, lit);
-			rp_poly_flush();
-			continue;
-		}
 		s.prog = RP_PROG_MODEL;
 		float (*u)[4] = s.model;
 		u[0][0] = e->backlerp;
