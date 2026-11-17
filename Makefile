@@ -174,6 +174,20 @@ $(eval $(call module,ui,$(UI_SRC)))
 
 MODULES := $(OUT)/qagame.o $(OUT)/cgame.o $(OUT)/ui.o
 
+# REN=ps2: the code a frame of play runs stays core (no TLB refills; its
+# data is paged): the renderer, cgame, collision, and what of the engine and
+# the client every frame goes through. Chosen with EXTRA_CFLAGS=-DQ3_VM_HIST=1
+# (the refills by page) and a profile (PROF=1); CORE_TEXT= for none of it.
+ifneq ($(REN),gl1)
+CORE_TEXT ?= $(REN_OBJS) $(OUT)/cgame.o \
+             $(patsubst %,$(OUT)/qcommon/%.o,cm_load cm_patch cm_test cm_trace cmd common cvar huffman msg \
+               net_chan q_math q_shared unzip vm) \
+             $(patsubst %,$(OUT)/client/%.o,cl_cgame cl_console cl_input cl_main cl_parse cl_scrn snd_dma snd_main) \
+             $(patsubst %,$(OUT)/ps2/%.o,snd_ps2 sys_ps2) \
+             $(patsubst %,$(OUT)/zlib/%.o,crc32 inffast inflate)
+MX_CORE_TEXT_OBJS = $(CORE_TEXT)
+endif
+
 # FRAMES: end after that many frames with a picture (host:quake3.tga);
 # ARGS: more of the command line (e.g. ARGS="+map q3dm1"); GLSHOT: the
 # same picture at that rendered frame (loading screens included); PROF=n:

@@ -327,6 +327,16 @@ out in the run):
   pages' texels point; the screen's pictures have one level. A frame draws
   with 0.93 MB (1.46 MB at most), none without room, 7.9 MB sent in the run
   (16.7 MB before).
+- **TLB refills**: 1,670 a frame (1 ms) were 32 entries shared by some 200
+  pages of 32 KiB in use, the hottest refilled 35 to 45 times a frame
+  (`Q3_VM_HIST`: the refills by page): code 510 a frame, the program's
+  statics 646, the hunk 305, the mapped files 59. The code a frame of play
+  runs (the renderer, cgame, collision, the client's and the engine's
+  every-frame parts: 650 KB of 1.9 MB) now stays core (`MX_CORE_TEXT_OBJS`
+  in the Makefile): 670 refills a frame, the EE 3.51 M -> 3.24 M cycles a
+  frame, 120 -> 85 of 1258 frames over a field, and no frame of memory
+  less (the core is counted in MiB and had the room). All code in core
+  (`MX_VM_TEXT=core`) gives 616 a frame for 2 MiB of frames, and more swap.
 
 A census at a run's end (`Q3_VM_CENSUS`): 16.9 MB of the program's own
 memory resident (the client's `cl` 1.9 MB, cgame's entities 0.9 MB, the
