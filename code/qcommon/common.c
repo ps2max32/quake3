@@ -1611,6 +1611,15 @@ void Com_InitHunkMemory( void ) {
 #endif
 }
 
+#ifdef __PS2__
+// PS2: where the zones and the hunk lie, for a report by address (sys_ps2.c)
+void Com_PS2_Regions( void (*fn)( const char *name, const void *p, unsigned bytes ) ) {
+	fn( "the zone", mainzone, s_zoneTotal );
+	fn( "the small zone", smallzone, s_smallZoneTotal );
+	fn( "the hunk", s_hunkData, s_hunkTotal );
+}
+#endif
+
 /*
 ====================
 Hunk_MemoryRemaining

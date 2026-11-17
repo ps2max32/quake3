@@ -509,6 +509,13 @@ static int RP_MarkFragments(int numPoints, const vec3_t *points, const vec3_t pr
 	return 0;
 }
 
+/* where the renderer's mapped files lie, for a report by address (sys_ps2.c) */
+void ps2_ren_regions(void (*fn)(const char *name, const void *p, unsigned bytes)) {
+	fn("ps2tex.bin", rp_bin_tex.base, rp_bin_tex.size);
+	fn("ps2mdl.bin", rp_bin_mdl.base, rp_bin_mdl.size);
+	fn("the map", world_map, world_size);
+}
+
 static void tex_line(const char *name, u32 kb, u32 frames, u32 w, u32 h) {
 	Com_Printf("ps2: renderer: image %s %u x %u: %u KB of GS memory in %u frames\n", name, w, h, kb, frames);
 }

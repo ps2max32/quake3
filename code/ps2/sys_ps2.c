@@ -379,6 +379,10 @@ void IN_Restart(void) {}
 #ifndef Q3_CLEAN_FRAMES
 #define Q3_CLEAN_FRAMES 0 /* maxsdk's writer thread (mx_vm_config.clean_frames): off */
 #endif
+#ifndef Q3_VM_HIST
+#define Q3_VM_HIST 0 /* 1: the timedemo's TLB refills by page (mx_vm_refill_hist): a line for each
+                        region in the report, every page with its count in quake3.hist */
+#endif
 #ifndef Q3_VM_TRACE
 #define Q3_VM_TRACE 0 /* bytes of maxsdk's VM trace (mx_vm_config.trace, taken from the
                          frames), from 100 frames before PROF to the end, saved as
@@ -471,6 +475,58 @@ static void watchdog(void *arg) {
 	}
 }
 
+/* the timedemo's TLB refills by page (Q3_VM_HIST): by region, and as a file */
+static struct hist_region {
+	const char *name;
+	u32 base, size, pages, count;
+} hist_rg[12];
+static u32 hist_nrg;
+static void hist_region(const char *name, const void *p, unsigned bytes) {
+	if (p && bytes && hist_nrg < 9)
+		hist_rg[hist_nrg++] = (struct hist_region){name, (u32)(uintptr_t)p, bytes, 0, 0};
+}
+static void hist_report(int frames) {
+	static struct mx_vm_hot hot[256];
+	static char text[256 * 24];
+	void Com_PS2_Regions(void (*fn)(const char *name, const void *p, unsigned bytes));
+	Com_PS2_Regions(hist_region);
+#ifdef PS2_REN_PS2
+	void ps2_ren_regions(void (*fn)(const char *name, const void *p, unsigned bytes));
+	ps2_ren_regions(hist_region);
+#endif
+	/* what is in none of them: by the VM's windows */
+	hist_rg[hist_nrg++] = (struct hist_region){"the program's code and data", 0x08000000u, 0x08000000u, 0, 0};
+	hist_rg[hist_nrg++] = (struct hist_region){"other mapped files", 0x40000000u, 0x08000000u, 0, 0};
+	hist_rg[hist_nrg++] = (struct hist_region){"other heaps", 0x48000000u, 0x08000000u, 0, 0};
+	FILE *f = fopen("quake3.hist", "w");
+	u32 pages = 0, count = 0;
+	for (;;) {
+		int k = mx_vm_refill_hist(hot, 256), len = 0;
+		if (k <= 0)
+			break;
+		for (int i = 0; i < k; i++) {
+			for (u32 r = 0; r < hist_nrg; r++)
+				if (hot[i].va - hist_rg[r].base < hist_rg[r].size) {
+					hist_rg[r].pages++, hist_rg[r].count += hot[i].count;
+					break;
+				}
+			pages++, count += hot[i].count;
+			len += sprintf(text + len, "%08x %u\n", hot[i].va, hot[i].count);
+		}
+		if (f)
+			fwrite(text, 1, len, f);
+		if (k < 256)
+			break;
+	}
+	if (f)
+		fclose(f);
+	mx_printf("hist: %u pages had %u TLB refills, %u a frame (quake3.hist: each page's)\n", pages, count,
+	          count / (u32)frames);
+	for (u32 r = 0; r < hist_nrg; r++)
+		mx_printf("hist: %08x %5u KB %s: %u pages, %u refills, %u a frame\n", hist_rg[r].base, hist_rg[r].size / 1024,
+		          hist_rg[r].name, hist_rg[r].pages, hist_rg[r].count, hist_rg[r].count / (u32)frames);
+}
+
 /* at the end of a run, however it ends (FRAMES, the quit command, AUTOQUIT) */
 static void ps2_run_report(void) {
 	static int done;
@@ -508,6 +564,8 @@ static void ps2_run_report(void) {
 		          (v.us_swap_in - vm_at.us_swap_in) / 1000, v.swap_outs - vm_at.swap_outs,
 		          (v.us_swap_out - vm_at.us_swap_out) / 1000, v.file_ins - vm_at.file_ins,
 		          (v.us_file_in - vm_at.us_file_in) / 1000, v.drops - vm_at.drops, v.pinned_frames, v.frames);
+		if (Q3_VM_HIST)
+			hist_report(n);
 		/* every frame's cycles, for the frames that are over */
 		char *text = malloc(n * 24 + 64);
 		FILE *f = text ? fopen("quake3.frames", "w") : NULL;
@@ -589,6 +647,8 @@ int main(int argc, char **argv) {
 		if (window && !measuring) {
 			measuring = 1;
 			mx_vm_stats(&vm_at);
+			if (Q3_VM_HIST)
+				mx_vm_refill_hist(NULL, 0);
 			if (PS2_PROF) {
 				mx_vm_trace_mark(1);
 				mx_prof_start(2000);
