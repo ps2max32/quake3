@@ -46,7 +46,7 @@ struct fstats {
 static void pv(struct rp_vert *v, const struct rp_cam *c, float f, float l, float u, float s, float t) {
 	for (int k = 0; k < 3; k++)
 		v->xyz[k] = c->org[k] + f * c->axis[0][k] + l * c->axis[1][k] + u * c->axis[2][k];
-	v->st[0] = s, v->st[1] = t, v->rgba[0] = v->rgba[1] = v->rgba[2] = v->rgba[3] = 255;
+	v->st[0] = s, v->st[1] = t, v->rgba[0] = v->rgba[1] = v->rgba[2] = v->rgba[3] = 128;
 }
 
 /* rp_debug 8192: polygons and pictures (rp_poly.c) with the map's first
@@ -80,7 +80,7 @@ static void test_draws(const struct rp_cam *c) {
 		s.tex = *t, s.tex_ok = 1;
 	rp_poly_state(&s);
 	pv(&q[0], c, 40, -5, 0, 0, 0), pv(&q[1], c, 40, -30, 0, 1, 0), pv(&q[2], c, 40, -30, -25, 1, 1), pv(&q[3], c, 40, -5, -25, 0, 1);
-	q[0].rgba[3] = q[1].rgba[3] = 64, q[2].rgba[3] = q[3].rgba[3] = 200;
+	q[0].rgba[3] = q[1].rgba[3] = 32, q[2].rgba[3] = q[3].rgba[3] = 100;
 	rp_poly(q, 4);
 	s = (struct rp_state){0};
 	if (im[2] && (t = rp_image_place(im[2])))

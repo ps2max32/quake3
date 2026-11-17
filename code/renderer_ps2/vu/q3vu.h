@@ -5,14 +5,16 @@
 
 extern const unsigned char q3vu_vu[], q3vu_vu_end[];
 
-#define Q3W2_SETUP 0
-#define Q3W2_BATCH 10
-#define Q3W1_SETUP 57
-#define Q3W1_BATCH 66
-#define Q3W2C_SETUP 105
-#define Q3W2C_BATCH 117
-#define Q3W1C_SETUP 173
-#define Q3W1C_BATCH 184
+#define Q3M_SETUP 0
+#define Q3M_BATCH 15
+#define Q3W2_SETUP 114
+#define Q3W2_BATCH 124
+#define Q3W1_SETUP 171
+#define Q3W1_BATCH 180
+#define Q3W2C_SETUP 219
+#define Q3W2C_BATCH 231
+#define Q3W1C_SETUP 287
+#define Q3W1C_BATCH 298
 
 #define Q3VU_CTX_QW 72 /* the context, at 0 */
 #define Q3VU_CTX_C0 0
@@ -33,6 +35,17 @@ extern const unsigned char q3vu_vu[], q3vu_vu_end[];
 #define Q3VU_ROOM_R0 48
 #define Q3VU_ROOM_R1 58
 #define Q3VU_ROOM_SAVE 68
+#define Q3VU_M_LERP 30 /* q3m's uniforms */
+#define Q3VU_M_AMB 31 /* q3m's uniforms */
+#define Q3VU_M_DX 32 /* q3m's uniforms */
+#define Q3VU_M_DY 33 /* q3m's uniforms */
+#define Q3VU_M_DZ 34 /* q3m's uniforms */
+#define Q3VU_M_C255 35 /* q3m's uniforms */
+#define Q3VU_M_OUT 18
+#define Q3VU_M_IDX 306
+#define Q3VU_M_VERT 346
+#define Q3VU_M_VERTS 28 /* a piece's vertices at most */
+#define Q3VU_M_ENTRIES 96 /* and its entries */
 #define Q3VU_BASE 72
 #define Q3VU_BUF 476
 #define Q3VU_A 18

@@ -13,7 +13,8 @@
 
 extern refimport_t ri;
 
-enum { RGB_IDENTITY, RGB_VERTEX, RGB_ENTITY, RGB_ONE_MINUS_ENTITY, RGB_WAVE, RGB_CONST, RGB_LIGHTING };
+enum { RGB_IDENTITY, RGB_VERTEX, RGB_ENTITY, RGB_ONE_MINUS_ENTITY, RGB_WAVE, RGB_CONST, RGB_LIGHTING,
+       RGB_IDENTITY_LIGHTING, RGB_EXACT_VERTEX };
 enum { A_IDENTITY, A_VERTEX, A_ENTITY, A_ONE_MINUS_ENTITY, A_WAVE, A_CONST };
 enum { WAVE_SIN, WAVE_TRIANGLE, WAVE_SQUARE, WAVE_SAWTOOTH, WAVE_INVSAWTOOTH, WAVE_NOISE };
 enum { TCM_SCROLL, TCM_SCALE, TCM_ROTATE, TCM_STRETCH, TCM_TRANSFORM, TCM_TURB };
@@ -68,8 +69,11 @@ int rp_shader_count(void);
 /* A stage at time t (seconds): the state to draw it with (its image placed
    in GS memory for this frame); 0: nothing to draw (no image, no room). */
 int rp_stage_state(const struct rp_stage *st, float t, struct rp_state *s);
-/* Its colour: of the vertex's or entity's rgba in (0..255), into out
-   (0..255). */
+/* Its colour: of the vertex's or entity's rgba (the engine's, 0..255) into
+   out, the GS's: 0x80 is the texture's own colour, 0x80 an alpha of 1. The
+   engine's colours are shown twice as bright as they say (its overbright
+   range) but for rgbGen vertex, wave and identityLighting, which it halves:
+   those come out 0x80 at full. */
 void rp_stage_colour(const struct rp_stage *st, float t, const u8 *vertex, const u8 *entity, u8 *out);
 /* Its texture coordinates' matrix at t: s' = m[0] s + m[1] t + m[2],
    t' = m[3] s + m[4] t + m[5]. Returns 0 when it is the identity. */

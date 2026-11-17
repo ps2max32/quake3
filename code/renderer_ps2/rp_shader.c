@@ -323,11 +323,13 @@ static void parse_stage(char **p, struct rp_shader *sh, struct rp_stage *st) {
 				COM_ParseExt(p, qfalse);
 				st->rgbgen = RGB_CONST;
 			} else
-				st->rgbgen = !Q_stricmp(t, "vertex") || !Q_stricmp(t, "exactVertex") ? RGB_VERTEX
-				             : !Q_stricmp(t, "entity")                               ? RGB_ENTITY
-				             : !Q_stricmp(t, "oneMinusEntity")                       ? RGB_ONE_MINUS_ENTITY
-				             : !Q_stricmp(t, "lightingDiffuse")                      ? RGB_LIGHTING
-				                                                                     : RGB_IDENTITY;
+				st->rgbgen = !Q_stricmp(t, "vertex")             ? RGB_VERTEX
+				             : !Q_stricmp(t, "exactVertex")      ? RGB_EXACT_VERTEX
+				             : !Q_stricmp(t, "entity")           ? RGB_ENTITY
+				             : !Q_stricmp(t, "oneMinusEntity")   ? RGB_ONE_MINUS_ENTITY
+				             : !Q_stricmp(t, "lightingDiffuse")  ? RGB_LIGHTING
+				             : !Q_stricmp(t, "identityLighting") ? RGB_IDENTITY_LIGHTING
+				                                                 : RGB_IDENTITY;
 		} else if (!Q_stricmp(t, "alphaGen")) {
 			t = COM_ParseExt(p, qfalse);
 			if (!Q_stricmp(t, "wave"))
@@ -371,8 +373,10 @@ static void parse_stage(char **p, struct rp_shader *sh, struct rp_stage *st) {
 		SkipRestOfLine(p);
 	}
 	(void)sh;
+	/* the engine's default: identity where the blend is a product with the
+	   picture, else the half that is shown as it is */
 	if (st->rgbgen == 0xFF)
-		st->rgbgen = RGB_IDENTITY;
+		st->rgbgen = st->blend == RP_BLEND_FILTER || st->blend == RP_BLEND_INVFILTER ? RGB_IDENTITY : RGB_IDENTITY_LIGHTING;
 	st->zwrite = depth_write >= 0 ? (u8)depth_write : st->blend == RP_BLEND_NONE;
 }
 
@@ -477,7 +481,7 @@ qhandle_t rp_shader_register(const char *name, int lightmap, int mip) {
 				st->blend = RP_BLEND_ALPHA, st->rgbgen = RGB_VERTEX, st->alphagen = A_VERTEX;
 				sh->sort = SORT_BLEND0, st->clamp = 1;
 			} else {
-				st->rgbgen = lightmap == LIGHTMAP_NONE ? RGB_LIGHTING : RGB_IDENTITY;
+				st->rgbgen = lightmap == LIGHTMAP_NONE ? RGB_LIGHTING : RGB_IDENTITY_LIGHTING;
 				st->zwrite = 1, sh->sort = SORT_OPAQUE;
 			}
 			sh_image++;
@@ -566,30 +570,34 @@ int rp_stage_state(const struct rp_stage *st, float t, struct rp_state *s) {
 void rp_stage_colour(const struct rp_stage *st, float t, const u8 *vertex, const u8 *entity, u8 *out) {
 	static const u8 full[4] = {255, 255, 255, 255};
 	vertex = vertex ? vertex : full, entity = entity ? entity : full;
+	u32 a;
 	switch (st->rgbgen) {
-	case RGB_VERTEX: out[0] = vertex[0], out[1] = vertex[1], out[2] = vertex[2]; break;
+	case RGB_VERTEX: out[0] = (u8)((vertex[0] + 1) >> 1), out[1] = (u8)((vertex[1] + 1) >> 1), out[2] = (u8)((vertex[2] + 1) >> 1); break;
+	case RGB_EXACT_VERTEX: out[0] = vertex[0], out[1] = vertex[1], out[2] = vertex[2]; break;
 	case RGB_ENTITY: out[0] = entity[0], out[1] = entity[1], out[2] = entity[2]; break;
 	case RGB_ONE_MINUS_ENTITY: out[0] = (u8)(255 - entity[0]), out[1] = (u8)(255 - entity[1]), out[2] = (u8)(255 - entity[2]); break;
 	case RGB_CONST: out[0] = st->rgba[0], out[1] = st->rgba[1], out[2] = st->rgba[2]; break;
 	case RGB_WAVE: {
-		float v = wave(&st->rgbwave, t) * 255.0f;
+		float v = wave(&st->rgbwave, t) * 128.0f;
 		out[0] = out[1] = out[2] = (u8)(v < 0 ? 0 : v > 255 ? 255 : v);
 		break;
 	}
+	case RGB_IDENTITY_LIGHTING: out[0] = out[1] = out[2] = 128; break;
 	default: out[0] = out[1] = out[2] = 255; break;
 	}
 	switch (st->alphagen) {
-	case A_VERTEX: out[3] = vertex[3]; break;
-	case A_ENTITY: out[3] = entity[3]; break;
-	case A_ONE_MINUS_ENTITY: out[3] = (u8)(255 - entity[3]); break;
-	case A_CONST: out[3] = st->rgba[3]; break;
+	case A_VERTEX: a = vertex[3]; break;
+	case A_ENTITY: a = entity[3]; break;
+	case A_ONE_MINUS_ENTITY: a = 255u - entity[3]; break;
+	case A_CONST: a = st->rgba[3]; break;
 	case A_WAVE: {
 		float v = wave(&st->awave, t) * 255.0f;
-		out[3] = (u8)(v < 0 ? 0 : v > 255 ? 255 : v);
+		a = (u32)(v < 0 ? 0 : v > 255 ? 255 : v);
 		break;
 	}
-	default: out[3] = 255; break;
+	default: a = 255; break;
 	}
+	out[3] = (u8)((a + 1) >> 1);
 }
 
 int rp_stage_tcmod(const struct rp_stage *st, float t, float *m) {

@@ -130,8 +130,11 @@ void rp_view_rect(const struct rp_cam *cam, float x, float y, float w, float h) 
 		v->gb[1].n[k] = gx * F + L, v->gb[2].n[k] = gx * F - L;
 		v->gb[3].n[k] = gy * F + U, v->gb[4].n[k] = gy * F - U;
 	}
-	for (int p = 0; p < 5; p++)
+	for (int p = 0; p < 5; p++) {
 		v->fr[p].d = dot3(v->fr[p].n, v->org), v->gb[p].d = dot3(v->gb[p].n, v->org);
+		v->fr_len[p] = __builtin_sqrtf(dot3(v->fr[p].n, v->fr[p].n));
+		v->gb_len[p] = __builtin_sqrtf(dot3(v->gb[p].n, v->gb[p].n));
+	}
 	v->fr[0].d += ZNEAR, v->gb[0].d += ZNEAR + 0.5f;
 	v->nstrip = mx_hires_passes(), v->strip_h = mx_hires_strip_height();
 	if (!v->nstrip || !v->strip_h || !mx_hires_strip_record_bytes() || (rp_debug & 256))
@@ -293,13 +296,15 @@ static const void *setup_gs(const struct rp_state *s) {
 static const void *setup_chain(const struct rp_state *s, int cut, int state) {
 	if (s->prog == RP_PROG_GS)
 		return setup_gs(s);
-	u64 *c0 = rp_dyn(28), *c = c0;
+	u64 *c0 = rp_dyn(36), *c = c0;
 	if (!c)
 		return 0;
-	int lit = s->lm_ok && !(rp_debug & (2 | 128)), tex = s->tex_ok && !(rp_debug & (32 | 128));
+	int lit = s->lm_ok && s->prog == RP_PROG_WORLD && !(rp_debug & (2 | 128)), tex = s->tex_ok && !(rp_debug & (32 | 128));
 	u64 regs = rp_debug & 16 ? 0xD12 : 0x512; /* ST, RGBAQ, XYZ2 (XYZ3: no drawing) */
 	int blend = s->blend != RP_BLEND_NONE || (rp_debug & 128);
-	u32 entry = lit ? (cut ? Q3W2C_SETUP : Q3W2_SETUP) : (cut ? Q3W1C_SETUP : Q3W1_SETUP);
+	u32 entry = s->prog == RP_PROG_MODEL ? Q3M_SETUP
+	            : lit                    ? (cut ? Q3W2C_SETUP : Q3W2_SETUP)
+	                                     : (cut ? Q3W1C_SETUP : Q3W1_SETUP);
 	/* context 2 writes no Z (beam racing's): blended draws, and those without depth */
 	int ctx = blend || s->z != RP_Z_WRITE ? 1 : 0;
 	if (state) {
@@ -312,6 +317,11 @@ static const void *setup_chain(const struct rp_state *s, int cut, int state) {
 			c = mx_e_qw(c, mx_giftag(n, tri, (s32)mx_gs_prim(prim, 1, tex, 0, blend, 0, 0, ctx, 0), MX_GIF_FLG_PACKED, 3),
 			            regs);
 			c = mx_e_qw(c, mx_giftag(n, tri, (s32)mx_gs_prim(prim, 0, 1, 0, 1, 0, 0, 1, 0), MX_GIF_FLG_PACKED, 3), regs);
+		}
+		if (s->prog == RP_PROG_MODEL) {
+			c = mx_e_cnt(c, 6, mx_vif_nop(), mx_vif_unpack(MX_UNPACK_V4_32, Q3VU_M_LERP, 6, 0));
+			for (int k = 0; k < 6; k++)
+				c = mx_e_w4(c, fbits(s->model[k][0]), fbits(s->model[k][1]), fbits(s->model[k][2]), fbits(s->model[k][3]));
 		}
 		u64 *tag = c;
 		c += 2; /* the packet's cnt tag, written when its size is known */
@@ -368,6 +378,35 @@ static const void *setup_chain(const struct rp_state *s, int cut, int state) {
 	c = mx_e_ret(c, 0, 0, 0);
 	rp_dyn_end(c);
 	return c0;
+}
+
+/* Z alone is written (FRAME's mask over every bit of the colour), by context
+   1, which writes it; then the registers as a frame starts with them. */
+void rp_zclear(float x0, float y0, float x1, float y1) {
+	struct rp_state s = {0};
+	float W = (float)mx_gs.w, H = (float)mx_gs.h;
+	x0 = x0 < 0 ? 0 : x0, y0 = y0 < 0 ? 0 : y0, x1 = x1 > W ? W : x1, y1 = y1 > H ? H : y1;
+	u32 mask = rp_strip_lines(y0, y1);
+	if (x1 <= x0 || y1 <= y0 || !mask)
+		return;
+	s.prog = RP_PROG_GS, s.z = RP_Z_NONE;
+	u64 *c0 = rp_dyn(11), *c = c0;
+	if (!c || rp_run(0, &s) < 0)
+		return;
+	u32 X0 = (u32)((2048.0f - W * 0.5f + x0) * 16.0f), Y0 = (u32)((2048.0f - H * 0.5f + y0) * 16.0f);
+	u32 X1 = (u32)((2048.0f - W * 0.5f + x1) * 16.0f), Y1 = (u32)((2048.0f - H * 0.5f + y1) * 16.0f);
+	c = mx_e_cnt(c, 9, mx_vif_flush(), mx_vif_direct(9));
+	c = mx_e_ad_tag(c, 8, 1);
+	c = mx_e_ad(c, MX_GS_REG_FRAME_1, mx_hires_frame(0xFFFFFFFFu));
+	c = mx_e_ad(c, MX_GS_REG_TEST_1, mx_gs_test(0, 0, 0, 0, 0, 0, 1, 1));
+	c = mx_e_ad(c, MX_GS_REG_PRIM, mx_gs_prim(MX_GS_PRIM_SPRITE, 0, 0, 0, 0, 0, 0, 0, 0));
+	c = mx_e_ad(c, MX_GS_REG_RGBAQ, 0);
+	c = mx_e_ad(c, MX_GS_REG_XYZ2, (u64)X0 | (u64)Y0 << 16);
+	c = mx_e_ad(c, MX_GS_REG_XYZ2, (u64)X1 | (u64)Y1 << 16);
+	c = mx_e_ad(c, MX_GS_REG_FRAME_1, mx_hires_frame(0));
+	c = mx_e_ad(c, MX_GS_REG_TEST_1, mx_gs_test(0, 0, 0, 0, 0, 0, 1, 2));
+	mx_e_ret(c, 0, 0, 0);
+	rp_draw(c0, mask, 0, 0, 0);
 }
 
 /* CALLs into the record being written */

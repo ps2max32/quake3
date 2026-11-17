@@ -30,6 +30,7 @@ struct rp_view {
 	float rowx[3], rowy[3];     /* a world direction to GS x * w and y * w */
 	struct rp_plane fr[5];      /* the frustum: near, left, right, bottom, top */
 	struct rp_plane gb[5];      /* the same for the guard band (a vertex outside is cut on VU1) */
+	float fr_len[5], gb_len[5]; /* the lengths of their normals */
 	u32 nstrip, strip_h, all;   /* beam racing's strips: how many, their lines, all of them as a mask */
 	u32 serial;                 /* another for every view set */
 };
@@ -68,8 +69,9 @@ enum { RP_BLEND_NONE, RP_BLEND_ADD, RP_BLEND_ALPHA, RP_BLEND_FILTER, RP_BLEND_OT
 enum { RP_ALPHA_NONE, RP_ALPHA_GT0, RP_ALPHA_LT128, RP_ALPHA_GE128 };
 /* the programs of a run: the world's (texture and lightmap from one vertex
    when the state has a lightmap); none: its draws are GIF packets (sprites
-   of ST, RGBAQ, XYZ2 a vertex, PRIM from the state), no matrix */
-enum { RP_PROG_WORLD, RP_PROG_GS };
+   of ST, RGBAQ, XYZ2 a vertex, PRIM from the state), no matrix; an MD3
+   model's (tools/ps2vu.py, q3m: the state's model uniforms) */
+enum { RP_PROG_WORLD, RP_PROG_GS, RP_PROG_MODEL };
 /* depth: tested and written; tested; neither (2D) */
 enum { RP_Z_WRITE, RP_Z_TEST, RP_Z_NONE };
 
@@ -83,6 +85,10 @@ struct rp_state {
 	u8 nomip;              /* the first level only, bilinear */
 	u8 clamp;              /* the texture is not repeated */
 	float texels;          /* of the texture's first level a unit of the surface (the MIPMAP level) */
+	/* RP_PROG_MODEL: the old frame's share (x); the colour without light;
+	   the directed light's colour times its direction's x, y, z (in the
+	   model's space, for normals of length 127); the colour's limit */
+	float model[6][4];
 };
 
 /* A matrix for positions in units of scale at origin, turned by axis (0:
@@ -97,6 +103,10 @@ int rp_run_last(void);
    the near plane or the guard band (the programs that cut); verts, batches:
    for the counts. */
 void rp_draw(const void *chain, u32 mask, int clip, u32 verts, u32 batches);
+/* The depth of the picture's pixels x0, y0 .. x1, y1 back to the farthest
+   (a scene of its own on the screen, the view weapon): a draw of a run of
+   its own. */
+void rp_zclear(float x0, float y0, float x1, float y1);
 
 struct rp_list_stats {
 	u32 runs, draws;

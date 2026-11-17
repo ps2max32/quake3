@@ -7,7 +7,8 @@
 
 #include "rp_list.h"
 
-/* the engine's polyVert_t */
+/* the engine's polyVert_t; the colour here is the GS's: 0x80 the texture's
+   own colour, 0x80 an alpha of 1 */
 struct rp_vert {
 	float xyz[3];
 	float st[2];

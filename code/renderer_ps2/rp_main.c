@@ -6,12 +6,13 @@
    A map's world is rp_world.c's, from maps/<name>.pmap beside the paks
    (tools/ps2map.py makes it from the BSP; a map without one is not drawn).
 
-   The game's shaders are rp_shader.c's; sprites and the engine's polys are
-   built on the EE (rp_poly.c), the pictures of the screen are GS sprites.
+   Sprites and the engine's polys are built on the EE (rp_poly.c), the
+   pictures of the screen are GS sprites.
+   The game's shaders are rp_shader.c's, its models rp_model.c's (MD3, on
+   VU1).
 
-   Not yet: models, beams, lights, marks. They are counted: models are
-   loaded (the file as it is, in the hunk), since cgame places its entities
-   by their tags and bounds. Each main view's camera goes into quake3.cam
+   Not yet: the map's doors and platforms, beams, lights, marks, the sky. They
+   are counted. Each main view's camera goes into quake3.cam
    (ps2_ren_report), for the viewer (tools/q3view) to fly the same path.
    r_ps2draw 0: nothing is drawn, a timedemo then costs what the game side
    costs (game, cgame, client, sound, collision). r_ps2shot n: the picture
@@ -28,6 +29,7 @@
 #include <mx/vm.h>
 
 #include "rp_list.h"
+#include "rp_model.h"
 #include "rp_poly.h"
 #include "rp_shader.h"
 #include "rp_tex.h"
@@ -92,119 +94,6 @@ static void world_free(void) {
 }
 int ps2_demo_frame(void); /* sys_ps2.c: the timedemo's frame, 0: none */
 
-/* ---- names to handles ------------------------------------------------------- */
-
-#define RP_NAMES 2048
-struct names {
-	char name[RP_NAMES][MAX_QPATH];
-	int n;
-};
-static struct names skins;
-
-/* 1 .. RP_NAMES - 1; 0 is the engine's "none" */
-static qhandle_t name_handle(struct names *t, const char *name) {
-	if (!name || !name[0])
-		return 0;
-	for (int i = 1; i < t->n; i++)
-		if (!Q_stricmp(t->name[i], name))
-			return i;
-	if (t->n >= RP_NAMES)
-		return 0;
-	if (!t->n)
-		t->n = 1;
-	Q_strncpyz(t->name[t->n], name, MAX_QPATH);
-	return t->n++;
-}
-
-/* ---- models --------------------------------------------------------------------- */
-
-#define RP_MODELS 1024
-static struct {
-	char name[MAX_QPATH];
-	md3Header_t *md3; /* NULL: a brush model of the map ("*n") or not an MD3 */
-} models[RP_MODELS];
-static int nmodels;
-
-static qhandle_t RP_RegisterModel(const char *name) {
-	if (!name || !name[0] || strlen(name) >= MAX_QPATH)
-		return 0;
-	for (int i = 1; i < nmodels; i++)
-		if (!Q_stricmp(models[i].name, name))
-			return models[i].md3 || name[0] == '*' ? i : 0;
-	if (nmodels >= RP_MODELS)
-		return 0;
-	if (!nmodels)
-		nmodels = 1;
-	int h = nmodels++;
-	Q_strncpyz(models[h].name, name, MAX_QPATH);
-	models[h].md3 = NULL;
-	if (name[0] == '*')
-		return h;
-	void *file;
-	long size = ri.FS_ReadFile(name, &file);
-	if (size <= 0 || !file)
-		return 0;
-	md3Header_t *m = file;
-	if (size >= (long)sizeof *m && m->ident == MD3_IDENT && m->version == MD3_VERSION && m->numFrames > 0) {
-		models[h].md3 = ri.Hunk_Alloc(size, h_low);
-		memcpy(models[h].md3, file, size);
-	}
-	ri.FS_FreeFile(file);
-	return models[h].md3 ? h : 0;
-}
-
-static md3Header_t *model_md3(qhandle_t h) { return h > 0 && h < nmodels ? models[h].md3 : NULL; }
-
-static void RP_ModelBounds(qhandle_t h, vec3_t mins, vec3_t maxs) {
-	md3Header_t *m = model_md3(h);
-	if (!m) {
-		VectorClear(mins);
-		VectorClear(maxs);
-		return;
-	}
-	md3Frame_t *f = (md3Frame_t *)((byte *)m + m->ofsFrames);
-	VectorCopy(f->bounds[0], mins);
-	VectorCopy(f->bounds[1], maxs);
-}
-
-static md3Tag_t *model_tag(md3Header_t *m, int frame, const char *name) {
-	if (frame >= m->numFrames)
-		frame = m->numFrames - 1;
-	if (frame < 0)
-		frame = 0;
-	md3Tag_t *t = (md3Tag_t *)((byte *)m + m->ofsTags) + frame * m->numTags;
-	for (int i = 0; i < m->numTags; i++, t++)
-		if (!strcmp(t->name, name))
-			return t;
-	return NULL;
-}
-
-static unsigned st_tags;
-
-static int RP_LerpTag(orientation_t *tag, qhandle_t h, int startFrame, int endFrame, float frac,
-                      const char *tagName) {
-	md3Header_t *m = model_md3(h);
-	md3Tag_t *a = m ? model_tag(m, startFrame, tagName) : NULL;
-	md3Tag_t *b = m ? model_tag(m, endFrame, tagName) : NULL;
-	st_tags++;
-	if (!a || !b) {
-		AxisClear(tag->axis);
-		VectorClear(tag->origin);
-		return qfalse;
-	}
-	float back = 1.0f - frac;
-	for (int i = 0; i < 3; i++) {
-		tag->origin[i] = a->origin[i] * back + b->origin[i] * frac;
-		tag->axis[0][i] = a->axis[0][i] * back + b->axis[0][i] * frac;
-		tag->axis[1][i] = a->axis[1][i] * back + b->axis[1][i] * frac;
-		tag->axis[2][i] = a->axis[2][i] * back + b->axis[2][i] * frac;
-	}
-	VectorNormalize(tag->axis[0]);
-	VectorNormalize(tag->axis[1]);
-	VectorNormalize(tag->axis[2]);
-	return qtrue;
-}
-
 /* ---- what a frame hands the renderer ---------------------------------------------- */
 
 static struct {
@@ -233,7 +122,9 @@ static int ncams;
 #define MAX_SPRITE 1024
 #define MAX_POLY 2048
 #define MAX_POLYVERT 12288
-static refEntity_t sprites[MAX_SPRITE];
+#define MAX_MODEL 1024
+static refEntity_t sprites[MAX_SPRITE], ments[MAX_MODEL];
+static u32 nment, first_ment;
 static struct {
 	qhandle_t shader;
 	u16 first, n;
@@ -245,15 +136,20 @@ static unsigned st_nostage, st_quads;
 
 static void RP_ClearScene(void) {
 	cur_ents = cur_polys = cur_polyverts = cur_lights = 0;
-	first_sprite = nsprite, first_poly = npoly;
+	first_sprite = nsprite, first_poly = npoly, first_ment = nment;
 }
 
 static void RP_AddRefEntityToScene(const refEntity_t *e) {
 	if ((unsigned)e->reType < RT_MAX_REF_ENTITY_TYPE)
 		st.ents[e->reType]++;
 	cur_ents++;
-	if (e->reType == RT_SPRITE && e->radius > 0 && nsprite < MAX_SPRITE && in_frame)
+	if (!in_frame)
+		return;
+	if (e->reType == RT_SPRITE && e->radius > 0 && nsprite < MAX_SPRITE)
 		sprites[nsprite++] = *e;
+	/* a body seen only in mirrors is not this view's */
+	if (e->reType == RT_MODEL && !(e->renderfx & RF_THIRD_PERSON) && nment < MAX_MODEL)
+		ments[nment++] = *e;
 }
 
 static void RP_AddPolyToScene(qhandle_t shader, int numVerts, const polyVert_t *verts, int num) {
@@ -405,8 +301,10 @@ static void RP_RenderScene(const refdef_t *fd) {
 		float ys = (float)mx_gs.h / 1080.0f;
 		rp_view_rect(&cam, (float)fd->x, (float)fd->y * ys, (float)fd->width, (float)fd->height * ys);
 		u32 nq = scene_quads(fd), decals = 0;
+		float now = fd->time * 0.001f;
 		while (decals < nq && quad[quad_order[decals]].sort <= SORT_DECAL)
 			decals++;
+		rp_scene_world = world;
 		if (world && world_ok) {
 			rp_world_cull(&world_st);
 			rp_world_add(0);
@@ -414,13 +312,42 @@ static void RP_RenderScene(const refdef_t *fd) {
 			ACC(seen), ACC(groups), ACC(drawn), ACC(clip), ACC(back), ACC(verts);
 #undef ACC
 		}
-		/* the marks on the walls, the world's blended surfaces, then the rest */
+		/* a scene of its own on the screen (the HUD's models): no depth is there yet */
+		if (!world)
+			rp_zclear((float)fd->x, (float)fd->y * ys, (float)(fd->x + fd->width), (float)(fd->y + fd->height) * ys);
+		/* the models that write depth; the marks on the walls; the world's
+		   blended surfaces; the models that blend, and the rest; last the view
+		   weapon, over depth of its own (the engine squeezes its depth range) */
+		int hack = 0;
+		for (u32 i = first_ment; i < nment; i++) {
+			const refEntity_t *e = &ments[i];
+			if (e->renderfx & RF_DEPTHHACK)
+				hack = 1;
+			else if (!rp_model_blended(e))
+				rp_model_draw(e, now - e->shaderTime);
+		}
 		quads_draw(0, decals);
 		if (world && world_ok)
 			rp_world_add(1);
+		for (u32 i = first_ment; i < nment; i++)
+			if (!(ments[i].renderfx & RF_DEPTHHACK) && rp_model_blended(&ments[i]))
+				rp_model_draw(&ments[i], now - ments[i].shaderTime);
 		quads_draw(decals, nq);
+		if (hack) {
+			float rc[4] = {1e9f, 1e9f, -1e9f, -1e9f}, r1[4];
+			for (u32 i = first_ment; i < nment; i++)
+				if ((ments[i].renderfx & RF_DEPTHHACK) && rp_model_rect(&ments[i], r1)) {
+					rc[0] = r1[0] < rc[0] ? r1[0] : rc[0], rc[1] = r1[1] < rc[1] ? r1[1] : rc[1];
+					rc[2] = r1[2] > rc[2] ? r1[2] : rc[2], rc[3] = r1[3] > rc[3] ? r1[3] : rc[3];
+				}
+			rp_zclear(rc[0], rc[1], rc[2], rc[3]);
+			for (int blended = 0; blended < 2; blended++)
+				for (u32 i = first_ment; i < nment; i++)
+					if ((ments[i].renderfx & RF_DEPTHHACK) && rp_model_blended(&ments[i]) == blended)
+						rp_model_draw(&ments[i], now - ments[i].shaderTime);
+		}
 	}
-	first_sprite = nsprite, first_poly = npoly;
+	first_sprite = nsprite, first_poly = npoly, first_ment = nment;
 	if (!world)
 		return;
 	int df = ps2_demo_frame();
@@ -479,8 +406,7 @@ static void RP_DrawStretchPic(float x, float y, float w, float h, float s1, floa
 			a1 = m[0] * s1 + m[1] * t1 + m[2], b1 = m[3] * s1 + m[4] * t1 + m[5];
 			a2 = m[0] * s2 + m[1] * t2 + m[2], b2 = m[3] * s2 + m[4] * t2 + m[5];
 		}
-		rp_pic(x, y * ys, w, h * ys, a1, b1, a2, b2,
-		       ((u32)c[0] + 1) >> 1 | ((u32)c[1] + 1) >> 1 << 8 | ((u32)c[2] + 1) >> 1 << 16 | ((u32)c[3] + 1) >> 1 << 24);
+		rp_pic(x, y * ys, w, h * ys, a1, b1, a2, b2, (u32)c[0] | (u32)c[1] << 8 | (u32)c[2] << 16 | (u32)c[3] << 24);
 	}
 }
 
@@ -495,7 +421,7 @@ static void RP_BeginFrame(stereoFrame_t stereoFrame) {
 	rp_tex_frame();
 	mx_hires_clear(0, 0, 0);
 	rp_list_begin();
-	nsprite = npoly = npolyvert = first_sprite = first_poly = 0;
+	nsprite = npoly = npolyvert = first_sprite = first_poly = nment = first_ment = 0;
 	last2d.shader = 0;
 	/* the pictures before a scene: over the whole picture */
 	struct rp_cam none = {{0, 0, 0}, {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}}, 90, 60};
@@ -531,6 +457,8 @@ static void RP_EndFrame(int *frontEndMsec, int *backEndMsec) {
 		st_at = st;
 		rp_list_stats = (struct rp_list_stats){0};
 		rp_tex_stats = (struct rp_tex_stats){0};
+		u32 kb = rp_model_stats.kb;
+		rp_model_stats = (struct rp_model_stats){.kb = kb};
 	}
 	if (df)
 		st_frames++;
@@ -562,8 +490,12 @@ void ps2_ren_report(void) {
 	            st_at.ents[RT_LIGHTNING]) * 10 / n % 10,
 	           A(polys), A(polyverts), A(lights), A(pics), A(marks));
 #undef A
-	Com_Printf("ps2: renderer: %d models, %d shaders, %d skins registered; %u tags asked\n", nmodels ? nmodels - 1 : 0,
-	           rp_shader_count(), skins.n ? skins.n - 1 : 0, st_tags);
+	Com_Printf("ps2: renderer: %d models (%u KB of vertices), %d shaders registered\n", rp_model_count(),
+	           rp_model_stats.kb, rp_shader_count());
+	Com_Printf("ps2: renderer: models, a frame: %u on VU1 (%u surfaces, %u pieces, %u vertices), %u across a plane "
+	           "(on the EE), %u out of view; in all %u surfaces without a stage, %u later stages not drawn\n",
+	           rp_model_stats.drawn / n, rp_model_stats.surfs / n, rp_model_stats.pieces / n, rp_model_stats.verts / n,
+	           rp_model_stats.cut / n, rp_model_stats.culled / n, rp_model_stats.nostage, rp_model_stats.stages);
 	Com_Printf("ps2: renderer: polygons: %u drawn (%u across a plane), %u out of view; %u pictures; %u stages without "
 	           "an image in GS memory\n", rp_poly_stats.polys, rp_poly_stats.cut, rp_poly_stats.culled,
 	           rp_poly_stats.pics, st_nostage);
@@ -603,7 +535,6 @@ static void RP_Shutdown(qboolean destroyWindow) {
 static void RP_BeginRegistration(glconfig_t *config) {
 	static int pad;
 	/* the hunk was cleared: nothing registered is left */
-	nmodels = 0, skins.n = 0;
 	memset(config, 0, sizeof *config);
 	Q_strncpyz(config->renderer_string, "PS2 GS (maxsdk)", sizeof config->renderer_string);
 	Q_strncpyz(config->vendor_string, "ps2max", sizeof config->vendor_string);
@@ -615,6 +546,7 @@ static void RP_BeginRegistration(glconfig_t *config) {
 	world_free();
 	frames_flush();
 	rp_shaders_begin();
+	rp_models_begin();
 	config->maxTextureSize = 128;
 	config->numTextureUnits = 1;
 	config->colorBits = 16, config->depthBits = 16;
@@ -627,7 +559,12 @@ static void RP_BeginRegistration(glconfig_t *config) {
 		ri.IN_Init(NULL);
 }
 
-static qhandle_t RP_RegisterSkin(const char *name) { return name_handle(&skins, name); }
+static qhandle_t RP_RegisterSkin(const char *name) { return rp_skin_register(name); }
+static qhandle_t RP_RegisterModel(const char *name) { return rp_model_register(name); }
+static int RP_LerpTag(orientation_t *tag, qhandle_t h, int startFrame, int endFrame, float frac, const char *tagName) {
+	return rp_model_tag(tag, h, startFrame, endFrame, frac, tagName);
+}
+static void RP_ModelBounds(qhandle_t h, vec3_t mins, vec3_t maxs) { rp_model_bounds(h, mins, maxs); }
 static qhandle_t RP_RegisterShader(const char *name) { return rp_shader_register(name, -1, 1); }
 /* the screen's pictures (LIGHTMAP_2D) */
 static qhandle_t RP_RegisterShaderNoMip(const char *name) { return rp_shader_register(name, -4, 0); }
@@ -650,6 +587,7 @@ static void RP_LoadWorld(const char *name) {
 		return;
 	}
 	world_ok = 1;
+	rp_light_load(name);
 	ri.Printf(PRINT_ALL, "ps2: renderer: world %s, %u KB\n", path, world_size / 1024);
 }
 static void RP_SetWorldVisData(const byte *vis) {}

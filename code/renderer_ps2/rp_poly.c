@@ -159,9 +159,7 @@ void rp_poly(const struct rp_vert *v, u32 n) {
 		s = s > 32767.0f ? 32767.0f : s < -32767.0f ? -32767.0f : s;
 		t = t > 32767.0f ? 32767.0f : t < -32767.0f ? -32767.0f : t;
 		pb.st[j][0] = (s16)s, pb.st[j][1] = (s16)t, pb.st[j][2] = 4096;
-		/* the GS's colours: 0x80 is the texture's own */
-		pb.col[j] = (((u32)v[i].rgba[0] | (u32)v[i].rgba[1] << 8 | (u32)v[i].rgba[2] << 16 | (u32)v[i].rgba[3] << 24) >> 1 &
-		             0x7F7F7F7Fu) + ((u32)v[i].rgba[3] >> 7 << 24);
+		pb.col[j] = (u32)v[i].rgba[0] | (u32)v[i].rgba[1] << 8 | (u32)v[i].rgba[2] << 16 | (u32)v[i].rgba[3] << 24;
 		pb.pos[j][0] = (s16)(cam[i][0] * unit), pb.pos[j][1] = (s16)(cam[i][1] * unit), pb.pos[j][2] = (s16)(cam[i][2] * unit);
 		pb.pos[j][3] = k < 2 ? (s16)W_NONE : 0;
 	}
