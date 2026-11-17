@@ -284,6 +284,39 @@ are drawn and the textures are a cache:
   own: its lightmap coordinates). What is left to cut there: curves in
   fewer triangles when they are far, and the clear.
 
+**The same day, later.** With what follows the same timedemo is 58.9 fps
+(21.4 s for 1260 frames; the EE 3.78 M cycles a frame, median 11.3 ms; 180
+of 1258 frames over a field; the longest 76 ms; 13 pages swapped in and 69
+out in the run):
+
+- **The swap was the engine's temp memory.** A load reads megabytes of files
+  (the BSP, sounds, scripts) into the hunk's temp side and frees them; the
+  pages stayed as they were written, and the pager sent them to the swap
+  file a page at a time (7 ms each, in the frame that wanted memory) during
+  the first seconds of play: 8.3 MB "unused highwater". Temp memory now
+  comes from a heap of pages whose freed pages are dropped
+  (`Hunk_AllocateTempMemory`, PS2).
+- **Images and models are mapped files** (`tools/ps2bin.py`: `ps2tex.bin`,
+  `ps2mdl.bin` beside the paks): no copy in the hunk, nothing decoded at a
+  map's start (cgame's start 6.5 s -> 4.9 s), pages that cost no write to
+  give up. What a map's start needs is read then. A model frame's vertices
+  are made ready for VU1 when first drawn, in a cache of 4 MB; when the
+  file's page is not in memory the pager is asked and the draw uses the
+  block it had: a frame never waits for the file.
+- **The view weapon is on VU1** (`q3mc`: a triangle with a vertex outside
+  is left out; they are below the screen's edge).
+- **The EE**: a plane against a box without branches and the strips by
+  planes (the world's front end 0.72 M -> 0.53 M cycles), the world's runs
+  made at load, `Sys_Milliseconds` without a 64-bit division.
+- maxsdk's VM writer thread (`clean_frames`) was tried against the swap
+  and did not help: faults wait for the VM lock while it writes.
+
+A census at a run's end (`Q3_VM_CENSUS`): 16.9 MB of the program's own
+memory resident (the client's `cl` 1.9 MB, cgame's entities 0.9 MB, the
+hunk and zone 8 MB), 7.5 MB of mapped files, 7.3 MB pinned (the map's
+chunks 1.2, the models' frames 1.9 and tables 1.0, the frame's chains 0.8,
+the records 0.6).
+
 Left of phase 3: the stages after a shader's first (11,000 skipped in the
 run), the map's doors and platforms, the sky, beams and lightning, marks,
 dynamic lights, texture coordinates that move on world surfaces, strips in
