@@ -16,6 +16,7 @@
 #include <mx/prof.h>
 #include <mx/vm.h>
 
+#include "rp_bin.h"
 #include "rp_poly.h"
 #include "rp_tex.h"
 #include "rp_world.h"
@@ -148,6 +149,9 @@ int main(int argc, char **argv) {
 	u32 sbytes = lines ? mx_hires_strip_records(srec, sizeof srec) : 0;
 	rp_tex_init();
 	rp_list_init();
+	/* the textures: the game's file of images, beside the game's data */
+	if (rp_bin_open(&rp_bin_tex, "baseq3/ps2tex.bin", 1) < 0)
+		mx_printf("q3view: no baseq3/ps2tex.bin (tools/ps2bin.py): the map is drawn without textures\n");
 	if (rp_world_load(map, msize) < 0) {
 		mx_printf("q3view: %s is not a map of this version\n", mapname);
 		MX_TEST_END(1);

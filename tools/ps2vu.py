@@ -64,6 +64,9 @@ Programs:
          offset 4 i, bit 15 ADC) gathered into the packet at M_OUT. Nothing
          is cut: a model across the near plane or the guard band is drawn on
          the EE (rp_poly.c).
+    w1t, w1tc   one pass of a shader's stage: w1 and w1c with the texture
+         coordinates through a matrix (TM0, TM1, TM2: tcMod) and the colour
+         as the vertex's times CMUL plus CADD (a stage's own colour: CMUL 0)
     mc   the same with a test of each vertex against the guard band and the
          depth planes: a triangle with a vertex outside is left out. For the
          view weapon, whose triangles there are below the screen's edge.
@@ -108,8 +111,11 @@ ROOM = {"PL": 12, "CO": 18, "WA": 30, "WB": 39, "R0": 48, "R1": 58, "SAVE": 68}
 M_OUT, M_IDX, M_VERT = 18, 306, 346
 M_VERTS, M_ENTRIES = 28, 96
 MCTX = {"LERP": 30, "AMB": 31, "DX": 32, "DY": 33, "DZ": 34, "C255": 35}
+# a stage's, in the same room: the texture coordinates' matrix by columns (s' = TM0.x s + TM1.x
+# t + TM2.x, t' the y's; TM2.z 1), the colour's factor and what is added (0 .. 255)
+TCTX = {"TM0": 30, "TM1": 31, "TM2": 32, "CMUL": 33, "CADD": 34}
 # q3clip's registers: the loops' uniforms and tags are kept out of them
-CLIP_VF = set(range(1, 10)) | set(range(12, 26))
+CLIP_VF = set(range(1, 10)) | set(range(12, 21))
 
 
 def kernels(vs):
@@ -167,12 +173,22 @@ def kernels(vs):
             ops.append(Op("sqposb", "L", "sq.xyzw {O}, {off}({p})", None, [("O", "xyzw")], mem=("sq", FAR + 2)))
         return ops
 
-    def st(tag, src, dst):
-        return [
+    def st(tag, src, dst, tm=False):
+        ops = [
             Op("lqst" + tag, "L", "lq.xyz {S%s}, {off}({p})" % tag, ("S" + tag, "xyz"), mem=("lq", src)),
             Op("itofst" + tag, "U", "itof12.xyz {I%s}, {S%s}" % (tag, tag), ("I" + tag, "xyz"), [("S" + tag, "xyz")]),
-            Op("mulst" + tag, "U", "mulq.xyz {M%s}, {I%s}, Q" % (tag, tag), ("M" + tag, "xyz"),
-               [("I" + tag, "xyz"), ("Q", "")]),
+        ]
+        g = "I" + tag
+        if tm:  # (s, t, 1) through the matrix's columns
+            ops += [
+                Op("tma", "U", "mulax.xyz ACC, {TM0}, {I%s}x" % tag, ("ACC", ""), [("I" + tag, "x")]),
+                Op("tmb", "U", "madday.xyz ACC, {TM1}, {I%s}y" % tag, ("ACC", ""), [("ACC", ""), ("I" + tag, "y")]),
+                Op("tmc", "U", "maddz.xyz {G%s}, {TM2}, {I%s}z" % (tag, tag), ("G" + tag, "xyz"),
+                   [("ACC", ""), ("I" + tag, "z")]),
+            ]
+            g = "G" + tag
+        return ops + [
+            Op("mulst" + tag, "U", "mulq.xyz {M%s}, {%s}, Q" % (tag, g), ("M" + tag, "xyz"), [(g, "xyz"), ("Q", "")]),
             Op("sqst" + tag, "L", "sq.xyz {M%s}, {off}({p})" % tag, None, [("M" + tag, "xyz")], mem=("sq", dst)),
         ]
 
@@ -180,18 +196,31 @@ def kernels(vs):
     col = [Op("lqcol", "L", "lq.xyzw {K}, {off}({p})", ("K", "xyzw"), mem=("lq", 1)),
            Op("sqcol", "L", "sq.xyzw {K}, {off}({p})", None, [("K", "xyzw")], mem=("sq", FAR + 1))]
 
+    # a stage's colour: the vertex's times CMUL plus CADD, to slot dst
+    def colt(dst):
+        return [
+            Op("lqcol", "L", "lq.xyzw {K}, {off}({p})", ("K", "xyzw"), mem=("lq", 1)),
+            Op("kf", "U", "itof0.xyzw {KF}, {K}", ("KF", "xyzw"), [("K", "xyzw")]),
+            Op("ka", "U", "mulaw.xyzw ACC, {CADD}, vf00w", ("ACC", ""), []),
+            Op("kb", "U", "madd.xyzw {KC}, {KF}, {CMUL}", ("KC", "xyzw"), [("ACC", ""), ("KF", "xyzw")]),
+            Op("ki", "U", "ftoi0.xyzw {KO}, {KC}", ("KO", "xyzw"), [("KC", "xyzw")]),
+            Op("sqcol", "L", "sq.xyzw {KO}, {off}({p})", None, [("KO", "xyzw")], mem=("sq", dst)),
+        ]
+
     mvp = [(g, CTX[g]) for g in ("C0", "C1", "C2", "C3")]
     clipu = [(g, CTX[g]) for g in ("CS", "CN")]
     stripu = [(g, CTX[g]) for g in ("SS", "SN")]
 
-    def k(name, clip, two, u):
+    stageu = [(g, q) for g, q in TCTX.items()]
+
+    def k(name, clip, two, u, stage=False):
         if two:
             ops = lambda c: pos(clip, two, c) + st("a", 0, 0) + st("b", FARI, FAR)
         elif clip:
-            ops = lambda c: pos(clip, two, c) + st("a", 0, 0)
+            ops = lambda c: pos(clip, two, c) + st("a", 0, 0, stage) + (colt(1) if stage else [])
         else:
-            ops = lambda c: pos(clip, two, c) + st("a", 0, FAR) + col
-        return Kernel(name, ops, u, 0, STRIDE, mvp + (clipu if clip else stripu), {})
+            ops = lambda c: pos(clip, two, c) + st("a", 0, FAR, stage) + (colt(FAR + 1) if stage else col)
+        return Kernel(name, ops, u, 0, STRIDE, mvp + (clipu if clip else stripu) + (stageu if stage else []), {})
 
     def model(clip):
         ops = [
@@ -251,6 +280,8 @@ def kernels(vs):
         (k("q3w1", False, False, 2), range(20, 40)),
         (k("q3w2c", True, True, 1), range(14, 25)),
         (k("q3w1c", True, False, 1), range(12, 23)),
+        (k("q3w1t", False, False, 2, True), range(30, 56)),
+        (k("q3w1tc", True, False, 1, True), range(18, 34)),
     ]
 
 
@@ -514,21 +545,19 @@ def clipper():
 
     lab("q3clip")
     L(f"isw.x vi15, {SAVE}(vi00)", f"isw.y vi14, {SAVE}(vi00)")
-    L(f"lq.xyzw vf01, {CTX['TA3']}(vi00)", f"lq.xyzw vf02, {CTX['TB3']}(vi00)")
-    L(f"lq.xyz vf24, {CTX['CS']}(vi00)", f"lq.xyz vf25, {CTX['CN']}(vi00)")
-    # the weights of the three corners: vf21 (1, 0, 0), vf22 (0, 1, 0), vf23 (0, 0, 1)
-    L("mr32.xyzw vf23, vf00", f"sq.xyzw vf01, {R0}(vi00)", f"sq.xyzw vf02, {R1}(vi00)", "nop",
-      "mr32.xyzw vf22, vf23", "nop", "nop", "nop", "mr32.xyzw vf21, vf22")
+    L(f"lq.xyzw vf01, {CTX['TA3']}(vi00)", f"lq.xyzw vf02, {CTX['TB3']}(vi00)", "nop", "nop",
+      f"sq.xyzw vf01, {R0}(vi00)", f"sq.xyzw vf02, {R1}(vi00)")
     L(f"iaddiu vi11, vi08, {A + 6}", "isubiu vi12, vi09, 2", "nop", "iblez vi12, q3clip_ret", "nop")
 
     lab("q3clip_scan")
     L("ilw.w vi05, 2(vi11)", "iaddiu vi01, vi00, 0x2000", "nop", "nop", "iand vi01, vi05, vi01",
       "ibgez vi05, q3clip_next", "nop", "ibne vi01, vi00, q3clip_next", "nop")
     # the corners' positions before the divide (vf09, vf12, vf13), scaled into the clip volume (vf14-16)
-    L(f"lq.xyzw vf09, {FAR + 1 - 6}(vi11)", f"lq.xyzw vf12, {FAR + 1 - 3}(vi11)", f"lq.xyzw vf13, {FAR + 1}(vi11)")
-    U("mulaw.xyz ACC, vf25, vf09w", "madd.xyz vf14, vf09, vf24",
-      "mulaw.xyz ACC, vf25, vf12w", "madd.xyz vf15, vf12, vf24",
-      "mulaw.xyz ACC, vf25, vf13w", "madd.xyz vf16, vf13, vf24")
+    L(f"lq.xyzw vf09, {FAR + 1 - 6}(vi11)", f"lq.xyzw vf12, {FAR + 1 - 3}(vi11)", f"lq.xyzw vf13, {FAR + 1}(vi11)",
+      f"lq.xyz vf17, {CTX['CS']}(vi00)", f"lq.xyz vf18, {CTX['CN']}(vi00)", "nop", "nop", "nop")
+    U("mulaw.xyz ACC, vf18, vf09w", "madd.xyz vf14, vf09, vf17",
+      "mulaw.xyz ACC, vf18, vf12w", "madd.xyz vf15, vf12, vf17",
+      "mulaw.xyz ACC, vf18, vf13w", "madd.xyz vf16, vf13, vf17")
     # by coordinate over the corners: W vf17, X vf18, Y vf19, Z vf20
     U("addw.x vf17, vf00, vf09w", "addw.y vf17, vf00, vf12w", "addw.z vf17, vf00, vf13w")
     for r, c in ((18, "x"), (19, "y"), (20, "z")):
@@ -554,8 +583,11 @@ def clipper():
     U("itof0.xyzw vf01, vf01", "itof0.xyzw vf02, vf02", "itof0.xyzw vf03, vf03")
     gap(1)
     L(f"sq.xyzw vf01, {CC}(vi00)", f"sq.xyzw vf02, {CC + 1}(vi00)", f"sq.xyzw vf03, {CC + 2}(vi00)")
-    # the polygon: the triangle. vi03 from, vi04 to, vi05 its vertices, vi10 the plane's row
-    L(f"sq.xyz vf21, {WA}(vi00)", f"sq.xyz vf22, {WA + 1}(vi00)", f"sq.xyz vf23, {WA + 2}(vi00)")
+    # the polygon: the triangle, its corners' weights (1, 0, 0), (0, 1, 0), (0, 0, 1).
+    # vi03 from, vi04 to, vi05 its vertices, vi10 the plane's row
+    L("mr32.xyzw vf03, vf00", "nop", "nop", "nop", "mr32.xyzw vf02, vf03", "nop", "nop", "nop", "mr32.xyzw vf01, vf02",
+      "nop", "nop", "nop")
+    L(f"sq.xyz vf01, {WA}(vi00)", f"sq.xyz vf02, {WA + 1}(vi00)", f"sq.xyz vf03, {WA + 2}(vi00)")
     L(f"iaddiu vi03, vi00, {WA}", f"iaddiu vi04, vi00, {WB}", "iaddiu vi05, vi00, 3", f"iaddiu vi10, vi00, {PL}")
 
     lab("q3clip_plane")
@@ -698,6 +730,7 @@ def main():
     h += [f"#define Q3VU_CTX_{g} {q}" for g, q in CTX.items()]
     h += [f"#define Q3VU_ROOM_{g} {q}" for g, q in ROOM.items()]
     h += [f"#define Q3VU_M_{g} {q} /* q3m's uniforms */" for g, q in MCTX.items()]
+    h += [f"#define Q3VU_T_{g} {q} /* q3w1t's */" for g, q in TCTX.items()]
     h += [f"#define Q3VU_M_OUT {M_OUT}", f"#define Q3VU_M_IDX {M_IDX}", f"#define Q3VU_M_VERT {M_VERT}",
           f"#define Q3VU_M_VERTS {M_VERTS} /* a piece's vertices at most */",
           f"#define Q3VU_M_ENTRIES {M_ENTRIES} /* and its entries */"]

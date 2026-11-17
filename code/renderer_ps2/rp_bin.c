@@ -21,7 +21,7 @@ int rp_bin_open(struct rp_bin *b, const char *path, u32 kind) {
 	const struct head *h = mx_vm_map_file(path, &size);
 	if (!h)
 		return -1;
-	if (size < sizeof *h || h->magic != 0x4e494250u /* "PBIN" */ || h->version != 1 || h->kind != kind ||
+	if (size < sizeof *h || h->magic != 0x4e494250u /* "PBIN" */ || h->version != 2 || h->kind != kind ||
 	    h->size > size || h->off_index + h->count * sizeof(struct rp_bin_entry) > size) {
 		mx_vm_unmap_file(h);
 		return -1;

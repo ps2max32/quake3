@@ -23,6 +23,22 @@ struct rp_world_stats {
    may still draw it). */
 int rp_world_load(const void *p, u32 size);
 void rp_world_free(void);
+/* The map's materials: their number; one's name (its shader's) and flags. */
+enum { RP_MAT_LIGHTMAP = 1, RP_MAT_SKY = 2, RP_MAT_NODRAW = 4, RP_MAT_DEFORM = 8, RP_MAT_TCMOD = 16, RP_MAT_SCRIPT = 32,
+       RP_MAT_VERTEX = 64, RP_MAT_ENV = 128 };
+u32 rp_world_materials(void);
+const char *rp_world_material(u32 i, u32 *flags);
+/* The passes of a material whose shader is a script (RP_MAT_SCRIPT), asked
+   for each one a view draws: fn writes up to RP_WORLD_PASSES states (prog
+   RP_PROG_STAGE: the texture placed, the blend, the texture matrix and the
+   colour at this frame) and returns their number; *first 1: pass 0 is drawn
+   in place of the map's own pass of the material, 0: they all follow it. */
+#define RP_WORLD_PASSES 4
+typedef u32 (*rp_world_passes_fn)(u32 mat, struct rp_state *pass, int *first);
+void rp_world_script(rp_world_passes_fn fn);
+/* After rp_world_cull: the view sees the sky's surfaces. */
+int rp_world_sky(void);
+
 /* In a frame, after rp_view_set: what of the world the view sees. Then its
    draws into the frame's list: those that write depth (blended 0), and the
    blended ones. */

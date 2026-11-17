@@ -37,6 +37,7 @@
 #include "rp_world.h"
 
 refimport_t ri;
+static float scene_time; /* the scene's being drawn, for its shaders */
 static cvar_t *r_ps2draw, *r_ps2shot;
 
 /* ---- the screen ------------------------------------------------------------------- */
@@ -322,6 +323,7 @@ static void RP_RenderScene(const refdef_t *fd) {
 		rp_view_rect(&cam, (float)fd->x, (float)fd->y * ys, (float)fd->width, (float)fd->height * ys);
 		u32 nq = scene_quads(fd), decals = 0;
 		float now = fd->time * 0.001f;
+		scene_time = now;
 		while (decals < nq && quad[quad_order[decals]].sort <= SORT_DECAL)
 			decals++;
 		rp_scene_world = world;
@@ -507,6 +509,10 @@ static int RP_MarkFragments(int numPoints, const vec3_t *points, const vec3_t pr
 	return 0;
 }
 
+static void tex_line(const char *name, u32 kb, u32 frames, u32 w, u32 h) {
+	Com_Printf("ps2: renderer: image %s %u x %u: %u KB of GS memory in %u frames\n", name, w, h, kb, frames);
+}
+
 /* at the end of a run: the counts a frame, the cameras as a file */
 void ps2_ren_report(void) {
 	static int done;
@@ -538,6 +544,21 @@ void ps2_ren_report(void) {
 	           rp_model_stats.paged);
 	rp_model_report();
 	rp_shader_report();
+	{
+		struct mx_vcache_stats vs;
+		mx_vcache_stats(&vs);
+		Com_Printf("ps2: renderer: GS memory: a frame draws with %u KB of images (at most %u KB); the cache has %u pages "
+		           "(%u KB), %u KB in use by %u entries; %u evicted\n",
+		           rp_tex_stats.frames ? rp_tex_stats.used_kb / rp_tex_stats.frames : 0, rp_tex_stats.used_max_kb, vs.pages,
+		           vs.pages * 8, vs.used_blocks / 4, vs.entries, vs.evicted);
+		u32 fr = rp_tex_stats.frames ? rp_tex_stats.frames * 4 : 1;
+		const u32 *kb = rp_tex_stats.kind_blocks;
+		Com_Printf("ps2: renderer: GS memory: of a frame's images the map's and the scripts' %u KB, lightmap pages %u KB, "
+		           "the models' %u KB, the screen's %u KB, others %u KB\n", kb[RP_IMAGE_WORLD] / fr,
+		           kb[RP_IMAGE_LIGHTMAP] / fr, kb[RP_IMAGE_MODEL] / fr, kb[RP_IMAGE_SCREEN] / fr, kb[RP_IMAGE_OTHER] / fr);
+		if (ri.Cvar_VariableIntegerValue("r_ps2images"))
+			rp_tex_report(tex_line);
+	}
 	Com_Printf("ps2: renderer: the hunk has %d KB left of %d MB\n", Hunk_MemoryRemaining() / 1024,
 	           Cvar_VariableIntegerValue("com_hunkMegs"));
 	Com_Printf("ps2: renderer: polygons: %u drawn (%u across a plane), %u out of view; %u pictures; %u stages without "
@@ -614,6 +635,43 @@ static qhandle_t RP_RegisterShader(const char *name) { return rp_shader_register
 static qhandle_t RP_RegisterShaderNoMip(const char *name) { return rp_shader_register(name, -4, 0); }
 /* maps/<name>.bsp: its world is maps/<name>.pmap, a file beside the paks, mapped
    and locked in memory (the DMAC reads its chunks and textures where they lie) */
+/* the shaders of the map's materials that are scripts, and the scene's time */
+#define MAX_WMAT 1024
+static qhandle_t wshader[MAX_WMAT];
+
+/* A material's passes at this frame (rp_world.h): a lightmapped one's first
+   stage is the map's own pass (texture and lightmap); the others, and every
+   stage of one that is not lightmapped, are passes of the stage's program. */
+static u32 world_passes(u32 mat, struct rp_state *pass, int *first) {
+	u32 flags = 0, n = 0;
+	struct rp_shader *sh = mat < MAX_WMAT ? rp_shader_get(wshader[mat]) : NULL;
+	if (!sh || !sh->nstage || !rp_world_material(mat, &flags))
+		return 0;
+	int lit = (flags & RP_MAT_LIGHTMAP) != 0;
+	*first = !lit;
+	for (int k = lit ? 1 : 0; k < sh->nstage && n < RP_WORLD_PASSES; k++) {
+		const struct rp_stage *stg = &sh->st[k];
+		struct rp_state *s = &pass[n];
+		if (stg->env || !rp_stage_state(stg, scene_time, s)) {
+			st_nostage += !stg->env;
+			continue;
+		}
+		s->prog = RP_PROG_STAGE;
+		s->z = k == 0 && stg->blend == RP_BLEND_NONE ? RP_Z_WRITE : RP_Z_TEST;
+		rp_stage_tcmod(stg, scene_time, s->tm);
+		/* the colour: the vertex's as the map has it, or the stage's own */
+		u8 c[4];
+		rp_stage_colour(stg, scene_time, NULL, NULL, c);
+		int vrgb = stg->rgbgen == RGB_VERTEX || stg->rgbgen == RGB_EXACT_VERTEX, va = stg->alphagen == A_VERTEX;
+		for (int a = 0; a < 4; a++) {
+			int v = a < 3 ? vrgb : va;
+			s->cmul[a] = v ? 1.0f : 0, s->cadd[a] = v ? 0 : (float)c[a];
+		}
+		n++;
+	}
+	return n;
+}
+
 static void RP_LoadWorld(const char *name) {
 	char path[MAX_OSPATH], base[MAX_QPATH];
 	world_free();
@@ -632,6 +690,15 @@ static void RP_LoadWorld(const char *name) {
 	}
 	world_ok = 1;
 	rp_light_load(name);
+	/* the materials that are scripts: their stages */
+	memset(wshader, 0, sizeof wshader);
+	for (u32 i = 0; i < rp_world_materials() && i < MAX_WMAT; i++) {
+		u32 flags = 0;
+		const char *mn = rp_world_material(i, &flags);
+		if (mn && (flags & (RP_MAT_SCRIPT | RP_MAT_SKY)) && !(flags & RP_MAT_NODRAW))
+			wshader[i] = rp_shader_register(mn, flags & RP_MAT_LIGHTMAP ? 0 : -3, 1);
+	}
+	rp_world_script(world_passes);
 	ri.Printf(PRINT_ALL, "ps2: renderer: world %s, %u KB\n", path, world_size / 1024);
 }
 static void RP_SetWorldVisData(const byte *vis) {}

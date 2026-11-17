@@ -354,9 +354,11 @@ static const void *setup_chain(const struct rp_state *s, int cut, int state) {
 	if (!c)
 		return 0;
 	int lit = s->lm_ok && s->prog == RP_PROG_WORLD && !(rp_debug & (2 | 128)), tex = s->tex_ok && !(rp_debug & (32 | 128));
+	_Static_assert(Q3VU_T_TM0 + 1 == Q3VU_T_TM1 && Q3VU_T_TM0 + 4 == Q3VU_T_CADD, "q3w1t's uniforms in a row");
 	u64 regs = rp_debug & 16 ? 0xD12 : 0x512; /* ST, RGBAQ, XYZ2 (XYZ3: no drawing) */
 	int blend = s->blend != RP_BLEND_NONE || (rp_debug & 128);
-	u32 entry = s->prog == RP_PROG_MODEL ? (cut ? Q3MC_SETUP : Q3M_SETUP)
+	u32 entry = s->prog == RP_PROG_MODEL   ? (cut ? Q3MC_SETUP : Q3M_SETUP)
+	            : s->prog == RP_PROG_STAGE ? (cut ? Q3W1TC_SETUP : Q3W1T_SETUP)
 	            : lit                    ? (cut ? Q3W2C_SETUP : Q3W2_SETUP)
 	                                     : (cut ? Q3W1C_SETUP : Q3W1_SETUP);
 	/* context 2 writes no Z (beam racing's): blended draws, and those without depth */
@@ -376,6 +378,14 @@ static const void *setup_chain(const struct rp_state *s, int cut, int state) {
 			c = mx_e_cnt(c, 6, mx_vif_nop(), mx_vif_unpack(MX_UNPACK_V4_32, Q3VU_M_LERP, 6, 0));
 			for (int k = 0; k < 6; k++)
 				c = mx_e_w4(c, fbits(s->model[k][0]), fbits(s->model[k][1]), fbits(s->model[k][2]), fbits(s->model[k][3]));
+		}
+		if (s->prog == RP_PROG_STAGE) {
+			c = mx_e_cnt(c, 5, mx_vif_nop(), mx_vif_unpack(MX_UNPACK_V4_32, Q3VU_T_TM0, 5, 0));
+			c = mx_e_w4(c, fbits(s->tm[0]), fbits(s->tm[3]), 0, 0);
+			c = mx_e_w4(c, fbits(s->tm[1]), fbits(s->tm[4]), 0, 0);
+			c = mx_e_w4(c, fbits(s->tm[2]), fbits(s->tm[5]), fbits(1.0f), 0);
+			c = mx_e_w4(c, fbits(s->cmul[0]), fbits(s->cmul[1]), fbits(s->cmul[2]), fbits(s->cmul[3]));
+			c = mx_e_w4(c, fbits(s->cadd[0]), fbits(s->cadd[1]), fbits(s->cadd[2]), fbits(s->cadd[3]));
 		}
 		u64 *tag = c;
 		c += 2; /* the packet's cnt tag, written when its size is known */

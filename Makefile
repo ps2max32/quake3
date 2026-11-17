@@ -6,7 +6,12 @@
 #                        baseq3 directory, copied there once)
 #   make pak             build/pcsx2-test/baseq3/ps2tex.pk3: the textures
 #                        as 8-bit paletted ones (tools/ps2pak.py), and
-#                        ps2snd.pk3: the sounds as SPU ADPCM (tools/ps2snd.py)
+#                        ps2snd.pk3: the sounds as SPU ADPCM (tools/ps2snd.py);
+#                        for REN=ps2 also ps2tex.bin and ps2mdl.bin, the
+#                        images and the models as files it maps
+#                        (tools/ps2bin.py)
+#   make map MAP=<name>  build/pcsx2-test/baseq3/maps/<name>.pmap: a map as
+#                        REN=ps2 draws it (tools/ps2map.py)
 #
 # The engine (qcommon, server, client, botlib, renderergl1) is linked with
 # the game modules (game, cgame, q3_ui) built natively: each module is
@@ -17,8 +22,8 @@
 #
 # REN: the renderer. gl1 (the default): renderergl1 through libs/libgl, an
 # OpenGL 1.1 subset on the GS (code/ps2/ps2_glimp.c sets the qgl* to it).
-# ps2: code/renderer_ps2, the PS2's own on maxsdk (PLAN-PS2.md; it draws
-# nothing yet), built in $(OUT)-ps2.
+# ps2: code/renderer_ps2, the PS2's own on maxsdk (PLAN-PS2.md), built in
+# $(OUT)-ps2; it needs make pak's files and make map's of the map played.
 
 HERE     := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
 PS2MAX   ?= $(abspath $(HERE)/../..)
@@ -204,7 +209,7 @@ endif
 
 # the textures as 8-bit paletted ones (tools/ps2pak.py; the renderer takes a
 # mipmapped image's .p8 before the original): a pk3 next to the paks
-pak: $(RUNDIR)/baseq3/ps2tex.pk3 $(RUNDIR)/baseq3/ps2snd.pk3
+pak: $(RUNDIR)/baseq3/ps2tex.pk3 $(RUNDIR)/baseq3/ps2snd.pk3 $(RUNDIR)/baseq3/ps2tex.bin $(RUNDIR)/baseq3/ps2mdl.bin
 $(RUNDIR)/baseq3/ps2tex.pk3: $(HERE)/tools/ps2pak.py
 	@mkdir -p $(RUNDIR)/baseq3
 	python3 $(HERE)/tools/ps2pak.py $@ "$(Q3DATA)"
@@ -212,9 +217,22 @@ $(RUNDIR)/baseq3/ps2snd.pk3: $(HERE)/tools/ps2snd.py
 	@mkdir -p $(RUNDIR)/baseq3
 	python3 $(HERE)/tools/ps2snd.py $@ "$(Q3DATA)"
 
+# REN=ps2's files: the images and the models as it maps them, a map as it
+# draws it
+$(RUNDIR)/baseq3/ps2tex.bin: $(RUNDIR)/baseq3/ps2tex.pk3 $(HERE)/tools/ps2bin.py
+	python3 $(HERE)/tools/ps2bin.py tex $@ $<
+$(RUNDIR)/baseq3/ps2mdl.bin: $(HERE)/tools/ps2bin.py
+	@mkdir -p $(RUNDIR)/baseq3
+	python3 $(HERE)/tools/ps2bin.py mdl $@ "$(Q3DATA)"
+MAP ?= q3dm6
+map: $(RUNDIR)/baseq3/maps/$(MAP).pmap
+$(RUNDIR)/baseq3/maps/$(MAP).pmap: $(HERE)/tools/ps2map.py $(RUNDIR)/baseq3/ps2tex.pk3
+	@mkdir -p $(dir $@)
+	python3 $(HERE)/tools/ps2map.py $@ "$(Q3DATA)" $(MAP) --tex $(RUNDIR)/baseq3/ps2tex.pk3
+
 clean:
 	rm -rf $(OUT)
 
-.PHONY: all run pak clean
+.PHONY: all run pak map clean
 
 -include $(shell find $(OUT) -name '*.d' 2>/dev/null)

@@ -4,9 +4,10 @@
     ps2map.py OUT.pmap BASEQ3_DIR MAP [--tex ps2tex.pk3] [--stats]
 
 Reads maps/MAP.bsp and the shader scripts from BASEQ3_DIR's pak*.pk3 (a later
-pak's file replaces an earlier one's) and the textures from ps2tex.pk3
-(tools/ps2pak.py), and writes OUT.pmap: the map's drawn surfaces as chunks
-VU1 takes as they are. The file is mapped and locked on the PS2; the DMAC
+pak's file replaces an earlier one's) and the textures' sizes from
+ps2tex.pk3 (tools/ps2pak.py), and writes OUT.pmap: the map's drawn surfaces
+as chunks VU1 takes as they are. The textures themselves are the renderer's
+file of images (tools/ps2bin.py), found there by name. The file is mapped and locked on the PS2; the DMAC
 reads the chunks where they lie, so everything it reads is 16-byte aligned.
 
 What is made of the BSP:
@@ -31,7 +32,7 @@ What is made of the BSP:
 File layout (little-endian; "off" are bytes from the file's start):
 
   head (128 bytes):
-    u32 magic "PMAP", version 4
+    u32 magic "PMAP", version 5
     u32 nmat, ntex, nchunk, nmodel, nlightmap, ncluster, vis_bytes
     u32 nplane, nnode, nleaf
     u32 off_mat, off_tex, off_chunk, off_model, off_lightmap, off_vis,
@@ -43,12 +44,8 @@ File layout (little-endian; "off" are bytes from the file's start):
     u8 blend (BLEND_*), alpha (ALPHA_*), cull (CULL_*), pad; u32 surf, cont
     (the BSP's flags); f32 texels (of its texture's first level a world
     unit, for the mipmap level); pad to 96
-  texture (64 bytes): char name[40]; u16 w, h; u8 levels, psm (0x13 T8,
-    0x14 T4), alpha (1: its palette has alpha of its own, 0x80 opaque; 0: a
-    T8's alpha is the lightmaps' brightness, gs_texture), pad; u32 off_clut
-    (256 or 16 RGBA entries in the GS's order); u32 off_level[3]
-    (the first three; the next follow each the one before, each padded to 16
-    bytes)
+  texture (72 bytes): char name[64] (the image's in the file of images);
+    u16 w, h; u8 alpha (its palette has alpha of its own), pad[3]
   chunk (48 bytes): f32 mins[3]; u16 mat; s16 lightmap (-1: none);
     f32 maxs[3]; u16 nverts; u8 flags (CH_*), fog; u32 off_data; u16 qwc
     (quadwords the DMAC sends for it, tags included), nbatch; s8 cone[3] (the
@@ -58,7 +55,12 @@ File layout (little-endian; "off" are bytes from the file's start):
     chunks are of one material and lightmap page)
   model (32 bytes): f32 mins[3], maxs[3]; u32 first_group, ngroup (model 0 is
     the world; the others the map's doors and platforms)
-  lightmap: 128 x 128 bytes a page (brightness: the largest of R, G, B)
+  lightmap: 128 x 128 bytes a page, T8: 128 + b, b the brightness (the
+    largest of R, G, B; 127 and more: 127, twice the texture's colour, the
+    map's overbright range). It is drawn with the CLUT of the surface's
+    texture, whose entries 128 .. 255 have that brightness as their alpha
+    (tools/ps2bin.py): the GS has one CLUT buffer, and two CLUTs by turns
+    would be loaded at every batch
   vis: ncluster rows of vis_bytes: bit g of row k set: the world's group g is
     seen from cluster k
   plane (16 bytes): f32 normal[3], dist;  node (12 bytes): s32 plane,
@@ -323,44 +325,6 @@ def load_p8(blob):
     return dict(w=w0, h=h0, four=four, alpha=bool(has_a and (pal[:, 3] < 255).any()), pal=pal, levels=lv)
 
 
-def gs_texture(t, eight):
-    """a texture of load_p8 as the GS takes it: (psm, clut bytes, [level bytes]). eight: as
-    T8 also when it has 16 colours. A texture without alpha of its own gets the lightmaps'
-    brightness in its CLUT's alpha: entry i's is the blend factor of brightness i (Cd * As,
-    0x80 is 1.0: twice the lightmap's value, the map's overbright range), so a surface's
-    lightmap (T8) is drawn with the CLUT of its texture: the GS has one CLUT buffer, and two
-    CLUTs by turns would be loaded at every batch. The texture's own pass takes no alpha
-    from it (TEX0.TCC 0)."""
-    four = t["four"] and not eight
-    ncol = 16 if four else 256
-    clut = np.zeros((ncol, 4), np.uint8)
-    n = len(t["pal"])
-    clut[:n, :3] = t["pal"][:, :3]
-    if t["alpha"]:
-        clut[:n, 3] = (t["pal"][:, 3].astype(np.uint16) + 1) >> 1
-    elif four:
-        clut[:, 3] = 0x80
-    else:
-        clut[:, 3] = np.minimum(np.arange(256) * 2, 255)
-    if not four:
-        # CSM1: entries 8-15 and 16-23 of every 32 change places
-        idx = np.arange(256)
-        blk = idx & 0x18
-        clut = clut[np.where(blk == 0x08, idx + 8, np.where(blk == 0x10, idx - 8, idx))]
-    lv = []
-    for k, d in enumerate(t["levels"]):
-        if t["four"] and eight:
-            w, h = max(t["w"] >> k, 1), max(t["h"] >> k, 1)
-            e = np.empty(len(d) * 2, np.uint8)
-            e[0::2], e[1::2] = d >> 4, d & 15   # the pak: the first texel in the high bits
-            lv.append(e[:w * h].tobytes())
-        elif four:
-            lv.append(((d >> 4) | ((d & 15) << 4)).astype(np.uint8).tobytes())  # the GS: in the low bits
-        else:
-            lv.append(d.tobytes())
-    return (0x14 if four else 0x13), clut.tobytes(), lv
-
-
 # ---- the BSP ------------------------------------------------------------------------------
 
 LUMPS = ["entities", "shaders", "planes", "nodes", "leafs", "leafsurfaces", "leafbrushes", "models", "brushes",
@@ -598,7 +562,6 @@ def build(args):
 
     # materials: a shader of the BSP with or without a lightmap
     mats, mat_index, textures, tex_index = [], {}, [], {}
-    need8 = set()   # textures drawn with a lightmap
 
     def texture(name):
         if name is None:
@@ -627,8 +590,6 @@ def build(args):
             if textures[ti][1]["alpha"] or alpha != ALPHA_NONE:
                 # its CLUT's alpha is its own: lit by the vertices
                 flags = (flags & ~MAT_LIGHTMAP) | MAT_VERTEX
-            else:
-                need8.add(ti)
         mat_index[key] = len(mats)
         mats.append(dict(name=name, tex=ti, texname=tex, flags=flags, blend=blend, alpha=alpha, cull=cull,
                          surf=surf, cont=cont))
@@ -873,35 +834,23 @@ def build(args):
                                       m["alpha"], m["cull"], 0, m["surf"] & 0xFFFFFFFF, m["cont"] & 0xFFFFFFFF,
                                       math.sqrt(m["texels"] / m["area"]) if m.get("area") else 1.0)
                           for m in mats)
-    texdata = bytearray()
-    texrec = []
-    for ti, (name, t) in enumerate(textures):
-        w, h, has_a = t["w"], t["h"], int(t["alpha"])
-        psm, clut, lv = gs_texture(t, ti in need8)
-        oc = len(texdata)
-        texdata += pad16(clut)
-        offs = []
-        for d in lv:
-            offs.append(len(texdata))
-            texdata += pad16(d)
-        texrec.append((name, w, h, len(lv), psm, has_a, oc, offs))
-    lmdata = bsp.lightmaps.max(axis=3).astype(np.uint8).tobytes() if len(bsp.lightmaps) else b""
+    lmdata = ((128 + np.minimum(bsp.lightmaps.max(axis=3), 127)).astype(np.uint8).tobytes()
+              if len(bsp.lightmaps) else b"")
     planes = bsp.planes.astype("<f4").tobytes()
     nodes = np.ascontiguousarray(bsp.nodes[:, 0:3]).astype("<i4").tobytes()
     leafs = np.ascontiguousarray(bsp.leafs[:, 0:2]).astype("<i2").tobytes()
-    order = ["mat", "tex", "chunk", "group", "model", "lightmap", "vis", "plane", "node", "leaf", "texdata", "data"]
-    size = {"mat": len(sec["mat"]), "tex": 64 * len(textures), "chunk": 48 * len(recs), "group": 32 * len(grecs),
+    order = ["mat", "tex", "chunk", "group", "model", "lightmap", "vis", "plane", "node", "leaf", "data"]
+    size = {"mat": len(sec["mat"]), "tex": 72 * len(textures), "chunk": 48 * len(recs), "group": 32 * len(grecs),
             "model": 32 * len(models),
             "lightmap": len(lmdata), "vis": vis.size, "plane": len(planes), "node": len(nodes), "leaf": len(leafs),
-            "texdata": len(texdata), "data": len(blob)}
+            "data": len(blob)}
     off, o = {}, 128
     for k in order:
         off[k] = o
         o += size[k] + (-size[k] % 16)
     total = o
-    sec["tex"] = b"".join(struct.pack("<40sHHBBBBI3I", n.encode()[:39], w, h, nl, psm, a, 0, off["texdata"] + oc,
-                                      *[(off["texdata"] + x) for x in (offs + [0, 0, 0])[:3]])
-                          for n, w, h, nl, psm, a, oc, offs in texrec)
+    sec["tex"] = b"".join(struct.pack("<64sHHB3x", n.encode()[:63], t["w"], t["h"], int(t["alpha"]))
+                          for n, t in textures)
     sec["chunk"] = b"".join(struct.pack("<3fHh3fHBBIHH3bB4x", *r["mins"], r["mat"], r["lm"], *r["maxs"], r["nverts"],
                                         r["flags"], r["fog"], off["data"] + r["off"], r["qwc"], r["nbatch"],
                                         *r["cone"])
@@ -909,8 +858,8 @@ def build(args):
     sec["group"] = b"".join(struct.pack("<3fI3fI", *g["mins"], g["first"], *g["maxs"], g["n"]) for g in grecs)
     sec["model"] = b"".join(struct.pack("<6fII", *mn, *mx, f, n) for mn, mx, f, n in models)
     sec["lightmap"], sec["vis"], sec["plane"], sec["node"], sec["leaf"] = lmdata, vis.tobytes(), planes, nodes, leafs
-    sec["texdata"], sec["data"] = bytes(texdata), bytes(blob)
-    head = struct.pack("<4sI7I3I11IfIII", b"PMAP", 4, len(mats), len(textures), len(recs), len(models),
+    sec["data"] = bytes(blob)
+    head = struct.pack("<4sI7I3I11IfIII", b"PMAP", 5, len(mats), len(textures), len(recs), len(models),
                        len(bsp.lightmaps), ncl, vis_bytes, len(bsp.planes), len(bsp.nodes), len(bsp.leafs),
                        off["mat"], off["tex"], off["chunk"], off["model"], off["lightmap"], off["vis"], off["plane"],
                        off["node"], off["leaf"], off["data"], total, 1.0 / q, BATCH, len(grecs), off["group"])
@@ -926,7 +875,7 @@ def build(args):
               f"triangles, {stats['verts']} strip vertices ({stats['verts'] / max(stats['tris'], 1):.2f} a triangle) "
               f"in {stats['strips']} strips, {stats['batches']} batches, {len(recs)} chunks in {len(grecs)} groups "
               f"({nworld} of the world); "
-              f"{len(mats)} materials, {len(textures)} textures ({len(texdata)} bytes), {len(bsp.lightmaps)} "
+              f"{len(mats)} materials, {len(textures)} textures, {len(bsp.lightmaps)} "
               f"lightmap pages, {ncl} clusters; chunk data {len(blob)} bytes")
         if missing:
             print("  textures not in the texture pak:", ", ".join(missing[:12]), "..." if len(missing) > 12 else "")

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Quake 3's textures as 8-bit (or 4-bit) paletted textures for the PS2.
 
-    ps2pak.py OUT.pk3 BASEQ3_DIR [--max 128] [--max2d 256] [--dirs DIR,...] [-j N]
+    ps2pak.py OUT.pk3 BASEQ3_DIR [--max 128] [--max2d 256] [--t4 37] [--dirs DIR,...] [-j N]
 
 Reads the pak*.pk3 of BASEQ3_DIR in order (a later pak's file replaces an
 earlier one's; a .tga is taken before a .jpg of the same name, as the renderer
@@ -20,7 +20,11 @@ of two: r_roundImagesDown 1), then halved on both sides until it fits --max
 colours, with alpha refined by k-means in RGBA; exact when it has 256
 colours or fewer) comes from that level; the levels below are
 made from the full-colour level (2 x 2 box, as R_MipMap) and given the
-nearest palette entry. 16 colours or fewer: a 4-bit palette.
+nearest palette entry. A 4-bit palette (half the GS memory, half the bytes
+to send) when the image has 16 colours or fewer, or when 16 colours leave
+level 0 within --t4 dB (peak signal to noise, over its channels) of the
+full-colour texels: 37 dB is a third of Quake 3's textures, the ones of
+one hue; 0: only when exact.
 
 .p8 layout (little-endian):
     char  magic[4]   "P8T1"
@@ -37,6 +41,7 @@ nearest palette entry. 16 colours or fewer: a 4-bit palette.
 """
 import argparse
 import io
+import math
 import os
 import struct
 import sys
@@ -81,14 +86,14 @@ def nearest(pixels, pal):
     return out
 
 
-def palette(a, alpha):
-    """256 colours for the h x w x 4 texels a: libimagequant's of their
+def palette(a, alpha, n=256):
+    """n colours for the h x w x 4 texels a: libimagequant's of their
     colours; with alpha, those with alpha added by k-means in RGBA
     (libimagequant's RGBA drops the colour of texels of alpha 0, which
     additive blends show)"""
     q = Image.fromarray(np.ascontiguousarray(a[..., :3]), "RGB")
-    q = q.quantize(256, method=Image.Quantize.LIBIMAGEQUANT, dither=Image.Dither.NONE)
-    pal = np.array(q.getpalette(rawmode="RGB"), np.uint8).reshape(-1, 3)[:256]
+    q = q.quantize(n, method=Image.Quantize.LIBIMAGEQUANT, dither=Image.Dither.NONE)
+    pal = np.array(q.getpalette(rawmode="RGB"), np.uint8).reshape(-1, 3)[:n]
     if not alpha:
         return pal
     pal = np.hstack([pal, np.full((len(pal), 1), 128)]).astype(np.float64)
@@ -103,7 +108,7 @@ def palette(a, alpha):
     return np.clip(np.rint(pal), 0, 255).astype(np.uint8)
 
 
-def convert(data, maxside):
+def convert(data, maxside, t4db):
     im = Image.open(io.BytesIO(data))
     im.load()
     rgba = np.asarray(im.convert("RGBA"))
@@ -128,6 +133,11 @@ def convert(data, maxside):
         pal = uniq
     else:
         pal = palette(a, alpha)
+    if len(pal) > 16 and t4db > 0:
+        p16 = palette(a, alpha, 16)[:, :chans]
+        mse = ((p16[nearest(flat, p16)].astype(np.float64) - flat) ** 2).mean()
+        if mse == 0 or 10 * math.log10(255 * 255 / mse) >= t4db:
+            pal = p16
     bits = 4 if len(pal) <= 16 else 8
     n = 16 if bits == 4 else 256
     full = np.zeros((n, chans), np.uint8)
@@ -157,9 +167,9 @@ def convert(data, maxside):
 
 
 def job(args):
-    name, data, maxside = args
+    name, data, maxside, t4db = args
     try:
-        return name, convert(data, maxside), None
+        return name, convert(data, maxside, t4db), None
     except Exception as e:  # an image PIL cannot read: left to the renderer
         return name, None, str(e)
 
@@ -170,6 +180,7 @@ def main():
     ap.add_argument("baseq3")
     ap.add_argument("--max", type=int, default=128)
     ap.add_argument("--max2d", type=int, default=256)
+    ap.add_argument("--t4", type=float, default=37.0)
     ap.add_argument("--dirs", default="")
     ap.add_argument("-j", type=int, default=os.cpu_count())
     o = ap.parse_args()
@@ -193,9 +204,9 @@ def main():
     zips = {}
     for base, (pak, m) in sorted(src.items()):
         z = zips.setdefault(pak, zipfile.ZipFile(os.path.join(o.baseq3, pak)))
-        jobs.append((base, z.read(m), o.max2d if base.startswith(dirs2d) else o.max))
+        jobs.append((base, z.read(m), o.max2d if base.startswith(dirs2d) else o.max, o.t4))
     tmp = o.out + ".tmp"
-    n = bytes_out = worse = 0
+    n = bytes_out = worse = small = 0
     s8 = s16 = 0.0
     with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as zo, ProcessPoolExecutor(o.j) as ex:
         for name, res, err in ex.map(job, jobs, chunksize=8):
@@ -209,8 +220,9 @@ def main():
             s8 += mse8
             s16 += mse16
             worse += mse8 > mse16
+            small += struct.unpack_from("<I", blob, 20)[0] in (GL_PALETTE4_RGB8_OES, GL_PALETTE4_RGBA8_OES)
     os.replace(tmp, o.out)
-    print(f"{n} textures, {bytes_out / 1048576:.1f} MiB; mean squared error of level 0: "
+    print(f"{n} textures ({small} of 16 colours), {bytes_out / 1048576:.1f} MiB; mean squared error of level 0: "
           f"8-bit {s8 / n:.2f}, 16-bit {s16 / n:.2f}; {worse} worse than 16-bit")
 
 

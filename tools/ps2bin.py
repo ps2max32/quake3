@@ -9,7 +9,7 @@ memory is short.
 
 Both files (little-endian):
 
-    head (32 bytes): char magic[4] "PBIN"; u32 version 1; u32 kind (1 images,
+    head (32 bytes): char magic[4] "PBIN"; u32 version 2; u32 kind (1 images,
         2 models); u32 count; u32 off_index; u32 size; u32 pad[2]
     index: count entries of 128 bytes, sorted by name (bytes, lower case, no
         extension, '/' between directories):
@@ -19,8 +19,18 @@ Both files (little-endian):
         u16  w, h                      level 0's texels (powers of two)
         u16  pic_w, pic_h              the picture's own size
         u8   psm (0x13 T8, 0x14 T4), levels, alpha (its palette has alpha), pad
-        u32  off_clut                  256 or 16 words, the GS's order,
-                                       alpha 0x80 opaque
+        u32  off_clut                  the GS's order. With alpha: 256 words
+                                       (T8) or 16 (T4). Without: 256 words
+                                       also for T4 (its 16 colours are the
+                                       first 16 entries: a T4 CLUT at the
+                                       same place), and the alpha of entries
+                                       128 .. 255 is a lightmap's brightness
+                                       as a blend's factor: entry 128 + i has
+                                       2 i (255 for the last), 0x80 is 1.0. A map's
+                                       lightmap pages (T8, tools/ps2map.py)
+                                       are drawn with the CLUT of the
+                                       surface's texture, whose own pass
+                                       takes no alpha from it
         u32  off_level[7]              the levels, each padded to 16 bytes
                                        (T4: the first texel of a byte in its
                                        low four bits); the CLUT and the
@@ -30,7 +40,8 @@ Both files (little-endian):
 
 The levels of an image go down to 8 texels a side: the GS's bilinear filter
 and its IMAGE transfers want no less. An image smaller than that is left
-out. The models' files of fewer details (name_1.md3, name_2.md3) are left
+out. The pictures of the screen (gfx/2d, menu, ui, icons) have one level:
+they are not drawn smaller than they are. The models' files of fewer details (name_1.md3, name_2.md3) are left
 out: the renderer draws the first.
 """
 import os
@@ -41,14 +52,16 @@ import zipfile
 GL_PALETTE4_RGB8_OES, GL_PALETTE4_RGBA8_OES = 0x8B90, 0x8B91
 GL_PALETTE8_RGB8_OES, GL_PALETTE8_RGBA8_OES = 0x8B95, 0x8B96
 LEVELS = 7
+ONE_LEVEL = ("gfx/2d/", "menu/", "ui/", "icons/")
 
 
 def pad16(b):
     return b + b"\0" * (-len(b) % 16)
 
 
-def image(blob):
-    """a .p8 (tools/ps2pak.py) as the index's fields and the data, or None"""
+def image(blob, levels=LEVELS):
+    """a .p8 (tools/ps2pak.py) as the index's fields and the data (at most
+    levels levels of it), or None"""
     magic, width, height, pw, ph, w0, h0, nlev, _, fmt = struct.unpack_from("<4s8HI", blob)
     if magic != b"P8T1" or w0 & (w0 - 1) or h0 & (h0 - 1) or w0 > 512 or h0 > 512:
         return None
@@ -58,17 +71,24 @@ def image(blob):
     at = 24
     pal = blob[at:at + ncol * chans]
     at += ncol * chans
-    clut = [0] * ncol
+    nclut = 16 if t4 and alpha else 256
+
+    def place(i):  # the GS's order of a 256-entry CLUT
+        return i if nclut == 16 else i + 8 if (i & 0x18) == 0x08 else i - 8 if (i & 0x18) == 0x10 else i
+
+    clut = [0] * nclut
     for i in range(ncol):
         c = pal[i * chans:(i + 1) * chans]
         a = (c[3] + 1) >> 1 if alpha else 0x80
-        # the GS's order of a 256-entry CLUT
-        k = i if t4 else i + 8 if (i & 0x18) == 0x08 else i - 8 if (i & 0x18) == 0x10 else i
-        clut[k] = c[0] | c[1] << 8 | c[2] << 16 | a << 24
-    data = pad16(struct.pack("<%dI" % ncol, *clut))
+        clut[place(i)] = c[0] | c[1] << 8 | c[2] << 16 | a << 24
+    if not alpha:
+        for i in range(128):
+            k = place(128 + i)
+            clut[k] = (clut[k] & 0xFFFFFF) | (255 if i == 127 else 2 * i) << 24
+    data = pad16(struct.pack("<%dI" % nclut, *clut))
     offs = []
     lv = 0
-    while lv < nlev and lv < LEVELS and (w0 >> lv) >= 8 and (h0 >> lv) >= 8:
+    while lv < nlev and lv < levels and (w0 >> lv) >= 8 and (h0 >> lv) >= 8:
         n = (w0 >> lv) * (h0 >> lv)
         n = (n + 1) // 2 if t4 else n
         src = blob[at:at + n]
@@ -102,7 +122,7 @@ def write(out, kind, entries):
         blobs.append(pad16(data))
         off += len(blobs[-1])
     with open(out + ".tmp", "wb") as fo:
-        fo.write(struct.pack("<4s5I8x", b"PBIN", 1, kind, len(entries), off_index, off))
+        fo.write(struct.pack("<4s5I8x", b"PBIN", 2, kind, len(entries), off_index, off))
         fo.write(b"".join(index))
         fo.write(b"\0" * (-(off_index + 128 * len(entries)) % 16))
         for b in blobs:
@@ -122,7 +142,7 @@ def main():
         for m in sorted(z.namelist()):
             if not m.lower().endswith(".p8"):
                 continue
-            r = image(z.read(m))
+            r = image(z.read(m), 1 if m.lower().replace("\\", "/").startswith(ONE_LEVEL) else LEVELS)
             if not r:
                 left += 1
                 continue

@@ -17,6 +17,10 @@ extern const unsigned char q3vu_vu[], q3vu_vu_end[];
 #define Q3W2C_BATCH 403
 #define Q3W1C_SETUP 459
 #define Q3W1C_BATCH 470
+#define Q3W1T_SETUP 521
+#define Q3W1T_BATCH 537
+#define Q3W1TC_SETUP 597
+#define Q3W1TC_BATCH 613
 
 #define Q3VU_CTX_QW 72 /* the context, at 0 */
 #define Q3VU_CTX_C0 0
@@ -45,6 +49,11 @@ extern const unsigned char q3vu_vu[], q3vu_vu_end[];
 #define Q3VU_M_DY 33 /* q3m's uniforms */
 #define Q3VU_M_DZ 34 /* q3m's uniforms */
 #define Q3VU_M_C255 35 /* q3m's uniforms */
+#define Q3VU_T_TM0 30 /* q3w1t's */
+#define Q3VU_T_TM1 31 /* q3w1t's */
+#define Q3VU_T_TM2 32 /* q3w1t's */
+#define Q3VU_T_CMUL 33 /* q3w1t's */
+#define Q3VU_T_CADD 34 /* q3w1t's */
 #define Q3VU_M_OUT 18
 #define Q3VU_M_IDX 306
 #define Q3VU_M_VERT 346

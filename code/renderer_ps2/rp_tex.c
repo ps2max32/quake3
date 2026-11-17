@@ -1,6 +1,7 @@
 /* rp_tex.c: the PS2 renderer's images. An image is a paletted texture (T8 or
    T4, its CLUT of 32-bit colours) with its MIPMAP levels, in memory: where a
-   locked file has it (a map's, tools/ps2map.py), or in the renderer's heaps,
+   mapped file has it (the file of images, tools/ps2bin.py; a map's lightmap
+   pages, tools/ps2map.py), or in the renderer's heaps,
    the first levels pageable and the rest resident (<mx/vcache.h>: a texture
    whose first levels are paged out is drawn from the rest meanwhile).
 
@@ -17,6 +18,7 @@
 #include <mx/vif.h>
 #include <mx/vm.h>
 
+#include "rp_bin.h"
 #include "rp_tex.h"
 
 #define MAX_IMAGE 2048
@@ -39,12 +41,51 @@ void rp_tex_init(void) {
 #define FRAME_UPLOADS 32
 static u32 frame_uploads;
 
+static u32 frame_blocks; /* GS memory (256-byte blocks) of the images the frame drew with */
+
+static int starts(const char *s, const char *with) {
+	while (*with && *s == *with)
+		s++, with++;
+	return !*with;
+}
+
+static u32 kind_of(const char *name) {
+	return starts(name, "*lightmap")   ? RP_IMAGE_LIGHTMAP
+	       : starts(name, "textures/") ? RP_IMAGE_WORLD
+	       : starts(name, "models/")   ? RP_IMAGE_MODEL
+	       : starts(name, "gfx/2d/") || starts(name, "menu/") || starts(name, "ui/") || starts(name, "icons/")
+	           ? RP_IMAGE_SCREEN
+	           : RP_IMAGE_OTHER;
+}
+
 void rp_tex_frame(void) {
 	mx_vcache_frame(mx_frame_number(), mx_frame_done());
 	frame_uploads = 0;
+	u32 kb = frame_blocks / 4;
+	rp_tex_stats.frames++, rp_tex_stats.used_kb += kb;
+	if (kb > rp_tex_stats.used_max_kb)
+		rp_tex_stats.used_max_kb = kb;
+	frame_blocks = 0;
 }
 
 u64 rp_tex_key(void) { return ++serial; }
+
+void rp_tex_report(void (*print)(const char *name, u32 kb, u32 frames, u32 w, u32 h)) {
+	for (int n = 0; n < 24; n++) {
+		struct rp_image *best = 0;
+		u64 bw = 0;
+		for (u32 i = 0; i < image_hi; i++) {
+			struct rp_image *im = &images[i];
+			u64 w = (u64)im->uses * im->t.blocks;
+			if (im->used && im->uses && w > bw)
+				best = im, bw = w;
+		}
+		if (!best)
+			break;
+		print(best->name, best->t.blocks / 4, best->uses, best->w, best->h);
+		best->uses = 0;
+	}
+}
 
 static u32 log2u(u32 v) {
 	u32 n = 0;
@@ -67,7 +108,8 @@ static struct rp_image *image_new(const char *name, u32 psm, u32 w, u32 h, u32 l
 	im->w = im->pic_w = (u16)w, im->h = im->pic_h = (u16)h;
 	im->psm = (u8)psm, im->levels = (u8)(levels > MX_TEX_LEVELS ? MX_TEX_LEVELS : levels);
 	im->alpha = (u8)alpha;
-	im->key = rp_tex_key();
+	im->kind = (u8)kind_of(im->name);
+	im->key = rp_tex_key(), im->clut_key = rp_tex_key();
 	im->used = 1;
 	if (i == image_hi)
 		image_hi++;
@@ -82,6 +124,28 @@ struct rp_image *rp_image_static(const char *name, u32 psm, u32 w, u32 h, u32 le
 	for (u32 l = 0; l < im->levels; l++)
 		im->level[l] = level[l];
 	im->clut = clut;
+	return im;
+}
+
+struct rp_image *rp_image_bin(const char *name, u32 *bytes) {
+	struct rp_image *im = rp_image_find(name);
+	if (im)
+		return im;
+	const struct rp_bin_entry *e = rp_bin_tex.base ? rp_bin_find(&rp_bin_tex, name) : 0;
+	if (!e)
+		return 0;
+	const u8 *level[MX_TEX_LEVELS];
+	u32 levels = e->levels > MX_TEX_LEVELS ? MX_TEX_LEVELS : e->levels;
+	for (u32 l = 0; l < levels; l++)
+		level[l] = rp_bin_tex.base + e->off_level[l];
+	im = rp_image_static(name, e->psm, e->w, e->h, levels, e->alpha, level, rp_bin_tex.base + e->off_clut);
+	if (!im)
+		return 0;
+	im->pic_w = e->pic_w, im->pic_h = e->pic_h;
+	im->wide = e->psm == MX_GS_PSM_T4 && !e->alpha;
+	if (bytes)
+		*bytes += e->size;
+	rp_bin_touch(rp_bin_tex.base + e->off, e->size);
 	return im;
 }
 
@@ -136,10 +200,12 @@ u32 rp_image_luma(struct rp_image *im, int twice) {
 		if (!c)
 			return 0;
 		for (u32 i = 0; i < n; i++) {
-			u32 r = src[i] & 0xFF, g = src[i] >> 8 & 0xFF, b = src[i] >> 16 & 0xFF;
+			/* a wide CLUT's entries 8 .. 15 are its second line of 16 */
+			u32 s = src[im->wide && i >= 8 ? i + 8 : i];
+			u32 r = s & 0xFF, g = s >> 8 & 0xFF, b = s >> 16 & 0xFF;
 			u32 m = r > g ? r : g;
 			m = ((b > m ? b : m) + 1) >> (twice ? 0 : 1);
-			c[i] = (src[i] & 0xFFFFFF) | (m > 0x80 ? 0x80 : m) << 24;
+			c[i] = (s & 0xFFFFFF) | (m > 0x80 ? 0x80 : m) << 24;
 		}
 		mx_dcache_writeback(c, n * 4);
 		im->luma[twice] = c, im->luma_key[twice] = rp_tex_key();
@@ -159,6 +225,8 @@ void rp_image_free(struct rp_image *im) {
 	luma_free(im);
 	for (u32 f = 0; f < im->levels; f++)
 		mx_vcache_drop(mx_vcache_tex_key(im->key, f));
+	if (im->wide)
+		mx_vcache_drop(im->clut_key);
 	if (im->split)
 		mx_tex_mem_free(&im->m, heap_pin, heap_asset);
 	im->used = 0;
@@ -244,7 +312,7 @@ const struct mx_tex *rp_image_place(struct rp_image *im) {
 	if (im->frame == frame + 1)
 		return im->ok ? &im->t : 0;
 	u32 tw = log2u(im->w), th = log2u(im->h), from = 0;
-	u32 cpsm = im->clut ? MX_GS_PSM_CT32 : MX_VCACHE_NO_CLUT;
+	u32 cpsm = im->clut && !im->wide ? MX_GS_PSM_CT32 : MX_VCACHE_NO_CLUT;
 	/* not there, and the frame has sent its share: not this frame (asked again
 	   by the next draw with it) */
 	if (frame_uploads >= FRAME_UPLOADS) {
@@ -262,26 +330,43 @@ const struct mx_tex *rp_image_place(struct rp_image *im) {
 		rp_tex_stats.full++;
 		return 0;
 	}
+	/* a wide CLUT: a place of its own (the cache gives a T4 a CLUT of 16) */
+	int rc = MX_VCACHE_HIT;
+	if (im->wide) {
+		u32 cbp = 0;
+		rc = mx_vcache_buf(im->clut_key, 16, 16, MX_GS_PSM_CT32, &cbp);
+		if (rc == MX_VCACHE_FULL) {
+			rp_tex_stats.full++;
+			return 0;
+		}
+		im->t.cbp = cbp, im->t.cpsm = MX_GS_PSM_CT32, im->t.csm = 0;
+	}
 	im->from = (u8)from, im->ok = 1;
-	if (r == MX_VCACHE_HIT)
+	u32 blocks = im->t.blocks + (im->wide ? 4 : 0);
+	frame_blocks += blocks, rp_tex_stats.kind_blocks[im->kind] += blocks;
+	im->uses++;
+	if (r == MX_VCACHE_HIT && rc == MX_VCACHE_HIT)
 		return &im->t;
 	rp_tex_stats.uploads++, frame_uploads++;
 	mx_hires_once(1);
 	int bad = 0;
-	for (u32 l = 0; l < (u32)im->levels - from; l++) {
+	for (u32 l = 0; r != MX_VCACHE_HIT && l < (u32)im->levels - from; l++) {
 		u32 w = im->w >> (l + from), h = im->h >> (l + from);
 		w = w ? w : 1, h = h ? h : 1;
 		bad |= image_xfer(im->t.tbp[l], im->t.tbw[l], im->psm, w, h, im->psm == MX_GS_PSM_T4 ? (w * h + 1) / 2 : w * h,
 		                  im->level[l + from], !im->split);
 	}
-	if (im->clut)
-		bad |= image_xfer(im->t.cbp, 1, MX_GS_PSM_CT32, im->psm == MX_GS_PSM_T4 ? 8 : 16, im->psm == MX_GS_PSM_T4 ? 2 : 16,
-		                  im->psm == MX_GS_PSM_T4 ? 64 : 1024, im->clut, !im->split);
+	int small = im->psm == MX_GS_PSM_T4 && !im->wide;
+	if (im->clut && (im->wide ? rc : r) != MX_VCACHE_HIT)
+		bad |= image_xfer(im->t.cbp, 1, MX_GS_PSM_CT32, small ? 8 : 16, small ? 2 : 16, small ? 64 : 1024, im->clut,
+		                  !im->split);
 	texflush();
 	mx_hires_once(0);
 	if (bad) {
 		/* a part of it is not in GS memory: its place is given up, the draw goes without */
 		mx_vcache_drop(mx_vcache_tex_key(im->key, from));
+		if (im->wide)
+			mx_vcache_drop(im->clut_key);
 		im->ok = 0;
 		rp_tex_stats.full++;
 		return 0;

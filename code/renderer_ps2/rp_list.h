@@ -76,8 +76,10 @@ enum { RP_ALPHA_NONE, RP_ALPHA_GT0, RP_ALPHA_LT128, RP_ALPHA_GE128 };
 /* the programs of a run: the world's (texture and lightmap from one vertex
    when the state has a lightmap); none: its draws are GIF packets (sprites
    of ST, RGBAQ, XYZ2 a vertex, PRIM from the state), no matrix; an MD3
-   model's (tools/ps2vu.py, q3m: the state's model uniforms) */
-enum { RP_PROG_WORLD, RP_PROG_GS, RP_PROG_MODEL };
+   model's (tools/ps2vu.py, q3m: the state's model uniforms); a stage's: the
+   world's one-pass program with the state's texture matrix and colour
+   (q3w1t), for draws in the world's batch format */
+enum { RP_PROG_WORLD, RP_PROG_GS, RP_PROG_MODEL, RP_PROG_STAGE };
 /* depth: tested and written; tested; neither (2D) */
 enum { RP_Z_WRITE, RP_Z_TEST, RP_Z_NONE };
 
@@ -95,6 +97,10 @@ struct rp_state {
 	   the directed light's colour times its direction's x, y, z (in the
 	   model's space, for normals of length 127); the colour's limit */
 	float model[6][4];
+	/* RP_PROG_STAGE: the texture coordinates' matrix (s' = tm[0] s + tm[1] t +
+	   tm[2], t' = tm[3] s + tm[4] t + tm[5]); the colour: the vertex's times
+	   cmul plus cadd (the GS's units, 0 .. 255) */
+	float tm[6], cmul[4], cadd[4];
 };
 
 /* A matrix for positions in units of scale at origin, turned by axis (0:

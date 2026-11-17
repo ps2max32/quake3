@@ -15,8 +15,13 @@ struct rp_image {
 	u8 psm, levels;         /* MX_GS_PSM_T8 or T4 */
 	u8 alpha;               /* its palette has alpha of its own */
 	u8 used, split;         /* split: its texels are in m (the renderer's heaps) */
+	u8 wide;                /* a T4 with a CLUT of 256 words (the file's images without
+	                           alpha, rp_image_bin): its colours are the first 16 entries,
+	                           the lightmaps' brightness the alpha of 128 .. 255 */
+	u8 kind;                /* RP_IMAGE_*: what it is of, for the report */
 	const u8 *level[MX_TEX_LEVELS]; /* not split: where they lie (a locked file) */
 	const void *clut;       /* 256 or 16 words in the GS's order; 0: none of its own */
+	u64 clut_key;           /* wide: its CLUT's place of its own in GS memory */
 	struct mx_tex_mem m;
 	u64 key;
 	struct mx_tex t;        /* where it is in GS memory in the frame being built */
@@ -24,14 +29,22 @@ struct rp_image {
 	u8 from;                /* the level that is t's level 0 (a texture whose first levels
 	                           are not in memory yet) */
 	u8 ok;
+	u32 uses;               /* frames that drew with it */
 	u32 *luma[2];           /* rp_image_luma's CLUTs */
 	u64 luma_key[2];
 };
+
+/* by its name: the map's and the scripts' (textures/), a lightmap page, the
+   models', the screen's (gfx/2d, menu, ui, icons), the rest (sprites, effects) */
+enum { RP_IMAGE_WORLD, RP_IMAGE_LIGHTMAP, RP_IMAGE_MODEL, RP_IMAGE_SCREEN, RP_IMAGE_OTHER, RP_IMAGE_KINDS };
 
 struct rp_tex_stats {
 	u32 uploads, upload_kb; /* textures sent to GS memory, since the start */
 	u32 full;               /* not placed: no room in GS memory */
 	u32 later;              /* not placed in a frame that had sent its share of images */
+	u32 frames, used_kb;    /* frames counted; GS memory of the images they drew with, summed (KB) */
+	u32 used_max_kb;        /* the most a frame drew with */
+	u32 kind_blocks[RP_IMAGE_KINDS]; /* of used_kb, by kind (256-byte blocks) */
 };
 extern struct rp_tex_stats rp_tex_stats;
 
@@ -46,6 +59,12 @@ void rp_tex_frame(void);
    above. */
 struct rp_image *rp_image_static(const char *name, u32 psm, u32 w, u32 h, u32 levels, int alpha,
                                  const u8 *const *level, const void *clut);
+/* The image of the file of images (rp_bin.h) by its name there, made at
+   its first use: its texels where the file has them, read into memory now
+   (not by the first frame that draws it). bytes: its size is added. 0:
+   none of that name. Without alpha of its own, its CLUT's alpha is the
+   lightmaps' brightness (tools/ps2bin.py): draw it with TEX0's TCC 0. */
+struct rp_image *rp_image_bin(const char *name, u32 *bytes);
 /* An image with memory of its own: fill im->m.level[i] and im->m.clut (in
    the GS's order), then rp_image_ready. 0: no memory, or no image left. */
 struct rp_image *rp_image_alloc(const char *name, u32 psm, u32 w, u32 h, u32 levels, int alpha);
@@ -71,6 +90,9 @@ u32 rp_image_luma(struct rp_image *im, int twice);
    frame without them is the one shown). */
 void rp_image_free(struct rp_image *im);
 void rp_images_free(void);
+/* For a run's report: the images that took most GS memory over its frames
+   (their blocks times the frames that drew with them), through print. */
+void rp_tex_report(void (*print)(const char *name, u32 kb, u32 frames, u32 w, u32 h));
 /* A key no image has. */
 u64 rp_tex_key(void);
 

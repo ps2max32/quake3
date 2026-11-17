@@ -48,11 +48,9 @@ struct pm_mat {
 	u8 pad2[12];
 };
 struct pm_tex {
-	char name[40];
+	char name[64];
 	u16 w, h;
-	u8 levels, psm, alpha, pad;
-	u32 off_clut;
-	u32 off_level[3];
+	u8 alpha, pad[3];
 };
 struct pm_chunk {
 	float mins[3];
@@ -84,7 +82,7 @@ struct pm_leaf {
 	s16 cluster, area;
 };
 #define PM_MAGIC 0x50414d50u /* "PMAP" */
-enum { MAT_LIGHTMAP = 1, MAT_SKY = 2, MAT_NODRAW = 4 };
+enum { MAT_LIGHTMAP = 1, MAT_SKY = 2, MAT_NODRAW = 4, MAT_SCRIPT = 32 }; /* rp_world.h's RP_MAT_* */
 enum { BLEND_NONE, BLEND_ADD, BLEND_ALPHA, BLEND_FILTER, BLEND_OTHER };
 /* a material's alpha test: rp_list.h's RP_ALPHA_* */
 enum { CH_LIGHTMAP = 1 };
@@ -109,50 +107,41 @@ static struct {
 #define MAX_LM 64
 static struct rp_image *wtex[MAX_TEX], *wlm[MAX_LM];
 /* the lightmaps' CLUT for a surface without a texture (one with a texture
-   has it in its texture's CLUT): entry i's alpha is brightness i as the
-   blend's factor (Cd * As, 0x80 is 1.0): twice the lightmap's value, the
-   map's overbright range; in CSM1's order */
+   has it in its texture's CLUT, tools/ps2bin.py): entry 128 + i's alpha is
+   brightness i as the blend's factor (Cd * As, 0x80 is 1.0): twice the
+   lightmap's value, the map's overbright range; in CSM1's order */
 static u32 lm_clut[256] MX_CORE_BSS MX_ALIGNED(64);
 static u64 lm_clut_key;
 
 static void images_free(void) {
+	/* the textures are the file of images' (the shaders' too): not freed here */
 	for (u32 i = 0; i < MAX_TEX; i++)
-		rp_image_free(wtex[i]), wtex[i] = 0;
+		wtex[i] = 0;
 	for (u32 i = 0; i < MAX_LM; i++)
 		rp_image_free(wlm[i]), wlm[i] = 0;
 }
 
 static void images_load(void) {
 	const struct pm_head *h = pm.h;
-	u32 bytes = 0;
+	u32 bytes = 0, none = 0;
 	for (u32 i = 0; i < h->ntex && i < MAX_TEX; i++) {
-		const struct pm_tex *x = &pm.tex[i];
-		const u8 *level[MX_TEX_LEVELS];
-		u32 off = x->off_level[0], levels = x->levels > MX_TEX_LEVELS ? MX_TEX_LEVELS : x->levels;
-		for (u32 l = 0; l < levels; l++) {
-			u32 w = x->w >> l, hh = x->h >> l;
-			u32 n = x->psm == MX_GS_PSM_T4 ? w * hh / 2 : w * hh;
-			if (l < 3)
-				off = x->off_level[l];
-			level[l] = pm.base + off;
-			off += (n + 15) & ~15u;
-			bytes += n;
-		}
-		wtex[i] = rp_image_static(x->name, x->psm, x->w, x->h, levels, x->alpha, level, pm.base + x->off_clut);
+		wtex[i] = rp_image_bin(pm.tex[i].name, &bytes);
+		none += !wtex[i];
 	}
 	for (u32 i = 0; i < h->nlightmap && i < MAX_LM; i++) {
 		const u8 *level = pm.base + h->off_lightmap + i * 16384;
 		wlm[i] = rp_image_static("*lightmap", MX_GS_PSM_T8, 128, 128, 1, 0, &level, 0);
 	}
 	for (u32 i = 0; i < 256; i++) {
-		u32 a = i * 2 > 255 ? 255 : i * 2;
+		u32 a = i < 128 ? 0x80 : i == 255 ? 255 : (i - 128) * 2;
 		u32 k = (i & 0x18) == 0x08 ? i + 8 : (i & 0x18) == 0x10 ? i - 8 : i;
 		lm_clut[k] = a << 24 | 0x808080;
 	}
 	mx_dcache_writeback(lm_clut, sizeof lm_clut);
 	if (!lm_clut_key)
 		lm_clut_key = rp_tex_key();
-	mx_printf("rp: %u textures (%u KB) and %u lightmap pages\n", h->ntex, bytes / 1024, h->nlightmap);
+	mx_printf("rp: %u textures (%u KB; %u not in the file of images) and %u lightmap pages\n", h->ntex, bytes / 1024,
+	          none, h->nlightmap);
 }
 
 /* The world's groups in runs of one material and lightmap page, as they lie
@@ -161,7 +150,7 @@ static void images_load(void) {
 #define MAX_GRUN 1024
 static struct {
 	u16 first, n; /* groups */
-	u8 blended;
+	u8 blended, sky;
 } grun[MAX_GRUN];
 static u32 ngrun;
 
@@ -181,6 +170,7 @@ static void runs_make(void) {
 		}
 		grun[ngrun].first = (u16)first, grun[ngrun].n = (u16)(g - first);
 		grun[ngrun].blended = pm.mat[c0->mat].blend != BLEND_NONE;
+		grun[ngrun].sky = (pm.mat[c0->mat].flags & MAT_SKY) != 0;
 		ngrun++;
 	}
 }
@@ -195,7 +185,7 @@ void rp_world_free(void) {
 int rp_world_load(const void *p, u32 size) {
 	const struct pm_head *h = p;
 	rp_world_free();
-	if (size < sizeof *h || h->magic != PM_MAGIC || h->version != 4 || h->size > size || h->batch != Q3VU_BATCH)
+	if (size < sizeof *h || h->magic != PM_MAGIC || h->version != 5 || h->size > size || h->batch != Q3VU_BATCH)
 		return -1;
 	/* the chunks stay in memory: the DMAC reads them every frame. The textures
 	   are locked when they are sent to GS memory (rp_tex.c); the rest only
@@ -254,6 +244,19 @@ static struct {
 } wrun[MAX_WRUN];
 static u32 nitem, nwrun;
 static const void *wmatrix;
+static int sky_seen;
+static rp_world_passes_fn passes_fn;
+
+u32 rp_world_materials(void) { return pm.h ? pm.h->nmat : 0; }
+const char *rp_world_material(u32 i, u32 *flags) {
+	if (!pm.h || i >= pm.h->nmat)
+		return 0;
+	if (flags)
+		*flags = pm.mat[i].flags;
+	return pm.mat[i].name;
+}
+void rp_world_script(rp_world_passes_fn fn) { passes_fn = fn; }
+int rp_world_sky(void) { return sky_seen; }
 
 /* A plane against a box (mins at b[0..2], maxs at b[4..6], as a group and a
    chunk have them): which of the box's numbers make the corner farthest
@@ -277,6 +280,7 @@ void rp_world_cull(struct rp_world_stats *st) {
 	*st = (struct rp_world_stats){0};
 	nitem = nwrun = 0;
 	wmatrix = 0;
+	sky_seen = 0;
 	if (!h || !h->nmodel)
 		return;
 	const float *org = v->org;
@@ -296,6 +300,7 @@ void rp_world_cull(struct rp_world_stats *st) {
 			if (grun[r].blended != pass)
 				continue;
 			u32 first = nitem;
+			int sky = grun[r].sky;
 			for (u32 g = grun[r].first; g < (u32)grun[r].first + grun[r].n; g++) {
 				if (row && !(row[g >> 3] >> (g & 7) & 1))
 					continue;
@@ -319,6 +324,11 @@ void rp_world_cull(struct rp_world_stats *st) {
 				u32 gmask = rp_strip_mask(gr->mins);
 				if (!gmask)
 					continue;
+				/* the sky's surfaces are not drawn: where they are seen, the sky is */
+				if (sky) {
+					sky_seen = 1;
+					continue;
+				}
 				int one = !(gmask & (gmask - 1));
 				st->groups++;
 				for (u32 j = gr->first_chunk; j < gr->first_chunk + gr->nchunk; j++) {
@@ -386,11 +396,18 @@ void rp_world_add(int blended) {
 		const struct pm_mat *m = &pm.mat[c0->mat];
 		struct rp_state s = {0};
 		const struct mx_tex *t;
+		/* a script's material: its stages' passes, after the map's own or in its place */
+		static struct rp_state pass[RP_WORLD_PASSES];
+		u32 np = 0;
+		int first = 0;
+		if ((m->flags & MAT_SCRIPT) && passes_fn)
+			np = passes_fn(c0->mat, pass, &first);
+		int own = !(np && first);
 		/* the run's texture and lightmap page in GS memory (sent there if they
 		   were not); the lightmap with its texture's CLUT */
-		if (m->tex >= 0 && m->tex < MAX_TEX && wtex[m->tex] && (t = rp_image_place(wtex[m->tex])))
-			s.tex = *t, s.tex_ok = 1, s.tcc = pm.tex[m->tex].alpha;
-		if ((c0->flags & CH_LIGHTMAP) && c0->lightmap >= 0 && c0->lightmap < MAX_LM && wlm[c0->lightmap] &&
+		if (own && m->tex >= 0 && m->tex < MAX_TEX && wtex[m->tex] && (t = rp_image_place(wtex[m->tex])))
+			s.tex = *t, s.tex_ok = 1, s.tcc = wtex[m->tex]->alpha;
+		if (own && (c0->flags & CH_LIGHTMAP) && c0->lightmap >= 0 && c0->lightmap < MAX_LM && wlm[c0->lightmap] &&
 		    (t = rp_image_place(wlm[c0->lightmap]))) {
 			s.lm = *t;
 			s.lm.cbp = s.tex_ok ? s.tex.cbp : rp_clut_place(lm_clut_key, lm_clut, 0);
@@ -405,11 +422,15 @@ void rp_world_add(int blended) {
 		s.z = RP_Z_WRITE;
 		s.prog = RP_PROG_WORLD;
 		s.texels = m->texels;
-		if (rp_run(wmatrix, &s) < 0)
-			return;
-		for (u32 i = 0; i < wrun[r].n; i++) {
-			const struct pm_chunk *ch = &pm.chunk[it[i].chunk];
-			rp_draw(pm.base + ch->off_data, it[i].mask, it[i].clip, ch->nverts, ch->nbatch);
+		for (u32 k = own ? 0 : 1; k <= np; k++) {
+			if (k)
+				pass[k - 1].texels = m->texels;
+			if (rp_run(wmatrix, k ? &pass[k - 1] : &s) < 0)
+				return;
+			for (u32 i = 0; i < wrun[r].n; i++) {
+				const struct pm_chunk *ch = &pm.chunk[it[i].chunk];
+				rp_draw(pm.base + ch->off_data, it[i].mask, it[i].clip, ch->nverts, ch->nbatch);
+			}
 		}
 	}
 }

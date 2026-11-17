@@ -310,6 +310,23 @@ out in the run):
   made at load, `Sys_Milliseconds` without a 64-bit division.
 - maxsdk's VM writer thread (`clean_frames`) was tried against the swap
   and did not help: faults wait for the VM lock while it writes.
+- **The world's later stages** are passes of one more program (`q3w1t`,
+  `q3w1tc`: a texture matrix and a colour, the vertex's times one plus
+  another, as uniforms): a script's stages after the map's own pass, every
+  stage of a material without a lightmap.
+- **GS memory is the textures' limit.** Beside the 1920-wide picture 1.9 MB
+  is left; with the stages' images a frame drew with 1.17 MB of them, 1.78 MB
+  at most, and entries of frames in flight cannot make room: 152 images found
+  none in the run. Now: an image is of 16 colours when that stays within
+  37 dB of the full-colour one (705 of 1919; `tools/ps2pak.py --t4`), half
+  the memory and half the bytes to send; the map draws with the file of
+  images' textures (one copy in GS memory of an image that is also a
+  stage's or a model's; the `.pmap` has no texels, 3.2 -> 2.0 MB), a 16-colour
+  one too: its CLUT has 256 entries, the colours in the first 16, the
+  lightmaps' brightness in the alpha of the upper half, where the lightmap
+  pages' texels point; the screen's pictures have one level. A frame draws
+  with 0.93 MB (1.46 MB at most), none without room, 7.9 MB sent in the run
+  (16.7 MB before).
 
 A census at a run's end (`Q3_VM_CENSUS`): 16.9 MB of the program's own
 memory resident (the client's `cl` 1.9 MB, cgame's entities 0.9 MB, the
@@ -317,8 +334,8 @@ hunk and zone 8 MB), 7.5 MB of mapped files, 7.3 MB pinned (the map's
 chunks 1.2, the models' frames 1.9 and tables 1.0, the frame's chains 0.8,
 the records 0.6).
 
-Left of phase 3: the stages after a shader's first (11,000 skipped in the
-run), the map's doors and platforms, the sky, beams and lightning, marks,
+Left of phase 3: the models' stages after a shader's first (11,000 skipped
+in the run), the map's doors and platforms, the sky, beams and lightning, marks,
 dynamic lights, texture coordinates that move on world surfaces, strips in
 a model's pieces.
 
@@ -417,7 +434,7 @@ A map (`maps/<name>.pmap`):
 
 Models (`.md3`) keep their vertices as stored (shorts and the normal's two
 angles: VU1 reads them already); the tool adds their strips. Textures are
-`ps2tex.pk3`'s T8 as now. A map without a `.pmap` is refused with a message
+`ps2tex.pk3`'s T8 and T4, as the file `tools/ps2bin.py` makes of them. A map without a `.pmap` is refused with a message
 (for now the tool is the only way in; converting on the PS2 can come once
 the renderer has proved itself).
 

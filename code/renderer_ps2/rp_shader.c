@@ -38,23 +38,13 @@ static struct rp_image *image_load(const char *name) {
 	struct rp_image *im = rp_image_find(base);
 	if (im)
 		return im;
-	const struct rp_bin_entry *e = rp_bin_find(&rp_bin_tex, base);
-	if (!e) {
+	im = rp_image_bin(base, &img_bytes);
+	if (!im) {
 		if (img_missing++ < 40)
 			ri.Printf(PRINT_DEVELOPER, "ps2: renderer: no image %s\n", base);
 		return NULL;
 	}
-	const u8 *level[MX_TEX_LEVELS];
-	u32 levels = e->levels > MX_TEX_LEVELS ? MX_TEX_LEVELS : e->levels;
-	for (u32 l = 0; l < levels; l++)
-		level[l] = rp_bin_tex.base + e->off_level[l];
-	im = rp_image_static(base, e->psm, e->w, e->h, levels, e->alpha, level, rp_bin_tex.base + e->off_clut);
-	if (!im)
-		return NULL;
-	im->pic_w = e->pic_w, im->pic_h = e->pic_h;
-	img_loaded++, img_bytes += e->size;
-	/* in memory when the game starts, not when its first frame draws it */
-	rp_bin_touch(rp_bin_tex.base + e->off, e->size);
+	img_loaded++;
 	return im;
 }
 
