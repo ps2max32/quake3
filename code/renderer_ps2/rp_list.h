@@ -37,6 +37,7 @@ struct rp_view {
 	   below (lo) and above (hi) each: a point is below the line when n . p > d */
 	struct rp_plane sb_lo[15], sb_hi[15];
 	u8 sb_near[15][3], sb_far[15][3]; /* a box's numbers (mins at 0, maxs at 4) nearest and farthest along them */
+	float strip_inv;            /* 1 / strip_h */
 };
 extern struct rp_view rp_view;
 

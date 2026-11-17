@@ -298,6 +298,9 @@ static void quads_draw(u32 from, u32 to) {
 static struct {
 	qhandle_t shader;
 	int stage;
+	u32 rgba;   /* the last picture's colour as the GS takes it, for colour */
+	u32 colour; /* color2d as one word */
+	int plain;  /* one stage, its texture coordinates as given */
 } last2d;
 
 static void RP_RenderScene(const refdef_t *fd) {
@@ -401,10 +404,18 @@ static void RP_SetColor(const float *rgba) {
 static void RP_DrawStretchPic(float x, float y, float w, float h, float s1, float t1, float s2, float t2,
                               qhandle_t shader) {
 	st.pics++;
-	struct rp_shader *sh = rp_shader_get(shader);
-	if (!in_frame || !sh || !r_ps2draw->integer)
+	if (!in_frame || !r_ps2draw->integer)
 		return;
 	float now = frame_time, ys = (float)mx_gs.h / 1080.0f;
+	u32 col = (u32)color2d[0] | (u32)color2d[1] << 8 | (u32)color2d[2] << 16 | (u32)color2d[3] << 24;
+	/* as the picture before (a line of text): nothing to look up */
+	if (shader == last2d.shader && last2d.plain && col == last2d.colour) {
+		rp_pic(x, y * ys, w, h * ys, s1, t1, s2, t2, last2d.rgba);
+		return;
+	}
+	struct rp_shader *sh = rp_shader_get(shader);
+	if (!sh)
+		return;
 	for (int k = 0; k < sh->nstage; k++) {
 		const struct rp_stage *stg = &sh->st[k];
 		/* the state again only when it is another than the last picture's */
@@ -426,7 +437,11 @@ static void RP_DrawStretchPic(float x, float y, float w, float h, float s1, floa
 			a1 = m[0] * s1 + m[1] * t1 + m[2], b1 = m[3] * s1 + m[4] * t1 + m[5];
 			a2 = m[0] * s2 + m[1] * t2 + m[2], b2 = m[3] * s2 + m[4] * t2 + m[5];
 		}
-		rp_pic(x, y * ys, w, h * ys, a1, b1, a2, b2, (u32)c[0] | (u32)c[1] << 8 | (u32)c[2] << 16 | (u32)c[3] << 24);
+		u32 rgba = (u32)c[0] | (u32)c[1] << 8 | (u32)c[2] << 16 | (u32)c[3] << 24;
+		rp_pic(x, y * ys, w, h * ys, a1, b1, a2, b2, rgba);
+		last2d.rgba = rgba, last2d.colour = col;
+		last2d.plain = sh->nstage == 1 && stg->nimg == 1 && !stg->ntcmod && last2d.shader == shader &&
+		               stg->rgbgen != RGB_WAVE && stg->alphagen != A_WAVE;
 	}
 }
 

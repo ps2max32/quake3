@@ -122,7 +122,7 @@ void rp_light_at(const vec3_t p, int world, vec3_t ambient, vec3_t directed, vec
 	VectorClear(directed);
 	for (int i = 0; i < 3; i++) {
 		float v = (p[i] - grid.origin[i]) * grid.inv[i];
-		pos[i] = (int)floorf(v);
+		pos[i] = (int)v - (v < 0 && (float)(int)v != v);
 		frac[i] = v - (float)pos[i];
 		if (pos[i] < 0)
 			pos[i] = 0;
@@ -206,6 +206,9 @@ static u32 cache_hi, cache_bytes, cache_hand;
 #define RP_SKINS 256
 static struct skin {
 	char name[MAX_QPATH];
+	/* the model it was last asked for and that model's surfaces' shaders */
+	qhandle_t for_model;
+	qhandle_t for_surf[MD3_MAX_SURFACES];
 	int n;
 	struct {
 		char surf[MAX_QPATH];
@@ -498,6 +501,7 @@ static qhandle_t skin_keep(const struct skin *sk) {
 	int bytes = (int)(sizeof *sk - (SKIN_SURFS - (sk->n > 0 ? sk->n : 1)) * sizeof sk->s[0]);
 	skins[nskins] = ri.Hunk_Alloc(bytes, h_low);
 	memcpy(skins[nskins], sk, bytes);
+	skins[nskins]->for_model = 0;
 	return nskins++;
 }
 
@@ -554,16 +558,28 @@ qhandle_t rp_skin_register(const char *name) {
 	return skin_keep(sk);
 }
 
-static qhandle_t skin_shader(qhandle_t h, const char *surf) {
+/* the shader a skin gives surface i of model hm (its name surf): by name the
+   first time a model is drawn with the skin */
+static qhandle_t skin_shader(qhandle_t h, qhandle_t hm, int i, const char *surf) {
 	if (h <= 0 || h >= nskins)
 		return 0;
-	const struct skin *sk = skins[h];
+	struct skin *sk = skins[h];
 	if (sk->n == 1 && !sk->s[0].surf[0])
 		return sk->s[0].shader;
-	for (int i = 0; i < sk->n; i++)
-		if (!Q_stricmp(sk->s[i].surf, surf))
-			return sk->s[i].shader;
-	return 0;
+	if (sk->for_model != hm) {
+		const struct rmodel *m = &models[hm];
+		for (int k = 0; k < m->md3->numSurfaces && k < MD3_MAX_SURFACES; k++) {
+			sk->for_surf[k] = 0;
+			for (int j = 0; j < sk->n; j++)
+				if (!Q_stricmp(sk->s[j].surf, m->surf[k].md3->name)) {
+					sk->for_surf[k] = sk->s[j].shader;
+					break;
+				}
+		}
+		sk->for_model = hm;
+	}
+	(void)surf;
+	return i < MD3_MAX_SURFACES ? sk->for_surf[i] : 0;
 }
 
 /* The entity's shader is one drawn after the world's blended surfaces (its
@@ -573,7 +589,7 @@ int rp_model_blended(const refEntity_t *e) {
 	if (!m || !m->md3->numSurfaces)
 		return 0;
 	qhandle_t hs = e->customShader ? e->customShader
-	               : e->customSkin ? skin_shader(e->customSkin, m->surf[0].md3->name)
+	               : e->customSkin ? skin_shader(e->customSkin, e->hModel, 0, m->surf[0].md3->name)
 	                               : m->surf[0].shader;
 	struct rp_shader *sh = rp_shader_get(hs);
 	return sh && sh->nstage && sh->st[0].blend != RP_BLEND_NONE;
@@ -764,7 +780,9 @@ void rp_model_draw(const refEntity_t *e, float t) {
 		rp_model_stats.drawn++;
 	for (int i = 0; i < h->numSurfaces; i++) {
 		struct msurf *sf = &m->surf[i];
-		qhandle_t hs = e->customShader ? e->customShader : e->customSkin ? skin_shader(e->customSkin, sf->md3->name) : sf->shader;
+		qhandle_t hs = e->customShader ? e->customShader
+		               : e->customSkin ? skin_shader(e->customSkin, e->hModel, i, sf->md3->name)
+		                               : sf->shader;
 		struct rp_shader *sh = rp_shader_get(hs);
 		if (!sh || !sh->nstage || sh->nodraw || !sf->npiece) {
 			rp_model_stats.nostage++;

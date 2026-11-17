@@ -149,6 +149,7 @@ void rp_view_rect(const struct rp_cam *cam, float x, float y, float w, float h) 
 		v->nstrip = 0;
 	if (v->nstrip > 16)
 		v->nstrip = 16;
+	v->strip_inv = v->strip_h ? 1.0f / (float)v->strip_h : 0;
 	v->all = !v->nstrip ? 1 : (1u << v->nstrip) - 1;
 	v->serial++;
 	/* a point d from the eye is below the picture's line B when (top - B) F . d
@@ -182,7 +183,9 @@ u32 rp_strip_lines(float lo, float hi) {
 	const struct rp_view *v = &rp_view;
 	if (!v->nstrip)
 		return 1;
-	s32 k0 = lo < 1.5f ? 0 : (s32)(lo - 1.5f) / (s32)v->strip_h, k1 = hi < 0 ? -1 : (s32)(hi + 1.5f) / (s32)v->strip_h;
+	if (hi < 0 || lo > (float)mx_gs.h)
+		return 0;
+	s32 k0 = lo < 1.5f ? 0 : (s32)((lo - 1.5f) * v->strip_inv), k1 = (s32)((hi + 1.5f) * v->strip_inv);
 	if (k1 >= (s32)v->nstrip)
 		k1 = (s32)v->nstrip - 1;
 	return k1 < k0 ? 0 : ((2u << k1) - 1) & ~((1u << k0) - 1);
@@ -291,6 +294,21 @@ void rp_draw(const void *chain, u32 mask, int clip, u32 verts, u32 batches) {
    its passes into the context, its GS registers as a packet the set-up's
    program kicks; state 0: the same registers as the set-up before it in the
    strip (the run's other program): an empty packet. */
+/* TEX1's K (1/16 of a level) that puts the first level where a texel is a
+   pixel, as mx_tex_lod_k but with log2 as the exponent and the fraction as
+   it is (a tenth of a level off at most), for the hundreds of set-ups a
+   frame */
+static s32 lod_k(float texels, float pixels) {
+	union {
+		float f;
+		u32 u;
+	} a = {texels}, b = {pixels};
+	if (!(texels > 0) || !(pixels > 0))
+		return 0;
+	s32 d = ((s32)(a.u >> 23) - (s32)(b.u >> 23)) * 16 + (((s32)(a.u >> 19 & 15) - (s32)(b.u >> 19 & 15)));
+	return d < -2048 ? -2048 : d > 2047 ? 2047 : d;
+}
+
 static u64 blend_reg(const struct rp_state *s) {
 	return s->blend == RP_BLEND_ADD         ? mx_gs_alpha(0, 2, 2, 1, 0x80)
 	       : s->blend == RP_BLEND_ALPHA     ? mx_gs_alpha(0, 1, 0, 1, 0)
@@ -366,7 +384,7 @@ static const void *setup_chain(const struct rp_state *s, int cut, int state) {
 		u32 n = 0;
 		if (tex) {
 			const struct mx_tex *t = &s->tex;
-			s32 k = mx_tex_lod_k(s->texels, rp_view.fx, 0);
+			s32 k = lod_k(s->texels, rp_view.fx);
 			u64 t1 = (rp_debug & 1) || s->nomip ? mx_gs_tex1(1, 0, 1, 1, 0, 0, 0)
 			                                    : mx_tex_tex1(t, 1, t->levels > 1 ? 4 : 1, 0, k);
 			/* a texture without alpha of its own: its CLUT's alpha is the
