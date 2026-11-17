@@ -4,10 +4,15 @@
    for its tags and bounds), and its surfaces are made ready for VU1
    (tools/ps2vu.py, q3m): a surface is cut into pieces of at most
    Q3VU_M_VERTS vertices, each with its triangles as entries of a strip
-   (three a triangle now: the first two end none). Of a piece there are, in
-   memory the DMAC reads: its texture coordinates (16-bit fixed point) and
-   its entries, once; and for every frame its positions (the file's 16-bit
-   ones) and its normals (three bytes, decoded from the file's two angles).
+   (three a triangle now: the first two end none). Of a piece there are its
+   texture coordinates (16-bit fixed point) and its entries, once, in memory
+   the DMAC reads; and for every frame its positions (the file's 16-bit ones)
+   and its normals (three bytes, decoded from the file's two angles), in
+   memory that may be paged out. A frame's block is made when a draw first
+   reads it (a model has hundreds of frames and a game shows few of them);
+   the two frames a draw reads are locked until its frame is done, and a
+   surface whose frames are not in memory is left out of that frame (the
+   pager brings them in).
 
    A draw of a surface is a chain built for the frame: for each piece five
    REFs (texture coordinates, the new frame's normals and positions, the old
@@ -21,6 +26,7 @@
    has it (R_SetupEntityLighting): an ambient colour, a directed one and its
    direction. */
 
+#include <mx/frame.h>
 #include <mx/mem.h>
 #include <mx/mx.h>
 #include <mx/vif.h>
@@ -164,8 +170,14 @@ struct msurf {
 	qhandle_t shader;   /* the file's own */
 	int npiece;
 	struct piece *piece;
-	u8 *fixed, *frames; /* memory the DMAC reads */
+	u8 *fixed;          /* memory the DMAC reads */
+	u8 *frames;         /* pageable: a block of frame_bytes a frame */
 	u32 frame_bytes;
+	u32 lock_at[2];     /* the frames (of the picture) + 1 its blocks lock_f were locked for */
+	int lock_f[2];
+	u32 lock_n;
+	u16 (*pv)[Q3VU_M_VERTS]; /* a piece's vertices in the file */
+	u8 *made;           /* a bit a frame: its block is made */
 };
 #define RP_MODELS 1024
 static struct rmodel {
@@ -174,7 +186,7 @@ static struct rmodel {
 	struct msurf *surf;
 } *models;
 static int nmodels;
-static struct mx_heap *heap;
+static struct mx_heap *heap, *heap_frames;
 static unsigned model_bytes;
 
 #define SKIN_SURFS 32
@@ -190,10 +202,13 @@ static struct skin {
 static int nskins;
 
 void rp_models_begin(void) {
-	if (!heap)
+	if (!heap) {
 		heap = mx_heap_create("q3.models", MX_MEM_PINNED, 0);
-	else
+		heap_frames = mx_heap_create("q3.frames", MX_MEM_ASSET, 24u << 20);
+	} else {
 		mx_heap_reset(heap);
+		mx_heap_reset(heap_frames);
+	}
 	models = ri.Hunk_Alloc(RP_MODELS * sizeof *models, h_low);
 	skins = ri.Hunk_Alloc(RP_SKINS * sizeof *skins, h_low);
 	nmodels = nskins = 1;
@@ -215,7 +230,8 @@ static int surf_make(struct msurf *sf) {
 	/* at most: a piece takes 9 triangles at least (27 new vertices) */
 	int maxp = nt / 9 + 2;
 	struct piece *pc = ri.Hunk_Alloc(maxp * (int)sizeof *pc, h_low);
-	u16 (*pv)[Q3VU_M_VERTS] = ri.Hunk_AllocateTempMemory(maxp * (int)sizeof *pv);
+	u16 (*pv)[Q3VU_M_VERTS] = ri.Hunk_Alloc(maxp * (int)sizeof *pv, h_low);
+	sf->made = ri.Hunk_Alloc((nf + 7) / 8, h_low);
 	u16 (*pe)[Q3VU_M_ENTRIES] = ri.Hunk_AllocateTempMemory(maxp * (int)sizeof *pe);
 	s16 *map = ri.Hunk_AllocateTempMemory(nv * (int)sizeof *map);
 	memset(map, 0xFF, nv * sizeof *map);
@@ -265,11 +281,12 @@ static int surf_make(struct msurf *sf) {
 	}
 	sf->npiece = np, sf->piece = pc, sf->frame_bytes = frame;
 	sf->fixed = mx_heap_alloc(heap, fixed, 64);
-	sf->frames = mx_heap_alloc(heap, frame * (u32)nf, 64);
+	sf->frames = mx_heap_alloc(heap_frames, frame * (u32)nf, 64);
+	sf->lock_at[0] = sf->lock_at[1] = 0, sf->lock_n = 0;
+	sf->pv = pv;
 	int ok = sf->fixed && sf->frames;
 	if (ok) {
 		memset(sf->fixed, 0, fixed);
-		memset(sf->frames, 0, frame * (u32)nf);
 		for (int i = 0; i < np; i++) {
 			const struct piece *p = &pc[i];
 			s16 *d = (s16 *)(sf->fixed + p->st);
@@ -282,30 +299,42 @@ static int surf_make(struct msurf *sf) {
 			u16 *e = (u16 *)(sf->fixed + p->idx);
 			e[0] = (u16)(p->nent / 4);
 			memcpy(e + 4, pe[i], p->nent * sizeof *e);
-			for (int f = 0; f < nf; f++) {
-				const md3XyzNormal_t *x = xyz + f * nv;
-				s16 *pos = (s16 *)(sf->frames + (u32)f * frame + p->pos);
-				s8 *nrm = (s8 *)(sf->frames + (u32)f * frame + p->nrm);
-				for (int k = 0; k < p->nvert; k++) {
-					const md3XyzNormal_t *v = &x[pv[i][k]];
-					pos[3 * k] = v->xyz[0], pos[3 * k + 1] = v->xyz[1], pos[3 * k + 2] = v->xyz[2];
-					/* the engine's: X cos(lat) sin(lng), Y sin(lat) sin(lng), Z cos(lng) */
-					u32 lat = (u32)(v->normal >> 8) & 255, lng = (u32)v->normal & 255;
-					float sl = sin_tab[lng];
-					nrm[3 * k] = (s8)(sin_tab[(lat + 64) & 255] * sl * 127.0f);
-					nrm[3 * k + 1] = (s8)(sin_tab[lat] * sl * 127.0f);
-					nrm[3 * k + 2] = (s8)(sin_tab[(lng + 64) & 255] * 127.0f);
-				}
-			}
 		}
 		mx_dcache_writeback(sf->fixed, fixed);
-		mx_dcache_writeback(sf->frames, frame * (u32)nf);
-		model_bytes += fixed + frame * (u32)nf;
+		model_bytes += fixed;
 	}
+	(void)xyz;
 	ri.Hunk_FreeTempMemory(map);
 	ri.Hunk_FreeTempMemory(pe);
-	ri.Hunk_FreeTempMemory(pv);
 	return ok ? 0 : -1;
+}
+
+/* A frame's block: its pieces' positions and normals from the file's. */
+static void frame_make(struct msurf *sf, int f) {
+	const md3Surface_t *s = sf->md3;
+	const md3XyzNormal_t *x = (const md3XyzNormal_t *)((const u8 *)s + s->ofsXyzNormals) + f * s->numVerts;
+	u8 *blk = sf->frames + (u32)f * sf->frame_bytes;
+	memset(blk, 0, sf->frame_bytes);
+	for (int i = 0; i < sf->npiece; i++) {
+		const struct piece *p = &sf->piece[i];
+		s16 *pos = (s16 *)(blk + p->pos);
+		s8 *nrm = (s8 *)(blk + p->nrm);
+		for (int k = 0; k < p->nvert; k++) {
+			const md3XyzNormal_t *v = &x[sf->pv[i][k]];
+			pos[3 * k] = v->xyz[0], pos[3 * k + 1] = v->xyz[1], pos[3 * k + 2] = v->xyz[2];
+			/* the engine's: X cos(lat) sin(lng), Y sin(lat) sin(lng), Z cos(lng) */
+			u32 lat = (u32)(v->normal >> 8) & 255, lng = (u32)v->normal & 255;
+			float sl = sin_tab[lng];
+			nrm[3 * k] = (s8)(sin_tab[(lat + 64) & 255] * sl * 127.0f);
+			nrm[3 * k + 1] = (s8)(sin_tab[lat] * sl * 127.0f);
+			nrm[3 * k + 2] = (s8)(sin_tab[(lng + 64) & 255] * 127.0f);
+		}
+	}
+	mx_dcache_writeback(blk, sf->frame_bytes);
+	sf->made[f >> 3] |= (u8)(1 << (f & 7));
+	model_bytes += sf->frame_bytes;
+	rp_model_stats.kb = model_bytes / 1024;
+	rp_model_stats.made++;
 }
 
 qhandle_t rp_model_register(const char *name) {
@@ -512,8 +541,30 @@ static inline float dot3(const float *a, const float *b) { return a[0] * b[0] + 
 
 int rp_scene_world; /* the scene being drawn has the map's world (rp_main.c) */
 
+/* A frame's block locked until the picture's frame being built is done; -1:
+   it is not in memory. */
+static int frame_lock(struct msurf *sf, int f) {
+	const u8 *p = sf->frames + (u32)f * sf->frame_bytes;
+	u32 now = mx_frame_number() + 1;
+	for (int k = 0; k < 2; k++)
+		if (sf->lock_at[k] == now && sf->lock_f[k] == f)
+			return 0;
+	if (!(sf->made[f >> 3] >> (f & 7) & 1))
+		frame_make(sf, f);
+	if (mx_mem_lock_try(p, sf->frame_bytes) < 0) {
+		rp_model_stats.paged++;
+		return -1;
+	}
+	mx_frame_unlock(p, sf->frame_bytes);
+	u32 k = sf->lock_n++ & 1;
+	sf->lock_at[k] = now, sf->lock_f[k] = f;
+	return 0;
+}
+
 /* the surface on VU1: a chain of its pieces */
-static const void *surf_chain(const struct msurf *sf, int frame, int oldframe) {
+static const void *surf_chain(struct msurf *sf, int frame, int oldframe) {
+	if (frame_lock(sf, frame) < 0 || frame_lock(sf, oldframe) < 0)
+		return 0;
 	u64 *c0 = rp_dyn((u32)sf->npiece * 6 + 1), *c = c0;
 	if (!c)
 		return 0;
@@ -630,7 +681,7 @@ void rp_model_draw(const refEntity_t *e, float t) {
 	else
 		rp_model_stats.drawn++;
 	for (int i = 0; i < h->numSurfaces; i++) {
-		const struct msurf *sf = &m->surf[i];
+		struct msurf *sf = &m->surf[i];
 		qhandle_t hs = e->customShader ? e->customShader : e->customSkin ? skin_shader(e->customSkin, sf->md3->name) : sf->shader;
 		struct rp_shader *sh = rp_shader_get(hs);
 		if (!sh || !sh->nstage || sh->nodraw || !sf->npiece) {

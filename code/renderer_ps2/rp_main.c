@@ -457,8 +457,8 @@ static void RP_EndFrame(int *frontEndMsec, int *backEndMsec) {
 		st_at = st;
 		rp_list_stats = (struct rp_list_stats){0};
 		rp_tex_stats = (struct rp_tex_stats){0};
-		u32 kb = rp_model_stats.kb;
-		rp_model_stats = (struct rp_model_stats){.kb = kb};
+		u32 kb = rp_model_stats.kb, made = rp_model_stats.made;
+		rp_model_stats = (struct rp_model_stats){.kb = kb, .made = made};
 	}
 	if (df)
 		st_frames++;
@@ -490,12 +490,14 @@ void ps2_ren_report(void) {
 	            st_at.ents[RT_LIGHTNING]) * 10 / n % 10,
 	           A(polys), A(polyverts), A(lights), A(pics), A(marks));
 #undef A
-	Com_Printf("ps2: renderer: %d models (%u KB of vertices), %d shaders registered\n", rp_model_count(),
-	           rp_model_stats.kb, rp_shader_count());
+	Com_Printf("ps2: renderer: %d models (%u KB of vertices: %u frames of surfaces made), %d shaders registered\n",
+	           rp_model_count(), rp_model_stats.kb, rp_model_stats.made, rp_shader_count());
 	Com_Printf("ps2: renderer: models, a frame: %u on VU1 (%u surfaces, %u pieces, %u vertices), %u across a plane "
-	           "(on the EE), %u out of view; in all %u surfaces without a stage, %u later stages not drawn\n",
+	           "(on the EE), %u out of view; in all %u surfaces without a stage, %u later stages not drawn, %u "
+	           "surfaces left out (their frames paged out)\n",
 	           rp_model_stats.drawn / n, rp_model_stats.surfs / n, rp_model_stats.pieces / n, rp_model_stats.verts / n,
-	           rp_model_stats.cut / n, rp_model_stats.culled / n, rp_model_stats.nostage, rp_model_stats.stages);
+	           rp_model_stats.cut / n, rp_model_stats.culled / n, rp_model_stats.nostage, rp_model_stats.stages,
+	           rp_model_stats.paged);
 	Com_Printf("ps2: renderer: polygons: %u drawn (%u across a plane), %u out of view; %u pictures; %u stages without "
 	           "an image in GS memory\n", rp_poly_stats.polys, rp_poly_stats.cut, rp_poly_stats.culled,
 	           rp_poly_stats.pics, st_nostage);

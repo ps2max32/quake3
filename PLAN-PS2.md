@@ -205,6 +205,71 @@ world only, 1259 fields, a PS2):
 - A VIF1/VU1/GIF pass costs about 28 EE cycles a vertex and 360 a batch
   (from two runs with 59 and 19 vertices a batch).
 
+### Phase 3, first results (2026-11-17)
+
+The renderer is in the game: the world, the game's shaders (scripts or an
+image alone), sprites and polys, the screen's pictures and MD3 models with
+the light grid's light. A timedemo of `demo four`, 1080i beam racing,
+`misc/ps2/q3hq.cfg` (which now also sets the view weapon on: the measured
+console's saved settings had it off, in the libgl build's runs too), on a
+PS2 with host swap:
+
+| Build | Timedemo | The EE a frame (waits for a record left out) | Frames over a field | A field's passes | Passes still drawn when the beam came |
+|---|---|---|---|---|---|
+| libgl (phase 0; no view weapon) | 23.0 fps | 12.77 M cycles | | | 48 % late |
+| World, sprites, polys, pictures; no models | 59.9 fps (every field a frame) | 3.10 M (10.5 ms), median 9.7 ms | 64 of 1258 | 5.7 ms | 47 of 6694 |
+| With the models (no view weapon) | 54.9 fps | 4.51 M, median 12.8 ms | 338 | 6.3 ms | 144 of 7537 |
+| With the models and the view weapon | 52.5 fps | 5.07 M (17.2 ms), median 15.0 ms | 475 | 7.4 ms | 508 of 7691 |
+
+What is in those numbers and not drawing:
+
+- **Swap.** With the models the run swaps: 156 pages in (0.8 s) and 272 out
+  (1.8 s) of the run's 24 s. The models' files are whole in the hunk and their
+  frames are made ready beside them; the images are all in memory. Phase 5
+  (files mapped where they are read from, nothing written that is not used)
+  removes it; without those waits the run is at about 58 fps.
+- **The view weapon is built on the EE** (its sphere crosses the near
+  plane, so it goes the polygons' way): 0.56 M cycles a frame for 170
+  triangles drawn. It gets a program of its own: `q3m` with a test of each
+  vertex, a triangle with a vertex outside left out (they are below the
+  screen's edge).
+- **A profile** of the run without models (36 % of the time waiting for a
+  record): the renderer 3.4 ms a frame (the world's cull 1.1 ms, the list's
+  end 0.9 ms, pictures 0.6 ms), the kernel 2.0 ms (1,800 TLB refills a
+  frame), cgame 1.1 ms, collision and the rest of the engine 2.7 ms.
+
+The world alone, the viewer's flight (1259 fields), after the cut triangles
+are drawn and the textures are a cache:
+
+| | A field's passes | The longest | Still drawn when the beam came |
+|---|---|---|---|
+| All | 8.2 ms | 15.5 ms (108 fields over 12 ms) | 36 of 3777 |
+| The GS drawing nothing | 2.8 ms | 5.2 ms | 0 |
+
+- The cut triangles are large and near: drawing them is 0.7 ms a field
+  that the holes saved before; the programs that cut and their scan are
+  0.6 ms.
+- **Where a pass's time goes**, 80 heavy cameras (630 to 710), each variant
+  a flight: nothing drawn 3.9 ms; one flat pass 6.3 ms; with the texture
+  7.6 ms; the lightmap pass alone over flat 10.6 ms; both 12.0 ms. So a
+  layer of the world costs the GS about 2.7 ms flat and 4 ms textured, the
+  lightmap pass as much as the texture pass, and the overdraw there is 1.0
+  (the picture of it): about 0.6 EE cycles a pixel flat and 0.9 textured,
+  two to three times the probe's screen-size triangle. MIPMAP levels change
+  nothing here.
+- **VU1 and the GS take turns**: the times add (3.9 + 8.1 = 12.0). The
+  FLUSH before each batch makes VU1 wait for the GS. A batch that is not
+  written in place (the VIF's vertices in one part of the buffer, the
+  packets in another) needs no FLUSH: the next batch's unpack then cannot
+  touch a packet still being sent, and VU1 works while the GS draws. That
+  is the next change to the programs: batches of about 44 vertices, and the
+  heavy fields at about 9 ms in place of 12.
+
+Left of phase 3: the stages after a shader's first (11,000 skipped in the
+run), the map's doors and platforms, the sky, beams and lightning, marks,
+dynamic lights, texture coordinates that move on world surfaces, strips in
+a model's pieces.
+
 ## 3. Why the earlier attempts stalled
 
 | Attempt | Result | Why |

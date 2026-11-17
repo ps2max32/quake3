@@ -42,6 +42,8 @@ struct rp_model_stats {
 	u32 drawn, culled, cut;   /* entities: on VU1, out of view, across a plane (built on the EE) */
 	u32 surfs, pieces, verts; /* of those drawn on VU1 */
 	u32 nostage, stages;      /* surfaces without a stage to draw; stages after the first, not drawn yet */
+	u32 paged;                /* surfaces left out of a frame: their frames were not in memory */
+	u32 made;                 /* frames of surfaces made ready */
 	u32 kb;                   /* memory of the models' vertices */
 };
 extern struct rp_model_stats rp_model_stats;
