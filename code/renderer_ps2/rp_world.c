@@ -214,6 +214,20 @@ static struct {
 static u32 nitem, nwrun;
 static const void *wmatrix;
 
+/* A plane against a box (mins at b[0..2], maxs at b[4..6], as a group and a
+   chunk have them): which of the box's numbers make the corner farthest
+   along the plane's normal, and the nearest. */
+struct psel {
+	float n[3], d;
+	u8 far[3], near[3];
+};
+static inline float sel_far(const struct psel *p, const float *b) {
+	return p->n[0] * b[p->far[0]] + p->n[1] * b[p->far[1]] + p->n[2] * b[p->far[2]] - p->d;
+}
+static inline float sel_near(const struct psel *p, const float *b) {
+	return p->n[0] * b[p->near[0]] + p->n[1] * b[p->near[1]] + p->n[2] * b[p->near[2]] - p->d;
+}
+
 void rp_world_cull(struct rp_world_stats *st) {
 	const struct pm_head *h = pm.h;
 	const struct rp_view *v = &rp_view;
@@ -225,6 +239,14 @@ void rp_world_cull(struct rp_world_stats *st) {
 	if (!h || !h->nmodel)
 		return;
 	const float *org = v->org;
+	struct psel fr[5], gb[5];
+	for (int p = 0; p < 5; p++)
+		for (int k = 0; k < 3; k++) {
+			fr[p].n[k] = v->fr[p].n[k], fr[p].d = v->fr[p].d;
+			fr[p].far[k] = (u8)(fr[p].n[k] >= 0 ? 4 + k : k), fr[p].near[k] = (u8)(fr[p].n[k] >= 0 ? k : 4 + k);
+			gb[p].n[k] = v->gb[p].n[k], gb[p].d = v->gb[p].d;
+			gb[p].near[k] = (u8)(gb[p].n[k] >= 0 ? k : 4 + k);
+		}
 	u32 cluster = cam_cluster(org);
 	st->cluster = cluster;
 	const u8 *row = cluster < h->ncluster ? pm.vis + cluster * h->vis_bytes : 0;
@@ -246,19 +268,23 @@ void rp_world_cull(struct rp_world_stats *st) {
 					continue;
 				if (!pass)
 					st->seen++;
-				/* out: wholly outside a plane of the frustum; across: not wholly
-				   inside the planes the programs that test nothing need */
-				int out = 0, cross = 0;
-				for (int p = 0; p < 5 && !out; p++)
-					out = rp_box_dist(&v->fr[p], gr->mins, gr->maxs, 1) < 0;
+				/* out: wholly outside a plane of the frustum; partly in view: its
+				   chunks are tested each; across: not wholly inside the planes the
+				   programs that test nothing need */
+				int out = 0, cross = 0, part = 0;
+				for (int p = 0; p < 5 && !out; p++) {
+					out = sel_far(&fr[p], gr->mins) < 0;
+					part |= sel_near(&fr[p], gr->mins) < 0;
+				}
 				if (out)
 					continue;
 				for (int p = 0; p < 5 && !cross; p++)
-					cross = rp_box_dist(&v->gb[p], gr->mins, gr->maxs, 0) < 0;
-				/* partly in view: its chunks are tested each */
-				int part = 0;
-				for (int p = 0; p < 5 && !part && gr->nchunk > 1; p++)
-					part = rp_box_dist(&v->fr[p], gr->mins, gr->maxs, 0) < 0;
+					cross = sel_near(&gb[p], gr->mins) < 0;
+				/* the strips the group touches: in one, its chunks are in that one */
+				u32 gmask = rp_strip_mask(gr->mins, gr->maxs);
+				if (!gmask)
+					continue;
+				int one = !(gmask & (gmask - 1));
 				st->groups++;
 				for (u32 j = gr->first_chunk; j < gr->first_chunk + gr->nchunk; j++) {
 					const struct pm_chunk *ch = &pm.chunk[j];
@@ -279,10 +305,10 @@ void rp_world_cull(struct rp_world_stats *st) {
 							continue;
 						}
 					}
-					if (part) {
+					if (part && gr->nchunk > 1) {
 						int gone = 0;
 						for (int p = 0; p < 5 && !gone; p++)
-							gone = rp_box_dist(&v->fr[p], ch->mins, ch->maxs, 1) < 0;
+							gone = sel_far(&fr[p], ch->mins) < 0;
 						if (gone)
 							continue;
 					}
@@ -291,13 +317,16 @@ void rp_world_cull(struct rp_world_stats *st) {
 					if (cut && gr->nchunk > 1) {
 						cut = 0;
 						for (int p = 0; p < 5 && !cut; p++)
-							cut = rp_box_dist(&v->gb[p], ch->mins, ch->maxs, 0) < 0;
+							cut = sel_near(&gb[p], ch->mins) < 0;
 					}
+					u32 mask = one || gr->nchunk == 1 ? gmask : rp_strip_mask(ch->mins, ch->maxs);
+					if (!mask)
+						continue;
 					st->drawn++;
 					st->clip += (u32)cut;
 					st->verts += ch->nverts;
 					item[nitem].chunk = (u16)j, item[nitem].clip = (u8)cut;
-					item[nitem].mask = (u16)rp_strip_mask(ch->mins, ch->maxs);
+					item[nitem].mask = (u16)mask;
 					nitem++;
 				}
 			}

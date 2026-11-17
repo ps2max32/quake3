@@ -62,15 +62,16 @@ int Sys_Milliseconds(void) {
 		base = c;
 		init = 1;
 	}
-	return (int)((c - base) / (MX_EE_HZ / 1000));
+	/* a millisecond is 294,912 cycles: 2^15 * 9 (no 64-bit division: this is
+	   asked hundreds of times a frame) */
+	_Static_assert(MX_EE_HZ / 1000 == 9 << 15, "the EE's clock");
+	return (int)((u32)((c - base) >> 15) / 9u);
 }
 
 void Sys_Sleep(int msec) {
 	if (msec <= 0)
 		return;
-	int t = Sys_Milliseconds();
-	while (Sys_Milliseconds() - t < msec)
-		;
+	mx_sleep_us((u32)msec * 1000u);
 }
 
 /* ---- the game modules -------------------------------------------------------- */

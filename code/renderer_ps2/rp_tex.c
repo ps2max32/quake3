@@ -202,11 +202,8 @@ static void texflush(void) {
 
 const struct mx_tex *rp_image_place(struct rp_image *im) {
 	u32 frame = mx_frame_number();
-	if (im->frame == frame + 1) {
-		if (im->ok)
-			mx_vcache_use(mx_vcache_tex_key(im->key, im->from));
+	if (im->frame == frame + 1)
 		return im->ok ? &im->t : 0;
-	}
 	im->frame = frame + 1, im->ok = 0;
 	u32 tw = log2u(im->w), th = log2u(im->h), from = 0;
 	u32 cpsm = im->clut ? MX_GS_PSM_CT32 : MX_VCACHE_NO_CLUT;

@@ -319,18 +319,20 @@ static void RP_RenderScene(const refdef_t *fd) {
 		   blended surfaces; the models that blend, and the rest; last the view
 		   weapon, over depth of its own (the engine squeezes its depth range) */
 		int hack = 0;
+		static u8 kind[MAX_MODEL]; /* 1: its shader blends; 2: the view weapon's depth */
 		for (u32 i = first_ment; i < nment; i++) {
 			const refEntity_t *e = &ments[i];
-			if (e->renderfx & RF_DEPTHHACK)
+			kind[i] = (u8)(rp_model_blended(e) | (e->renderfx & RF_DEPTHHACK ? 2 : 0));
+			if (kind[i] & 2)
 				hack = 1;
-			else if (!rp_model_blended(e))
+			else if (!kind[i])
 				rp_model_draw(e, now - e->shaderTime);
 		}
 		quads_draw(0, decals);
 		if (world && world_ok)
 			rp_world_add(1);
 		for (u32 i = first_ment; i < nment; i++)
-			if (!(ments[i].renderfx & RF_DEPTHHACK) && rp_model_blended(&ments[i]))
+			if (kind[i] == 1)
 				rp_model_draw(&ments[i], now - ments[i].shaderTime);
 		quads_draw(decals, nq);
 		if (hack) {
@@ -341,9 +343,9 @@ static void RP_RenderScene(const refdef_t *fd) {
 					rc[2] = r1[2] > rc[2] ? r1[2] : rc[2], rc[3] = r1[3] > rc[3] ? r1[3] : rc[3];
 				}
 			rp_zclear(rc[0], rc[1], rc[2], rc[3]);
-			for (int blended = 0; blended < 2; blended++)
+			for (u8 blended = 0; blended < 2; blended++)
 				for (u32 i = first_ment; i < nment; i++)
-					if ((ments[i].renderfx & RF_DEPTHHACK) && rp_model_blended(&ments[i]) == blended)
+					if (kind[i] == (2 | blended))
 						rp_model_draw(&ments[i], now - ments[i].shaderTime);
 		}
 	}
@@ -369,6 +371,7 @@ static void RP_RenderScene(const refdef_t *fd) {
 /* ---- the screen's pictures ------------------------------------------------------------- */
 
 static u8 color2d[4] = {255, 255, 255, 255};
+static float frame_time; /* the frame's, for the pictures' shaders */
 
 static void RP_SetColor(const float *rgba) {
 	for (int k = 0; k < 4; k++) {
@@ -384,7 +387,7 @@ static void RP_DrawStretchPic(float x, float y, float w, float h, float s1, floa
 	struct rp_shader *sh = rp_shader_get(shader);
 	if (!in_frame || !sh || !r_ps2draw->integer)
 		return;
-	float now = (float)ri.Milliseconds() * 0.001f, ys = (float)mx_gs.h / 1080.0f;
+	float now = frame_time, ys = (float)mx_gs.h / 1080.0f;
 	for (int k = 0; k < sh->nstage; k++) {
 		const struct rp_stage *stg = &sh->st[k];
 		/* the state again only when it is another than the last picture's */
@@ -422,6 +425,7 @@ static void RP_BeginFrame(stereoFrame_t stereoFrame) {
 	mx_hires_clear(0, 0, 0);
 	rp_list_begin();
 	nsprite = npoly = npolyvert = first_sprite = first_poly = nment = first_ment = 0;
+	frame_time = (float)ri.Milliseconds() * 0.001f;
 	last2d.shader = 0;
 	/* the pictures before a scene: over the whole picture */
 	struct rp_cam none = {{0, 0, 0}, {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}}, 90, 60};
@@ -457,8 +461,8 @@ static void RP_EndFrame(int *frontEndMsec, int *backEndMsec) {
 		st_at = st;
 		rp_list_stats = (struct rp_list_stats){0};
 		rp_tex_stats = (struct rp_tex_stats){0};
-		u32 kb = rp_model_stats.kb, made = rp_model_stats.made;
-		rp_model_stats = (struct rp_model_stats){.kb = kb, .made = made};
+		u32 kb = rp_model_stats.kb;
+		rp_model_stats = (struct rp_model_stats){.kb = kb};
 	}
 	if (df)
 		st_frames++;
@@ -490,11 +494,12 @@ void ps2_ren_report(void) {
 	            st_at.ents[RT_LIGHTNING]) * 10 / n % 10,
 	           A(polys), A(polyverts), A(lights), A(pics), A(marks));
 #undef A
-	Com_Printf("ps2: renderer: %d models (%u KB of vertices: %u frames of surfaces made), %d shaders registered\n",
-	           rp_model_count(), rp_model_stats.kb, rp_model_stats.made, rp_shader_count());
+	Com_Printf("ps2: renderer: %d models (%u KB of vertices; %u frames of surfaces made, %u given up), %d shaders "
+	           "registered\n", rp_model_count(), rp_model_stats.kb, rp_model_stats.made, rp_model_stats.evicted,
+	           rp_shader_count());
 	Com_Printf("ps2: renderer: models, a frame: %u on VU1 (%u surfaces, %u pieces, %u vertices), %u across a plane "
 	           "(on the EE), %u out of view; in all %u surfaces without a stage, %u later stages not drawn, %u "
-	           "surfaces left out (their frames paged out)\n",
+	           "surfaces left out (no memory for their frames)\n",
 	           rp_model_stats.drawn / n, rp_model_stats.surfs / n, rp_model_stats.pieces / n, rp_model_stats.verts / n,
 	           rp_model_stats.cut / n, rp_model_stats.culled / n, rp_model_stats.nostage, rp_model_stats.stages,
 	           rp_model_stats.paged);

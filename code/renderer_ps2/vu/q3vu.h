@@ -7,14 +7,16 @@ extern const unsigned char q3vu_vu[], q3vu_vu_end[];
 
 #define Q3M_SETUP 0
 #define Q3M_BATCH 15
-#define Q3W2_SETUP 114
-#define Q3W2_BATCH 126
-#define Q3W1_SETUP 188
-#define Q3W1_BATCH 199
-#define Q3W2C_SETUP 250
-#define Q3W2C_BATCH 262
-#define Q3W1C_SETUP 318
-#define Q3W1C_BATCH 329
+#define Q3MC_SETUP 114
+#define Q3MC_BATCH 131
+#define Q3W2_SETUP 255
+#define Q3W2_BATCH 267
+#define Q3W1_SETUP 329
+#define Q3W1_BATCH 340
+#define Q3W2C_SETUP 391
+#define Q3W2C_BATCH 403
+#define Q3W1C_SETUP 459
+#define Q3W1C_BATCH 470
 
 #define Q3VU_CTX_QW 72 /* the context, at 0 */
 #define Q3VU_CTX_C0 0

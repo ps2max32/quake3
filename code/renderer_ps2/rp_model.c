@@ -6,13 +6,11 @@
    Q3VU_M_VERTS vertices, each with its triangles as entries of a strip
    (three a triangle now: the first two end none). Of a piece there are its
    texture coordinates (16-bit fixed point) and its entries, once, in memory
-   the DMAC reads; and for every frame its positions (the file's 16-bit ones)
-   and its normals (three bytes, decoded from the file's two angles), in
-   memory that may be paged out. A frame's block is made when a draw first
-   reads it (a model has hundreds of frames and a game shows few of them);
-   the two frames a draw reads are locked until its frame is done, and a
-   surface whose frames are not in memory is left out of that frame (the
-   pager brings them in).
+   the DMAC reads; and for a frame its positions (the file's 16-bit ones)
+   and its normals (three bytes, decoded from the file's two angles). A
+   frame's block is made when a draw first reads it, in a cache of memory
+   the DMAC reads (a model has hundreds of frames and a game shows few of
+   them at a time): over its limit the block longest not drawn goes.
 
    A draw of a surface is a chain built for the frame: for each piece five
    REFs (texture coordinates, the new frame's normals and positions, the old
@@ -20,7 +18,9 @@
    no vertex: VU1 blends the two frames and lights the vertices.
 
    A model across the near plane or the guard band is built on the EE and
-   goes the polygons' way (rp_poly.c), whose programs cut.
+   goes the polygons' way (rp_poly.c), whose programs cut. But the view
+   weapon: its triangles there are below the screen's edge, and VU1 leaves
+   them out (q3mc).
 
    The light is the map's light grid's at the model's origin, as the engine
    has it (R_SetupEntityLighting): an ambient colour, a directed one and its
@@ -171,13 +171,9 @@ struct msurf {
 	int npiece;
 	struct piece *piece;
 	u8 *fixed;          /* memory the DMAC reads */
-	u8 *frames;         /* pageable: a block of frame_bytes a frame */
-	u32 frame_bytes;
-	u32 lock_at[2];     /* the frames (of the picture) + 1 its blocks lock_f were locked for */
-	int lock_f[2];
-	u32 lock_n;
+	u32 frame_bytes;    /* of a frame's block */
 	u16 (*pv)[Q3VU_M_VERTS]; /* a piece's vertices in the file */
-	u8 *made;           /* a bit a frame: its block is made */
+	u16 *block;         /* a frame's block in the cache + 1; 0: not made */
 };
 #define RP_MODELS 1024
 static struct rmodel {
@@ -186,8 +182,19 @@ static struct rmodel {
 	struct msurf *surf;
 } *models;
 static int nmodels;
-static struct mx_heap *heap, *heap_frames;
+static struct mx_heap *heap;
 static unsigned model_bytes;
+
+/* the cache of frames' blocks */
+#define CACHE_BYTES (4u << 20)
+#define CACHE_BLOCKS 4096
+static struct fblock {
+	struct msurf *sf;
+	u8 *mem;
+	u32 used; /* the picture's frame that drew it last */
+	u16 frame;
+} *cache;
+static u32 cache_hi, cache_bytes, cache_hand;
 
 #define SKIN_SURFS 32
 #define RP_SKINS 256
@@ -202,13 +209,12 @@ static struct skin {
 static int nskins;
 
 void rp_models_begin(void) {
-	if (!heap) {
+	if (!heap)
 		heap = mx_heap_create("q3.models", MX_MEM_PINNED, 0);
-		heap_frames = mx_heap_create("q3.frames", MX_MEM_ASSET, 24u << 20);
-	} else {
+	else
 		mx_heap_reset(heap);
-		mx_heap_reset(heap_frames);
-	}
+	cache = ri.Hunk_Alloc(CACHE_BLOCKS * sizeof *cache, h_low);
+	cache_hi = cache_bytes = cache_hand = 0;
 	models = ri.Hunk_Alloc(RP_MODELS * sizeof *models, h_low);
 	skins = ri.Hunk_Alloc(RP_SKINS * sizeof *skins, h_low);
 	nmodels = nskins = 1;
@@ -231,7 +237,7 @@ static int surf_make(struct msurf *sf) {
 	int maxp = nt / 9 + 2;
 	struct piece *pc = ri.Hunk_Alloc(maxp * (int)sizeof *pc, h_low);
 	u16 (*pv)[Q3VU_M_VERTS] = ri.Hunk_Alloc(maxp * (int)sizeof *pv, h_low);
-	sf->made = ri.Hunk_Alloc((nf + 7) / 8, h_low);
+	sf->block = ri.Hunk_Alloc(nf * (int)sizeof *sf->block, h_low);
 	u16 (*pe)[Q3VU_M_ENTRIES] = ri.Hunk_AllocateTempMemory(maxp * (int)sizeof *pe);
 	s16 *map = ri.Hunk_AllocateTempMemory(nv * (int)sizeof *map);
 	memset(map, 0xFF, nv * sizeof *map);
@@ -281,10 +287,8 @@ static int surf_make(struct msurf *sf) {
 	}
 	sf->npiece = np, sf->piece = pc, sf->frame_bytes = frame;
 	sf->fixed = mx_heap_alloc(heap, fixed, 64);
-	sf->frames = mx_heap_alloc(heap_frames, frame * (u32)nf, 64);
-	sf->lock_at[0] = sf->lock_at[1] = 0, sf->lock_n = 0;
 	sf->pv = pv;
-	int ok = sf->fixed && sf->frames;
+	int ok = sf->fixed != NULL;
 	if (ok) {
 		memset(sf->fixed, 0, fixed);
 		for (int i = 0; i < np; i++) {
@@ -309,11 +313,43 @@ static int surf_make(struct msurf *sf) {
 	return ok ? 0 : -1;
 }
 
-/* A frame's block: its pieces' positions and normals from the file's. */
-static void frame_make(struct msurf *sf, int f) {
+/* A frame's block: its pieces' positions and normals from the file's; 0: no
+   memory (every block is one a frame in flight draws). */
+static const u8 *frame_block(struct msurf *sf, int f) {
+	u32 now = mx_frame_number();
+	if (sf->block[f]) {
+		cache[sf->block[f] - 1].used = now;
+		return cache[sf->block[f] - 1].mem;
+	}
+	/* a place in the table, and room: the blocks longest not drawn go (none
+	   that a frame not yet done may read) */
+	u32 done = mx_frame_done(), at = cache_hi;
+	for (u32 i = 0; i < cache_hi && at == cache_hi; i++)
+		if (!cache[i].mem)
+			at = i;
+	u8 *blk = NULL;
+	for (int tries = 0; tries < 64; tries++) {
+		if (at < CACHE_BLOCKS && cache_bytes + sf->frame_bytes <= CACHE_BYTES &&
+		    (blk = mx_heap_alloc(heap, sf->frame_bytes, 64)))
+			break;
+		u32 old = ~0u, age = 0;
+		for (u32 i = 0; i < cache_hi; i++)
+			if (cache[i].mem && cache[i].used < done && now - cache[i].used > age)
+				old = i, age = now - cache[i].used;
+		if (old == ~0u)
+			break;
+		struct fblock *o = &cache[old];
+		mx_heap_free(heap, o->mem);
+		cache_bytes -= o->sf->frame_bytes;
+		o->sf->block[o->frame] = 0;
+		o->mem = NULL;
+		at = old;
+		rp_model_stats.evicted++;
+	}
+	if (!blk)
+		return NULL;
 	const md3Surface_t *s = sf->md3;
 	const md3XyzNormal_t *x = (const md3XyzNormal_t *)((const u8 *)s + s->ofsXyzNormals) + f * s->numVerts;
-	u8 *blk = sf->frames + (u32)f * sf->frame_bytes;
 	memset(blk, 0, sf->frame_bytes);
 	for (int i = 0; i < sf->npiece; i++) {
 		const struct piece *p = &sf->piece[i];
@@ -331,10 +367,14 @@ static void frame_make(struct msurf *sf, int f) {
 		}
 	}
 	mx_dcache_writeback(blk, sf->frame_bytes);
-	sf->made[f >> 3] |= (u8)(1 << (f & 7));
-	model_bytes += sf->frame_bytes;
-	rp_model_stats.kb = model_bytes / 1024;
+	cache[at] = (struct fblock){sf, blk, now, (u16)f};
+	if (at == cache_hi)
+		cache_hi++;
+	sf->block[f] = (u16)(at + 1);
+	cache_bytes += sf->frame_bytes;
+	rp_model_stats.kb = (model_bytes + cache_bytes) / 1024;
 	rp_model_stats.made++;
+	return blk;
 }
 
 qhandle_t rp_model_register(const char *name) {
@@ -541,34 +581,16 @@ static inline float dot3(const float *a, const float *b) { return a[0] * b[0] + 
 
 int rp_scene_world; /* the scene being drawn has the map's world (rp_main.c) */
 
-/* A frame's block locked until the picture's frame being built is done; -1:
-   it is not in memory. */
-static int frame_lock(struct msurf *sf, int f) {
-	const u8 *p = sf->frames + (u32)f * sf->frame_bytes;
-	u32 now = mx_frame_number() + 1;
-	for (int k = 0; k < 2; k++)
-		if (sf->lock_at[k] == now && sf->lock_f[k] == f)
-			return 0;
-	if (!(sf->made[f >> 3] >> (f & 7) & 1))
-		frame_make(sf, f);
-	if (mx_mem_lock_try(p, sf->frame_bytes) < 0) {
-		rp_model_stats.paged++;
-		return -1;
-	}
-	mx_frame_unlock(p, sf->frame_bytes);
-	u32 k = sf->lock_n++ & 1;
-	sf->lock_at[k] = now, sf->lock_f[k] = f;
-	return 0;
-}
-
 /* the surface on VU1: a chain of its pieces */
 static const void *surf_chain(struct msurf *sf, int frame, int oldframe) {
-	if (frame_lock(sf, frame) < 0 || frame_lock(sf, oldframe) < 0)
+	const u8 *fn = frame_block(sf, frame), *fo = fn ? frame_block(sf, oldframe) : NULL;
+	if (!fo) {
+		rp_model_stats.paged++;
 		return 0;
+	}
 	u64 *c0 = rp_dyn((u32)sf->npiece * 6 + 1), *c = c0;
 	if (!c)
 		return 0;
-	const u8 *fn = sf->frames + (u32)frame * sf->frame_bytes, *fo = sf->frames + (u32)oldframe * sf->frame_bytes;
 	for (int i = 0; i < sf->npiece; i++) {
 		const struct piece *p = &sf->piece[i];
 		u32 n = p->nvert;
@@ -700,7 +722,7 @@ void rp_model_draw(const refEntity_t *e, float t) {
 		int lit = stg->rgbgen == RGB_LIGHTING;
 		rp_stage_colour(stg, t, e->shaderRGBA, e->shaderRGBA, col);
 		s.texels = 2.0f;
-		if (cut) {
+		if (cut && !(e->renderfx & RF_DEPTHHACK)) {
 			rp_poly_state(&s);
 			surf_polys(sf, e, frame, oldframe, amb, dirc, ld, col, lit);
 			rp_poly_flush();
@@ -723,7 +745,7 @@ void rp_model_draw(const refEntity_t *e, float t) {
 		const void *chain = surf_chain(sf, frame, oldframe);
 		if (!chain || rp_run(matrix, &s) < 0)
 			continue;
-		rp_draw(chain, mask, 0, (u32)sf->md3->numTriangles * 3u, (u32)sf->npiece);
+		rp_draw(chain, mask, cut, (u32)sf->md3->numTriangles * 3u, (u32)sf->npiece);
 		rp_model_stats.surfs++;
 	}
 }

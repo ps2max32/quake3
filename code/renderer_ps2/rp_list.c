@@ -318,7 +318,7 @@ static const void *setup_chain(const struct rp_state *s, int cut, int state) {
 	int lit = s->lm_ok && s->prog == RP_PROG_WORLD && !(rp_debug & (2 | 128)), tex = s->tex_ok && !(rp_debug & (32 | 128));
 	u64 regs = rp_debug & 16 ? 0xD12 : 0x512; /* ST, RGBAQ, XYZ2 (XYZ3: no drawing) */
 	int blend = s->blend != RP_BLEND_NONE || (rp_debug & 128);
-	u32 entry = s->prog == RP_PROG_MODEL ? Q3M_SETUP
+	u32 entry = s->prog == RP_PROG_MODEL ? (cut ? Q3MC_SETUP : Q3M_SETUP)
 	            : lit                    ? (cut ? Q3W2C_SETUP : Q3W2_SETUP)
 	                                     : (cut ? Q3W1C_SETUP : Q3W1_SETUP);
 	/* context 2 writes no Z (beam racing's): blended draws, and those without depth */

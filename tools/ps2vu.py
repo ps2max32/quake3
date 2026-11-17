@@ -64,6 +64,9 @@ Programs:
          offset 4 i, bit 15 ADC) gathered into the packet at M_OUT. Nothing
          is cut: a model across the near plane or the guard band is drawn on
          the EE (rp_poly.c).
+    mc   the same with a test of each vertex against the guard band and the
+         depth planes: a triangle with a vertex outside is left out. For the
+         view weapon, whose triangles there are below the screen's edge.
 
 q3clip (the end of this file): a triangle left out is found by its vertex's w
 (ADC set, tools/ps2map.py's bit 13 clear). Its three positions before the
@@ -190,7 +193,7 @@ def kernels(vs):
             ops = lambda c: pos(clip, two, c) + st("a", 0, FAR) + col
         return Kernel(name, ops, u, 0, STRIDE, mvp + (clipu if clip else stripu), {})
 
-    def model():
+    def model(clip):
         ops = [
             Op("lqs", "L", "lq.xyz {S}, {off}({p})", ("S", "xyz"), mem=("lq", 0)),
             Op("lqn", "L", "lq.xyz {N}, {off}({p})", ("N", "xyz"), mem=("lq", 1)),
@@ -223,13 +226,27 @@ def kernels(vs):
             # in place: each over the input it came from
             Op("sqs", "L", "sq.xyz {SQ}, {off}({p})", None, [("SQ", "xyz")], mem=("sq", 0)),
             Op("sqc", "L", "sq.xyzw {CO}, {off}({p})", None, [("CO", "xyzw")], mem=("sq", 1)),
-            Op("sqp", "L", "sq.xyz {O}, {off}({p})", None, [("O", "xyz")], mem=("sq", 2)),
         ]
-        return Kernel("q3m", lambda c: ops, 1, 0, 4, mvp + [(g, q) for g, q in MCTX.items()], {})
+        if clip:
+            # the vertex outside: bit 15 of its XYZ2's w, for the gather
+            ops += [
+                Op("ca", "U", "mulaw.xyz ACC, {CN}, {P}w", ("ACC", ""), [("P", "w")]),
+                Op("cb", "U", "madd.xyz {PC}, {P}, {CS}", ("PC", "xyz"), [("ACC", ""), ("P", "xyz")]),
+                Op("clip", "U", "clipw.xyz {PC}xyz, {P}w", ("CF", ""), [("PC", "xyz"), ("P", "w")], lat=vs.CLIP_LAT),
+                Op("fc", "L", "fcand vi01, 0x3f", ("VI:fc", ""), [("CF", "")], lat=1),
+                Op("adc", "L", "iaddiu vi02, vi01, 0x7fff", ("VI:adc", ""), [("VI:fc", "")], lat=1),
+                Op("mfir", "L", "mfir.w {O}, vi02", ("O", "w"), [("VI:adc", "")]),
+                Op("sqp", "L", "sq.xyzw {O}, {off}({p})", None, [("O", "xyzw")], mem=("sq", 2)),
+            ]
+        else:
+            ops.append(Op("sqp", "L", "sq.xyz {O}, {off}({p})", None, [("O", "xyz")], mem=("sq", 2)))
+        return Kernel("q3mc" if clip else "q3m", lambda c: ops, 1, 0, 4,
+                      mvp + [(g, q) for g, q in MCTX.items()] + (clipu if clip else []), {})
 
     # name, the kernel, the IIs to try
     return [
-        (model(), range(21, 40)),
+        (model(False), range(21, 40)),
+        (model(True), range(24, 44)),
         (k("q3w2", False, True, 2), range(24, 44)),
         (k("q3w1", False, False, 2), range(20, 40)),
         (k("q3w2c", True, True, 1), range(14, 25)),
@@ -371,7 +388,8 @@ def program(vs, kern, s, regs, words, two, clip):
 
 
 def program_m(vs, kern, s, regs, words):
-    """q3m: the set-up, then a batch: the piece's vertices by the loop, the gather, the kick."""
+    """q3m, q3mc: the set-up, then a batch: the piece's vertices by the loop, the gather, the kick."""
+    name, clip = kern.name, kern.name == "q3mc"
     used = set(regs.values())
     free = [f"vf{r:02d}" for r in range(1, 32) if f"vf{r:02d}" not in used]
     tag, ga, gb, gc = free[0], free[1], free[2], free[3]
@@ -381,7 +399,7 @@ def program_m(vs, kern, s, regs, words):
     def lo(text, e=False):
         out.append(("nop[e]" if e else "nop", text))
 
-    out.append(("label", "q3m_setup"))
+    out.append(("label", name + "_setup"))
     for g, qw in kern.uniforms:
         lo(f"lq.xyzw {regs[g]}, {qw}(vi00)")
     lo(f"lq.xyzw {tag}, {CTX['TA']}(vi00)")
@@ -389,7 +407,7 @@ def program_m(vs, kern, s, regs, words):
     lo("xgkick vi08")
     lo("nop", e=True)
     lo("nop")
-    out.append(("label", "q3m_batch"))
+    out.append(("label", name + "_batch"))
     lo("xtop vi08")
     lo("xitop vi09")
     lo(f"iaddiu vi04, vi08, {M_VERT}")
@@ -397,7 +415,7 @@ def program_m(vs, kern, s, regs, words):
     lo("iadd vi05, vi05, vi05")
     lo("iadd vi05, vi05, vi04")
     lo(f"iaddiu vi05, vi05, {slop}")
-    out.append(("label", "q3m_loop"))
+    out.append(("label", name + "_loop"))
     for up, low in words:
         out.append((up, low))
     # the entries: vi13 their quadwords, vi04 the next, vi05 their end, vi06 the packet's
@@ -412,7 +430,10 @@ def program_m(vs, kern, s, regs, words):
     lo("iadd vi12, vi12, vi12")       # the packet's vertices
     lo("iaddiu vi12, vi12, 0x7fff")
     lo("iaddiu vi12, vi12, 1")        # with EOP
-    out.append(("label", "q3m_gather"))
+    if clip:
+        lo("iaddiu vi14, vi00, 0")
+        lo("iaddiu vi15, vi00, 0")
+    out.append(("label", name + "_gather"))
     ent = ("vi01", "vi02", "vi03", "vi09")
     for k, f in enumerate("xyzw"):
         lo(f"ilw.{f} {ent[k]}, 0(vi04)")
@@ -422,14 +443,27 @@ def program_m(vs, kern, s, regs, words):
         lo(f"lq.xyzw {ga}, 0(vi10)")
         lo(f"lq.xyzw {gb}, 1(vi10)")
         lo(f"lq.xyz {gc}, 2(vi10)")
-        lo("nop")
+        if clip:
+            # the vertex's own bit, and those of the two entries before it (vi14, vi15):
+            # one of a triangle's three outside leaves it out
+            lo("ilw.w vi13, 2(vi10)")
+        else:
+            lo("nop")
         lo(f"sq.xyzw {ga}, {3 * k}(vi06)")
         lo(f"sq.xyzw {gb}, {3 * k + 1}(vi06)")
         lo(f"sq.xyz {gc}, {3 * k + 2}(vi06)")
-        lo(f"isw.w {e}, {3 * k + 2}(vi06)")
+        if clip:
+            lo("ior vi10, vi13, vi14")
+            lo("ior vi10, vi10, vi15")
+            lo(f"ior vi10, vi10, {e}")
+            lo(f"isw.w vi10, {3 * k + 2}(vi06)")
+            lo("iaddiu vi15, vi14, 0")
+            lo("iaddiu vi14, vi13, 0")
+        else:
+            lo(f"isw.w {e}, {3 * k + 2}(vi06)")
     lo("iaddiu vi04, vi04, 1")
     lo("iaddiu vi06, vi06, 12")
-    lo("ibne vi04, vi05, q3m_gather")
+    lo(f"ibne vi04, vi05, {name}_gather")
     lo("nop")
     lo(f"mfir.x {tag}, vi12")
     lo(f"iaddiu vi07, vi08, {M_OUT - 1}")
@@ -442,7 +476,7 @@ def program_m(vs, kern, s, regs, words):
     lo("xgkick vi07")
     lo("nop", e=True)
     lo("nop")
-    lo("b q3m_batch")
+    lo(f"b {name}_batch")
     lo("nop")
     return out, pad_of(s, kern), slop
 
@@ -619,12 +653,12 @@ def main():
         s, regs, words, pad, slop = schedule(vs, kern, iis, a.v)
         print(f"{kern.name}: {kern.u} vertices in {kern.ii} cycles ({kern.ii / kern.u:g} a vertex), {s.stages} stages, "
               f"pad {pad}, slop {slop}, {len(set(regs.values()))} VF registers")
-        if kern.name == "q3m":
+        if kern.name in ("q3m", "q3mc"):
             prog, mpad, mslop = program_m(vs, kern, s, regs, words)
             # its stray stores stay between the entries and the buffer's end
             assert M_OUT + 3 * M_ENTRIES <= M_IDX and M_IDX + 1 + M_ENTRIES // 4 + mpad <= M_VERT
             assert M_VERT + 4 * M_VERTS + mslop <= BUF_QW, f"q3m: slop {mslop} leaves the buffer"
-            progs.append([("comment", f"q3m: a vertex in {kern.ii} cycles, {s.stages} stages; then the gather")] + prog)
+            progs.append([("comment", f"{kern.name}: a vertex in {kern.ii} cycles, {s.stages} stages; then the gather")] + prog)
             continue
         worst_pad, worst_slop = max(worst_pad, pad), max(worst_slop, slop)
         progs.append([("comment", f"{kern.name}: {kern.u} vertices in {kern.ii} cycles, {s.stages} stages")] +
