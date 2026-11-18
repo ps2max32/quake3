@@ -393,8 +393,9 @@ static const void *setup_chain(const struct rp_state *s, int cut, int state) {
 		c = mx_e_cnt(c, 4, mx_vif_nop(), mx_vif_unpack(MX_UNPACK_V4_32, Q3VU_CTX_TA, 4, 0));
 		for (int tri = 0; tri < 2; tri++) {
 			u32 prim = tri ? MX_GS_PRIM_TRIANGLE : MX_GS_PRIM_TRISTRIP, n = tri ? 3 : 0;
+			/* the lightmap alone: the first pass's vertices as XYZ3, drawing nothing */
 			c = mx_e_qw(c, mx_giftag(n, tri, (s32)mx_gs_prim(prim, 1, tex, 0, blend, 0, 0, ctx, 0), MX_GIF_FLG_PACKED, 3),
-			            regs);
+			            s->lm_only && lit ? 0xD12 : regs);
 			c = mx_e_qw(c, mx_giftag(n, tri, (s32)mx_gs_prim(prim, 0, 1, 0, 1, 0, 0, 1, 0), MX_GIF_FLG_PACKED, 3), regs);
 		}
 		if (s->prog == RP_PROG_MODEL) {

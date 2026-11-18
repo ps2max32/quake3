@@ -31,9 +31,11 @@ const char *rp_world_material(u32 i, u32 *flags);
 /* The passes of a material whose shader is a script (RP_MAT_SCRIPT), asked
    for each one a view draws: fn writes up to RP_WORLD_PASSES states (prog
    RP_PROG_STAGE: the texture placed, the blend, the texture matrix and the
-   colour at this frame) and returns their number; *first 1: pass 0 is drawn
-   in place of the map's own pass of the material, 0: they all follow it. */
-#define RP_WORLD_PASSES 4
+   colour at this frame; or prog RP_PROG_WORLD with lm_only: the chunks'
+   lightmap alone, filled in here) and returns their number; *first 1: pass 0
+   is drawn in place of the map's own pass of the material, 0: they all
+   follow it. */
+#define RP_WORLD_PASSES 5 /* a script's stages and a lightmap pass */
 typedef u32 (*rp_world_passes_fn)(u32 mat, struct rp_state *pass, int *first);
 void rp_world_script(rp_world_passes_fn fn);
 /* After rp_world_cull: the view sees the sky's surfaces. */

@@ -333,7 +333,7 @@ static void parse_stage(char **p, struct rp_shader *sh, struct rp_stage *st) {
 
 static void parse_shader(char *body, struct rp_shader *sh) {
 	char *p = body;
-	int sort = 0;
+	int sort = 0, lm_seen = 0;
 	for (;;) {
 		const char *t = COM_ParseExt(&p, qtrue);
 		if (!t[0] || t[0] == '}')
@@ -341,6 +341,8 @@ static void parse_shader(char *body, struct rp_shader *sh) {
 		if (t[0] == '{') {
 			struct rp_stage st;
 			parse_stage(&p, sh, &st);
+			st.after_lm = (u8)lm_seen;
+			lm_seen |= st.lightmap;
 			/* a stage of the world's light, or without an image: not one to draw */
 			if (!st.lightmap && st.nimg && sh->nstage < RP_STAGES)
 				sh->st[sh->nstage++] = st;
@@ -467,6 +469,9 @@ qhandle_t rp_shader_register(const char *name, int lightmap, int mip) {
 		}
 		sh->nstage = (u8)n;
 	}
+	sh->lm_at = 0;
+	while (sh->lm_at < sh->nstage && !sh->st[sh->lm_at].after_lm)
+		sh->lm_at++;
 	return nshader++;
 }
 

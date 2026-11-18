@@ -425,6 +425,21 @@ void rp_world_add(int blended) {
 		for (u32 k = own ? 0 : 1; k <= np; k++) {
 			if (k)
 				pass[k - 1].texels = m->texels;
+			/* a pass of the lightmap alone (a script whose $lightmap stage comes
+			   after others): the chunks' page, a CLUT of brightness */
+			if (k && pass[k - 1].lm_only) {
+				struct rp_state *l = &pass[k - 1];
+				l->lm_ok = 0;
+				if ((c0->flags & CH_LIGHTMAP) && c0->lightmap >= 0 && c0->lightmap < MAX_LM && wlm[c0->lightmap] &&
+				    (t = rp_image_place(wlm[c0->lightmap]))) {
+					l->lm = *t;
+					l->lm.cbp = rp_clut_place(lm_clut_key, lm_clut, 0);
+					l->lm.cpsm = MX_GS_PSM_CT32, l->lm.csm = 0;
+					l->lm_ok = l->lm.cbp != 0;
+				}
+				if (!l->lm_ok)
+					continue;
+			}
 			if (rp_run(wmatrix, k ? &pass[k - 1] : &s) < 0)
 				return;
 			for (u32 i = 0; i < wrun[r].n; i++) {

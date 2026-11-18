@@ -39,6 +39,7 @@ struct rp_stage {
 	u8 env;                 /* tcGen environment */
 	u8 clamp, zwrite, luma; /* luma: the blend's factor is the texture's brightness (a CLUT of its own) */
 	u8 lightmap;            /* $lightmap: the world's (not drawn as a stage) */
+	u8 after_lm;            /* a $lightmap stage came before it in the script */
 	u8 ntcmod;
 	struct rp_wave rgbwave, awave;
 	u8 rgba[4];             /* const */
@@ -56,6 +57,7 @@ struct rp_shader {
 	u8 nstage;
 	u8 sort, cull_none, polygon_offset, sky, deform, nodraw, defaulted, nomip;
 	u8 cull_back; /* the faces that face the eye are the ones left out */
+	u8 lm_at;     /* the stages before the script's $lightmap stage (nstage: none or last) */
 	struct rp_stage st[RP_STAGES];
 };
 

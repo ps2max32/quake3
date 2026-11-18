@@ -738,10 +738,23 @@ static u32 world_passes(u32 mat, struct rp_state *pass, int *first) {
 	if (!sh || !sh->nstage || !rp_world_material(mat, &flags))
 		return 0;
 	int lit = (flags & RP_MAT_LIGHTMAP) != 0;
-	*first = !lit;
-	for (int k = lit ? 1 : 0; k < sh->nstage && n < RP_WORLD_PASSES; k++) {
-		const struct rp_stage *stg = &sh->st[k];
+	/* the $lightmap stage after two or more others: they are drawn unlit and
+	   the lightmap over all of them (else the map's own pass is the first
+	   stage times the lightmap, the order the GS gives a stage and its
+	   lightmap in either order) */
+	int late = lit && sh->lm_at >= 2 && sh->lm_at < RP_STAGES + 1;
+	*first = !lit || late;
+	for (int k = lit && !late ? 1 : 0; k <= sh->nstage && n < RP_WORLD_PASSES; k++) {
+		if (late && k == sh->lm_at) {
+			memset(&pass[n], 0, sizeof pass[n]);
+			pass[n].prog = RP_PROG_WORLD, pass[n].lm_only = 1, pass[n].z = RP_Z_TEST;
+			if (++n == RP_WORLD_PASSES)
+				break;
+		}
+		if (k == sh->nstage)
+			break;
 		struct rp_state *s = &pass[n];
+		const struct rp_stage *stg = &sh->st[k];
 		if (stg->env || !rp_stage_state(stg, scene_time, s)) {
 			st_nostage += !stg->env;
 			continue;
@@ -753,9 +766,13 @@ static u32 world_passes(u32 mat, struct rp_state *pass, int *first) {
 		u8 c[4];
 		rp_stage_colour(stg, scene_time, NULL, NULL, c);
 		int vrgb = stg->rgbgen == RGB_VERTEX || stg->rgbgen == RGB_EXACT_VERTEX, va = stg->alphagen == A_VERTEX;
+		/* before a late lightmap: half as bright (the lightmap pass doubles, as the
+		   engine's overbright does after its lightmap) */
+		float half = late && k < sh->lm_at ? 0.5f : 1.0f;
 		for (int a = 0; a < 4; a++) {
 			int v = a < 3 ? vrgb : va;
-			s->cmul[a] = v ? 1.0f : 0, s->cadd[a] = v ? 0 : (float)c[a];
+			float h = a < 3 ? half : 1.0f;
+			s->cmul[a] = v ? h : 0, s->cadd[a] = v ? 0 : (float)c[a] * h;
 		}
 		n++;
 	}

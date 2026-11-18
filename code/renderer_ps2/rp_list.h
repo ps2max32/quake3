@@ -98,6 +98,7 @@ struct rp_state {
 	u8 nomip;              /* the first level only, bilinear */
 	u8 clamp;              /* the texture is not repeated */
 	u8 cull;               /* RP_PROG_MODEL: RP_CULL_* */
+	u8 lm_only;            /* RP_PROG_WORLD: the lightmap pass alone (the texture's draws nothing) */
 	float texels;          /* of the texture's first level a unit of the surface (the MIPMAP level) */
 	/* RP_PROG_MODEL: the old frame's share (x); the colour without light;
 	   the directed light's colour times its direction's x, y, z (in the
