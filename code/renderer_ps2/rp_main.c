@@ -762,7 +762,12 @@ static u32 world_passes(u32 mat, struct rp_state *pass, int *first) {
 			break;
 		struct rp_state *s = &pass[n];
 		const struct rp_stage *stg = &sh->st[k];
-		if (stg->env || !rp_stage_state(stg, scene_time, s)) {
+		/* an environment stage is not drawn (no tcGen environment yet), but
+		   as the first of a late lightmap's: it is what the others blend
+		   over, so it is drawn with the surface's coordinates (as the map's
+		   own pass does when the lightmap is not late) */
+		int env_skip = stg->env && !(late && k == 0);
+		if (env_skip || !rp_stage_state(stg, scene_time, s)) {
 			st_nostage += !stg->env;
 			continue;
 		}
