@@ -346,19 +346,46 @@ void IN_Frame(void) {
 	}
 	last = held;
 	/* the sticks: axes 0, 1 left (side, forward), 2, 3 right (yaw, pitch), in
-	   half SDL's range (-16383 .. 16383: j_yaw -0.022 is 360 degrees a
-	   second at full turn), the dead zone (32 of 128) taken out */
+	   half SDL's range (-16383 .. 16383: j_yaw -0.0167 is 300 degrees a
+	   second at full turn, j_pitch 0.011 195), shaped as a PS4 or PS5 game
+	   does: a round dead zone (j_deadzone, of the stick's reach) and on the
+	   right stick a curve (j_curve: the reach to that power). The move
+	   (j_forward, j_side) is clamped to 127 by the game: they are set so
+	   that full reach is 127 (q3's 0.25 reached it at 3% of the reach: a
+	   stick a little off straight walked at 45 degrees) */
 	u8 st[4];
 	static int axis[4];
 	if (mx_pad_sticks(0, st)) {
 		static const int map[4] = {2, 3, 0, 1}; /* st: right x, y, left x, y */
+		static cvar_t *dz, *curve;
+		if (!dz) {
+			dz = Cvar_Get("j_deadzone", "0.22", CVAR_ARCHIVE);
+			curve = Cvar_Get("j_curve", "1.5", CVAR_ARCHIVE);
+		}
+		float f[4];
 		for (int k = 0; k < 4; k++) {
-			int v = (int)st[k] - 128;
-			v = v > -32 && v < 32 ? 0 : v > 0 ? (v - 32) * 16383 / 95 : (v + 32) * 16383 / 96;
-			if (v > 16383)
-				v = 16383;
-			if (v < -16383)
-				v = -16383;
+			f[k] = ((int)st[k] - 128) / 127.0f;
+			f[k] = f[k] < -1 ? -1 : f[k] > 1 ? 1 : f[k];
+		}
+		for (int s = 0; s < 2; s++) {
+			float *x = &f[2 * s], *y = &f[2 * s + 1];
+			float m = sqrtf(*x * *x + *y * *y), d = dz->value;
+			float r = m <= d || m <= 0 ? 0 : (m - d) / (1 - d);
+			if (r > 1)
+				r = 1;
+			if (s == 0)
+				r = powf(r, curve->value);
+			/* the left stick (the move): the game's speed is its largest
+			   component (PM_CmdScale), so the circle is stretched to the
+			   square, the direction kept: full reach is full speed in every
+			   direction */
+			float a = fabsf(*x) > fabsf(*y) ? fabsf(*x) : fabsf(*y);
+			float n = s == 1 ? a : m;
+			*x = n > 0 ? *x * r / n : 0;
+			*y = n > 0 ? *y * r / n : 0;
+		}
+		for (int k = 0; k < 4; k++) {
+			int v = (int)(f[k] * 16383);
 			if (v != axis[k]) {
 				axis[k] = v;
 				Com_QueueEvent(t, SE_JOYSTICK_AXIS, map[k], v, 0, NULL);
@@ -626,7 +653,7 @@ int main(int argc, char **argv) {
 	Q_strncpyz(cmdline,
 	           "+set fs_basepath . +set fs_homepath . +set vm_game 0 +set vm_cgame 0 "
 	           "+set vm_ui 0 +set sv_pure 0 +set r_vertexLight 0 +set r_textureMode GL_LINEAR_MIPMAP_LINEAR +set r_picmip 2 "
-	           "+set s_mixPreStep 0 +set s_mixahead 0.14 +set in_joystick 1 "
+	           "+set s_mixPreStep 0 +set s_mixahead 0.14 +set in_joystick 1 +set j_yaw -0.0167 +set j_pitch 0.011 +set j_forward -0.00776 +set j_side 0.00776 +set j_deadzone 0.22 +set j_curve 1.5 "
 	           "+set r_ignoreGLErrors 1 +set com_introplayed 1 +set cl_allowDownload 0 "
 	           "+set ui_cdkeychecked 1 +set bot_enable 0 +set cg_drawFPS 0 +set com_maxfps 0 "
 	           "+bind JOY1 \"+moveup\" +bind JOY2 \"+movedown\" +bind JOY3 weapnext "
