@@ -185,7 +185,7 @@ void rp_world_free(void) {
 int rp_world_load(const void *p, u32 size) {
 	const struct pm_head *h = p;
 	rp_world_free();
-	if (size < sizeof *h || h->magic != PM_MAGIC || h->version != 5 || h->size > size || h->batch != Q3VU_BATCH)
+	if (size < sizeof *h || h->magic != PM_MAGIC || h->version != 6 || h->size > size || h->batch != Q3VU_BATCH)
 		return -1;
 	/* the chunks stay in memory: the DMAC reads them every frame. The textures
 	   are locked when they are sent to GS memory (rp_tex.c); the rest only
@@ -393,7 +393,7 @@ static int run_draw(const void *matrix, const struct item *it, u32 n) {
 		struct rp_state s = {0};
 		const struct mx_tex *t;
 		/* a script's material: its stages' passes, after the map's own or in its place */
-		static struct rp_state pass[RP_WORLD_PASSES];
+		static struct rp_state pass[RP_WORLD_PASSES + 1];
 		u32 np = 0;
 		int first = 0;
 		if ((m->flags & MAT_SCRIPT) && passes_fn)
@@ -403,7 +403,17 @@ static int run_draw(const void *matrix, const struct item *it, u32 n) {
 		   were not); the lightmap with its texture's CLUT */
 		if (own && m->tex >= 0 && m->tex < MAX_TEX && wtex[m->tex] && (t = rp_image_place(wtex[m->tex])))
 			s.tex = *t, s.tex_ok = 1, s.tcc = wtex[m->tex]->alpha;
-		if (own && (c0->flags & CH_LIGHTMAP) && c0->lightmap >= 0 && c0->lightmap < MAX_LM && wlm[c0->lightmap] &&
+		/* a texture whose CLUT's alpha is its own has no room for the lightmaps'
+		   brightness: its lightmap is a pass of its own, after the texture's
+		   (the texture's alpha is not read: the material neither blends nor
+		   tests it) */
+		if (own && s.tex_ok && wtex[m->tex]->alpha && (c0->flags & CH_LIGHTMAP)) {
+			memmove(&pass[1], &pass[0], np * sizeof pass[0]);
+			memset(&pass[0], 0, sizeof pass[0]);
+			pass[0].prog = RP_PROG_WORLD, pass[0].lm_only = 1, pass[0].z = RP_Z_TEST;
+			np++;
+			s.tcc = 0;
+		} else if (own && (c0->flags & CH_LIGHTMAP) && c0->lightmap >= 0 && c0->lightmap < MAX_LM && wlm[c0->lightmap] &&
 		    (t = rp_image_place(wlm[c0->lightmap]))) {
 			s.lm = *t;
 			s.lm.cbp = s.tex_ok ? s.tex.cbp : rp_clut_place(lm_clut_key, lm_clut, 0);

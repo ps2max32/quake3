@@ -32,7 +32,7 @@ What is made of the BSP:
 File layout (little-endian; "off" are bytes from the file's start):
 
   head (128 bytes):
-    u32 magic "PMAP", version 5
+    u32 magic "PMAP", version 6 (5: a texture with alpha of its own had no lightmap)
     u32 nmat, ntex, nchunk, nmodel, nlightmap, ncluster, vis_bytes
     u32 nplane, nnode, nleaf
     u32 off_mat, off_tex, off_chunk, off_model, off_lightmap, off_vis,
@@ -587,8 +587,11 @@ def build(args):
             flags |= MAT_NODRAW
         ti = texture(tex)
         if flags & MAT_LIGHTMAP and ti >= 0:
-            if textures[ti][1]["alpha"] or alpha != ALPHA_NONE:
-                # its CLUT's alpha is its own: lit by the vertices
+            if alpha != ALPHA_NONE:
+                # the lightmap's pass cannot leave out the texels the test leaves out: lit by
+                # the vertices. (A texture with alpha that is not tested keeps its lightmap:
+                # the renderer draws it as a pass of its own, the CLUT's alpha being the
+                # texture's.)
                 flags = (flags & ~MAT_LIGHTMAP) | MAT_VERTEX
         mat_index[key] = len(mats)
         mats.append(dict(name=name, tex=ti, texname=tex, flags=flags, blend=blend, alpha=alpha, cull=cull,
@@ -870,7 +873,7 @@ def build(args):
     sec["model"] = b"".join(struct.pack("<6fII", *mn, *mx, f, n) for mn, mx, f, n in models)
     sec["lightmap"], sec["vis"], sec["plane"], sec["node"], sec["leaf"] = lmdata, vis.tobytes(), planes, nodes, leafs
     sec["data"] = bytes(blob)
-    head = struct.pack("<4sI7I3I11IfIII", b"PMAP", 5, len(mats), len(textures), len(recs), len(models),
+    head = struct.pack("<4sI7I3I11IfIII", b"PMAP", 6, len(mats), len(textures), len(recs), len(models),
                        len(bsp.lightmaps), ncl, vis_bytes, len(bsp.planes), len(bsp.nodes), len(bsp.leafs),
                        off["mat"], off["tex"], off["chunk"], off["model"], off["lightmap"], off["vis"], off["plane"],
                        off["node"], off["leaf"], off["data"], total, 1.0 / q, BATCH, len(grecs), off["group"])

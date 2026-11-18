@@ -792,10 +792,16 @@ static u32 world_passes(u32 mat, struct rp_state *pass, int *first) {
 		/* before a late lightmap: half as bright (the lightmap pass doubles, as the
 		   engine's overbright does after its lightmap) */
 		float half = late && k < sh->lm_at ? 0.5f : 1.0f;
+		/* and of the lightmap's hue: the colours of a lightmapped chunk's
+		   vertices (128 is 1.0), as the map's own pass has it */
+		int hue = late && k < sh->lm_at;
 		for (int a = 0; a < 4; a++) {
 			int v = a < 3 ? vrgb : va;
 			float h = a < 3 ? half : 1.0f;
-			s->cmul[a] = v ? h : 0, s->cadd[a] = v ? 0 : (float)c[a] * h;
+			if (hue && a < 3)
+				s->cmul[a] = vrgb ? 1.0f : (float)c[a] * h * (1.0f / 128.0f), s->cadd[a] = 0;
+			else
+				s->cmul[a] = v ? h : 0, s->cadd[a] = v ? 0 : (float)c[a] * h;
 		}
 		n++;
 	}
