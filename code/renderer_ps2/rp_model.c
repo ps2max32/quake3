@@ -451,6 +451,10 @@ qhandle_t rp_model_register(const char *name) {
 
 static struct rmodel *model_get(qhandle_t h) { return h > 0 && h < nmodels && models[h].md3 ? &models[h] : NULL; }
 
+int rp_model_brush(qhandle_t h) {
+	return h > 0 && h < nmodels && models[h].name[0] == '*' ? atoi(models[h].name + 1) : 0;
+}
+
 void rp_model_bounds(qhandle_t h, vec3_t mins, vec3_t maxs) {
 	struct rmodel *m = model_get(h);
 	if (!m) {

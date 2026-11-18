@@ -11,7 +11,7 @@
    A group across the near plane or the guard band is drawn with the programs
    that cut such triangles (q3w2c, q3w1c, tools/ps2vu.py).
 
-   Not yet: sky, fog, doors (areas) and the brush models. */
+   Not yet: fog and doors' areas (what is behind a closed door is drawn). */
 
 #include <mx/frame.h>
 #include <mx/gif.h>
@@ -383,15 +383,11 @@ void rp_world_cull(struct rp_world_stats *st) {
 	}
 }
 
-void rp_world_add(int blended) {
-	if (!nwrun)
-		return;
-	if (!wmatrix)
-		wmatrix = rp_matrix(pm.h->pos_scale, 0, 0);
-	for (u32 r = 0; r < nwrun; r++) {
-		if (wrun[r].blended != blended)
-			continue;
-		const struct item *it = &item[wrun[r].first];
+/* The draws of a run of n items (chunks of one material and lightmap page)
+   with the matrix given: the map's own pass and the script's; -1: the list
+   is full. */
+static int run_draw(const void *matrix, const struct item *it, u32 n) {
+	{
 		const struct pm_chunk *c0 = &pm.chunk[it->chunk];
 		const struct pm_mat *m = &pm.mat[c0->mat];
 		struct rp_state s = {0};
@@ -440,12 +436,66 @@ void rp_world_add(int blended) {
 				if (!l->lm_ok)
 					continue;
 			}
-			if (rp_run(wmatrix, k ? &pass[k - 1] : &s) < 0)
-				return;
-			for (u32 i = 0; i < wrun[r].n; i++) {
+			if (rp_run(matrix, k ? &pass[k - 1] : &s) < 0)
+				return -1;
+			for (u32 i = 0; i < n; i++) {
 				const struct pm_chunk *ch = &pm.chunk[it[i].chunk];
 				rp_draw(pm.base + ch->off_data, it[i].mask, it[i].clip, ch->nverts, ch->nbatch);
 			}
 		}
 	}
+	return 0;
+}
+
+void rp_world_add(int blended) {
+	if (!nwrun)
+		return;
+	if (!wmatrix)
+		wmatrix = rp_matrix(pm.h->pos_scale, 0, 0);
+	for (u32 r = 0; r < nwrun; r++)
+		if (wrun[r].blended == blended && run_draw(wmatrix, &item[wrun[r].first], wrun[r].n) < 0)
+			return;
+}
+
+int rp_world_bmodel(u32 n, const float *origin, const float (*axis)[3], int blended) {
+	if (!pm.h || n == 0 || n >= pm.h->nmodel)
+		return 0;
+	const struct pm_model *md = &pm.model[n];
+	const struct rp_view *v = &rp_view;
+	const void *matrix = 0;
+	static struct item bitem[256];
+	for (u32 g = md->first_group; g < md->first_group + md->ngroup; g++) {
+		const struct pm_group *gr = &pm.group[g];
+		const struct pm_mat *m = &pm.mat[pm.chunk[gr->first_chunk].mat];
+		if ((m->blend != BLEND_NONE) != blended || (m->flags & (MAT_SKY | MAT_NODRAW)))
+			continue;
+		/* its box where the entity is: the corners turned and moved */
+		float box[8] = {1e30f, 1e30f, 1e30f, 0, -1e30f, -1e30f, -1e30f, 0};
+		for (int c = 0; c < 8; c++) {
+			float p[3] = {c & 1 ? gr->maxs[0] : gr->mins[0], c & 2 ? gr->maxs[1] : gr->mins[1],
+			              c & 4 ? gr->maxs[2] : gr->mins[2]};
+			for (int k = 0; k < 3; k++) {
+				float w = origin[k] + p[0] * axis[0][k] + p[1] * axis[1][k] + p[2] * axis[2][k];
+				box[k] = w < box[k] ? w : box[k], box[4 + k] = w > box[4 + k] ? w : box[4 + k];
+			}
+		}
+		int out = 0, cut = 0;
+		for (int p = 0; p < 5 && !out; p++)
+			out = rp_box_dist(&v->fr[p], box, box + 4, 1) < 0;
+		if (out)
+			continue;
+		for (int p = 0; p < 5 && !cut; p++)
+			cut = rp_box_dist(&v->gb[p], box, box + 4, 0) < 0;
+		u32 mask = rp_strip_mask(box);
+		if (!mask)
+			continue;
+		u32 k = 0;
+		for (u32 j = gr->first_chunk; j < gr->first_chunk + gr->nchunk && k < 256; j++, k++)
+			bitem[k].chunk = (u16)j, bitem[k].mask = (u16)mask, bitem[k].clip = (u8)cut;
+		if (!matrix && !(matrix = rp_matrix(pm.h->pos_scale, origin, axis)))
+			return -1;
+		if (run_draw(matrix, bitem, k) < 0)
+			return -1;
+	}
+	return 0;
 }

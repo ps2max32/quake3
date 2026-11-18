@@ -31,6 +31,8 @@ void rp_light_at(const vec3_t p, int world, vec3_t ambient, vec3_t directed, vec
 void rp_model_draw(const refEntity_t *e, float t);
 
 /* Its shader blends: it is drawn after the world's blended surfaces. */
+/* The map's brush model a handle is ("*n": n), 0: none. */
+int rp_model_brush(qhandle_t h);
 int rp_model_blended(const refEntity_t *e);
 /* The picture's pixels its sphere covers in the view set (rect: x0, y0, x1,
    y1); 0: no model. */

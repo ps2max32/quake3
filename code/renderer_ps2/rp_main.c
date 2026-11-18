@@ -11,7 +11,7 @@
    The game's shaders are rp_shader.c's, its models rp_model.c's (MD3, on
    VU1).
 
-   Not yet: the map's doors and platforms, beams, lights, marks. They
+   Not yet: beams, lights, marks. They
    are counted. Each main view's camera goes into quake3.cam
    (ps2_ren_report), for the viewer (tools/q3view) to fly the same path.
    r_ps2draw 0: nothing is drawn, a timedemo then costs what the game side
@@ -357,6 +357,13 @@ static void RP_RenderScene(const refdef_t *fd) {
 		static u8 kind[MAX_MODEL]; /* 1: its shader blends; 2: the view weapon's depth */
 		for (u32 i = first_ment; i < nment; i++) {
 			const refEntity_t *e = &ments[i];
+			/* the map's doors and platforms: drawn as the world is */
+			if (rp_model_brush(e->hModel)) {
+				kind[i] = 8;
+				if (draw_world)
+					rp_world_bmodel((u32)rp_model_brush(e->hModel), e->origin, e->axis, 0);
+				continue;
+			}
 			kind[i] = (u8)(rp_model_blended(e) | (e->renderfx & RF_DEPTHHACK ? 2 : 0));
 			if ((skip & 4) || ((skip & 16) && (kind[i] & 2)))
 				kind[i] = 4;
@@ -368,8 +375,12 @@ static void RP_RenderScene(const refdef_t *fd) {
 		if (skip & 8)
 			nq = decals = 0;
 		quads_draw(0, decals);
-		if (draw_world)
+		if (draw_world) {
 			rp_world_add(1);
+			for (u32 i = first_ment; i < nment; i++)
+				if (kind[i] == 8)
+					rp_world_bmodel((u32)rp_model_brush(ments[i].hModel), ments[i].origin, ments[i].axis, 1);
+		}
 		for (u32 i = first_ment; i < nment; i++)
 			if (kind[i] == 1)
 				rp_model_draw(&ments[i], now - ments[i].shaderTime);
@@ -749,7 +760,7 @@ static u32 world_passes(u32 mat, struct rp_state *pass, int *first) {
 	   the lightmap over all of them (else the map's own pass is the first
 	   stage times the lightmap, the order the GS gives a stage and its
 	   lightmap in either order) */
-	int late = lit && sh->lm_at >= 2 && sh->lm_at < RP_STAGES + 1;
+	int late = lit && sh->lm_at >= 2 && sh->lm_at < RP_STAGES + 1 && !(rp_debug & 262144);
 	*first = !lit || late;
 	for (int k = lit && !late ? 1 : 0; k <= sh->nstage && n < RP_WORLD_PASSES; k++) {
 		if (late && k == sh->lm_at) {

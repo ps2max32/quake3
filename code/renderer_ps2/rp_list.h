@@ -160,7 +160,8 @@ void rp_list_end(void);
    (TEX0.CLD 0: wrong colours), 2048 none for the lightmap, 65536 the runs'
    GS registers left out (wrong textures and blends: what they cost), 131072
    every list sent twice, the second time not drawn (VIF1 and VU1 work
-   twice, the GS once: whether they wait for each other) */
+   twice, the GS once: whether they wait for each other), 262144 no late
+   lightmap (a script's $lightmap after two stages: the map's own pass) */
 extern unsigned rp_debug;
 
 #endif

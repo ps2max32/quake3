@@ -47,5 +47,9 @@ u32 rp_world_sky(void);
    blended ones. */
 void rp_world_cull(struct rp_world_stats *st);
 void rp_world_add(int blended);
+/* The map's brush model n ("*n": a door, a platform) at origin, turned by
+   axis: its surfaces that write depth (blended 0) or the blended ones, into
+   the frame's list. -1: the list is full. */
+int rp_world_bmodel(u32 n, const float *origin, const float (*axis)[3], int blended);
 
 #endif
