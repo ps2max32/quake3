@@ -336,6 +336,7 @@ static u64 blend_reg(const struct rp_state *s) {
 	       : s->blend == RP_BLEND_ALPHA     ? mx_gs_alpha(0, 1, 0, 1, 0)
 	       : s->blend == RP_BLEND_ADD_ALPHA ? mx_gs_alpha(0, 2, 0, 1, 0)
 	       : s->blend == RP_BLEND_INVFILTER ? mx_gs_alpha(2, 1, 0, 1, 0)
+	       : s->blend == RP_BLEND_INVALPHA  ? mx_gs_alpha(1, 0, 0, 0, 0)
 	                                        : mx_gs_alpha(1, 2, 0, 2, 0);
 }
 

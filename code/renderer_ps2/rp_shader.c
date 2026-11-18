@@ -169,10 +169,26 @@ static char *script_find(const char *name) {
 
 /* ---- parsing ----------------------------------------------------------------------------------- */
 
-static float tokf(char **p) { return (float)atof(COM_ParseExt(p, qfalse)); }
+/* The next word of the line, "" at its end. The engine's parser is then
+   already at the next line (a line read to its end, as animMap's images, or
+   one with fewer words than asked for): line_end skips the rest of a line
+   only when that did not happen. */
+static int at_next_line;
+static char *arg(char **p) {
+	char *t = COM_ParseExt(p, qfalse);
+	if (!t[0])
+		at_next_line = 1;
+	return t;
+}
+static void line_end(char **p) {
+	if (!at_next_line)
+		SkipRestOfLine(p);
+	at_next_line = 0;
+}
+static float tokf(char **p) { return (float)atof(arg(p)); }
 
 static void parse_wave(char **p, struct rp_wave *w) {
-	const char *t = COM_ParseExt(p, qfalse);
+	const char *t = arg(p);
 	w->func = !Q_stricmp(t, "triangle")          ? WAVE_TRIANGLE
 	          : !Q_stricmp(t, "square")          ? WAVE_SQUARE
 	          : !Q_stricmp(t, "sawtooth")        ? WAVE_SAWTOOTH
@@ -206,6 +222,8 @@ static void blend_set(struct rp_stage *st, int s, int d) {
 		st->blend = RP_BLEND_ALPHA;
 	else if (s == F_SRC_ALPHA && d == F_ONE)
 		st->blend = RP_BLEND_ADD_ALPHA;
+	else if (s == F_ONE_MINUS_SRC_ALPHA && d == F_SRC_ALPHA)
+		st->blend = RP_BLEND_INVALPHA;
 	else if ((s == F_DST_COLOR && d == F_ZERO) || (s == F_ZERO && d == F_SRC_COLOR))
 		st->blend = RP_BLEND_FILTER, st->luma = 1;
 	else if (s == F_DST_COLOR && d == F_SRC_COLOR)
@@ -230,7 +248,7 @@ static void parse_stage(char **p, struct rp_shader *sh, struct rp_stage *st) {
 			break;
 		if (!Q_stricmp(t, "map") || !Q_stricmp(t, "clampmap")) {
 			st->clamp = !Q_stricmp(t, "clampmap");
-			t = COM_ParseExt(p, qfalse);
+			t = arg(p);
 			if (!Q_stricmp(t, "$lightmap"))
 				st->lightmap = 1;
 			else if (!Q_stricmp(t, "$whiteimage") || !Q_stricmp(t, "*white"))
@@ -240,14 +258,14 @@ static void parse_stage(char **p, struct rp_shader *sh, struct rp_stage *st) {
 		} else if (!Q_stricmp(t, "animMap")) {
 			st->fps = tokf(p);
 			for (;;) {
-				t = COM_ParseExt(p, qfalse);
+				t = arg(p);
 				if (!t[0])
 					break;
 				if (st->nimg < RP_ANIM)
 					st->img[st->nimg++] = image_load(t);
 			}
 		} else if (!Q_stricmp(t, "blendFunc")) {
-			t = COM_ParseExt(p, qfalse);
+			t = arg(p);
 			if (!Q_stricmp(t, "add"))
 				blend_set(st, F_ONE, F_ONE);
 			else if (!Q_stricmp(t, "filter"))
@@ -256,22 +274,22 @@ static void parse_stage(char **p, struct rp_shader *sh, struct rp_stage *st) {
 				blend_set(st, F_SRC_ALPHA, F_ONE_MINUS_SRC_ALPHA);
 			else {
 				int s = blend_factor(t);
-				blend_set(st, s, blend_factor(COM_ParseExt(p, qfalse)));
+				blend_set(st, s, blend_factor(arg(p)));
 			}
 		} else if (!Q_stricmp(t, "alphaFunc")) {
-			t = COM_ParseExt(p, qfalse);
+			t = arg(p);
 			st->alpha = !Q_stricmp(t, "GT0") ? RP_ALPHA_GT0 : !Q_stricmp(t, "LT128") ? RP_ALPHA_LT128 : RP_ALPHA_GE128;
 		} else if (!Q_stricmp(t, "rgbGen")) {
-			t = COM_ParseExt(p, qfalse);
+			t = arg(p);
 			if (!Q_stricmp(t, "wave"))
 				st->rgbgen = RGB_WAVE, parse_wave(p, &st->rgbwave);
 			else if (!Q_stricmp(t, "const")) {
-				COM_ParseExt(p, qfalse); /* ( */
+				arg(p); /* ( */
 				for (int k = 0; k < 3; k++) {
 					float v = tokf(p) * 255.0f;
 					st->rgba[k] = (u8)(v < 0 ? 0 : v > 255 ? 255 : v);
 				}
-				COM_ParseExt(p, qfalse);
+				arg(p);
 				st->rgbgen = RGB_CONST;
 			} else
 				st->rgbgen = !Q_stricmp(t, "vertex")             ? RGB_VERTEX
@@ -282,7 +300,7 @@ static void parse_stage(char **p, struct rp_shader *sh, struct rp_stage *st) {
 				             : !Q_stricmp(t, "identityLighting") ? RGB_IDENTITY_LIGHTING
 				                                                 : RGB_IDENTITY;
 		} else if (!Q_stricmp(t, "alphaGen")) {
-			t = COM_ParseExt(p, qfalse);
+			t = arg(p);
 			if (!Q_stricmp(t, "wave"))
 				st->alphagen = A_WAVE, parse_wave(p, &st->awave);
 			else if (!Q_stricmp(t, "const")) {
@@ -295,10 +313,10 @@ static void parse_stage(char **p, struct rp_shader *sh, struct rp_stage *st) {
 				               : !Q_stricmp(t, "oneMinusEntity") ? A_ONE_MINUS_ENTITY
 				                                                 : A_IDENTITY;
 		} else if (!Q_stricmp(t, "tcGen") || !Q_stricmp(t, "texgen")) {
-			t = COM_ParseExt(p, qfalse);
+			t = arg(p);
 			st->env = !Q_stricmp(t, "environment");
 		} else if (!Q_stricmp(t, "tcMod")) {
-			t = COM_ParseExt(p, qfalse);
+			t = arg(p);
 			int k = st->ntcmod < RP_TCMODS ? st->ntcmod : RP_TCMODS - 1;
 			int type = !Q_stricmp(t, "scroll")      ? TCM_SCROLL
 			           : !Q_stricmp(t, "scale")     ? TCM_SCALE
@@ -321,7 +339,7 @@ static void parse_stage(char **p, struct rp_shader *sh, struct rp_stage *st) {
 			}
 		} else if (!Q_stricmp(t, "depthWrite"))
 			depth_write = 1;
-		SkipRestOfLine(p);
+		line_end(p);
 	}
 	(void)sh;
 	/* the engine's default: identity where the blend is a product with the
@@ -349,11 +367,11 @@ static void parse_shader(char *body, struct rp_shader *sh) {
 			continue;
 		}
 		if (!Q_stricmp(t, "cull")) {
-			t = COM_ParseExt(&p, qfalse);
+			t = arg(&p);
 			sh->cull_none = !Q_stricmp(t, "none") || !Q_stricmp(t, "disable") || !Q_stricmp(t, "twosided");
 			sh->cull_back = !Q_stricmp(t, "back") || !Q_stricmp(t, "backside") || !Q_stricmp(t, "backsided");
 		} else if (!Q_stricmp(t, "sort")) {
-			t = COM_ParseExt(&p, qfalse);
+			t = arg(&p);
 			sort = !Q_stricmp(t, "portal")       ? SORT_PORTAL
 			       : !Q_stricmp(t, "sky")        ? SORT_SKY
 			       : !Q_stricmp(t, "opaque")     ? SORT_OPAQUE
@@ -371,25 +389,25 @@ static void parse_shader(char *body, struct rp_shader *sh) {
 		else if (!Q_stricmp(t, "skyparms")) {
 			sh->sky = 1;
 			char far[MAX_QPATH];
-			Q_strncpyz(far, COM_ParseExt(&p, qfalse), sizeof far);
+			Q_strncpyz(far, arg(&p), sizeof far);
 			if (far[0] && strcmp(far, "-")) {
 				static const char *const suf[6] = {"rt", "bk", "lf", "ft", "up", "dn"};
 				for (int i = 0; i < 6; i++)
 					sh->box[i] = image_load(va("%s_%s", far, suf[i]));
 			}
-			t = COM_ParseExt(&p, qfalse);
+			t = arg(&p);
 			sh->cloud = t[0] && strcmp(t, "-") ? (float)atof(t) : 512.0f;
-			COM_ParseExt(&p, qfalse); /* the near box: not drawn, as the engine */
+			arg(&p); /* the near box: not drawn, as the engine */
 		}
 		else if (!Q_stricmp(t, "deformVertexes")) {
-			t = COM_ParseExt(&p, qfalse);
+			t = arg(&p);
 			sh->deform = !Q_stricmp(t, "autosprite") ? DEFORM_AUTOSPRITE : !Q_stricmp(t, "autosprite2") ? DEFORM_AUTOSPRITE2
 			                                                                                           : DEFORM_OTHER;
 		} else if (!Q_stricmp(t, "surfaceparm")) {
-			t = COM_ParseExt(&p, qfalse);
+			t = arg(&p);
 			sh->nodraw |= !Q_stricmp(t, "nodraw");
 		}
-		SkipRestOfLine(&p);
+		line_end(&p);
 	}
 	int blended = sh->nstage && sh->st[0].blend != RP_BLEND_NONE;
 	sh->sort = (u8)(sort ? sort : sh->polygon_offset ? SORT_DECAL : blended ? SORT_BLEND0 : SORT_OPAQUE);

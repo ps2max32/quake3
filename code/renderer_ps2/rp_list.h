@@ -73,7 +73,7 @@ void rp_dyn_end(u64 *end);
 /* ---- runs and draws ------------------------------------------------------------------ */
 
 enum { RP_BLEND_NONE, RP_BLEND_ADD, RP_BLEND_ALPHA, RP_BLEND_FILTER, RP_BLEND_OTHER, RP_BLEND_ADD_ALPHA,
-       RP_BLEND_INVFILTER };
+       RP_BLEND_INVFILTER, RP_BLEND_INVALPHA /* the picture where the alpha is 1 */ };
 enum { RP_ALPHA_NONE, RP_ALPHA_GT0, RP_ALPHA_LT128, RP_ALPHA_GE128 };
 /* the programs of a run: the world's (texture and lightmap from one vertex
    when the state has a lightmap); none: its draws are GIF packets (sprites
