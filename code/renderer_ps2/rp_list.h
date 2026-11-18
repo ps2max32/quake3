@@ -161,7 +161,8 @@ void rp_list_end(void);
    GS registers left out (wrong textures and blends: what they cost), 131072
    every list sent twice, the second time not drawn (VIF1 and VU1 work
    twice, the GS once: whether they wait for each other), 262144 no late
-   lightmap (a script's $lightmap after two stages: the map's own pass) */
+   lightmap (a script's $lightmap after two stages: the map's own pass),
+   524288 no sky */
 extern unsigned rp_debug;
 
 #endif

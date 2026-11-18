@@ -19,7 +19,8 @@
    4 no models, 8 no sprites and polys, 16 no view weapon, 32 no pictures
    (what each costs a pass). r_ps2debug: rp_list.h's rp_debug. r_ps2shot n: the picture
    of the timedemo's frame n is saved as quake3.tga and the game quits.
-   r_ps2passes 1: the timedemo's passes of beam racing as quake3.pass. */
+   r_ps2passes 1: the timedemo's passes of beam racing as quake3.pass.
+   r_ps2beamat n: beam racing's counts start at the n-th view of the world. */
 
 #include "../qcommon/q_shared.h"
 #include "../qcommon/qfiles.h"
@@ -43,7 +44,7 @@
 
 refimport_t ri;
 static float scene_time; /* the scene's being drawn, for its shaders */
-static cvar_t *r_ps2draw, *r_ps2shot, *r_ps2passes;
+static cvar_t *r_ps2draw, *r_ps2shot, *r_ps2passes, *r_ps2beamat;
 
 /* ---- the screen ------------------------------------------------------------------- */
 
@@ -315,6 +316,10 @@ static void RP_RenderScene(const refdef_t *fd) {
 	int world = !(fd->rdflags & RDF_NOWORLDMODEL);
 	if (world)
 		st.views++;
+	/* r_ps2beamat n: beam racing's counts start at the n-th view of the world
+	   (a run's report is then of a place, not of the load before it) */
+	if (world && r_ps2beamat->integer && st.views == (unsigned)r_ps2beamat->integer)
+		memset(&mx_hires_stats, 0, sizeof mx_hires_stats);
 	else
 		st.small++;
 	if (in_frame && r_ps2draw->integer) {
@@ -340,7 +345,7 @@ static void RP_RenderScene(const refdef_t *fd) {
 			/* the sky first, where the view sees the map's sky surfaces */
 			u32 sky_strips = sky_shader ? rp_world_sky() : 0;
 			const struct rp_shader *sky = sky_strips ? rp_shader_get(sky_shader) : NULL;
-			if (sky)
+			if (sky && !(rp_debug & 524288))
 				rp_sky_draw(sky, now, sky_strips);
 			rp_world_add(0);
 #define ACC(f) world_sum.f += world_st.f
@@ -713,6 +718,7 @@ static void RP_BeginRegistration(glconfig_t *config) {
 	r_ps2draw = ri.Cvar_Get("r_ps2draw", "1", 0);
 	r_ps2shot = ri.Cvar_Get("r_ps2shot", "0", 0);
 	r_ps2passes = ri.Cvar_Get("r_ps2passes", "0", 0);
+	r_ps2beamat = ri.Cvar_Get("r_ps2beamat", "0", 0);
 	rp_debug = (unsigned)ri.Cvar_Get("r_ps2debug", "0", 0)->integer;
 	screen_init();
 	/* no frame in flight draws what goes now: the map, the images */
