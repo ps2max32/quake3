@@ -612,7 +612,8 @@ def build(args):
             continue
         mi = material(shader_num, lm >= 0)
         m = mats[mi]
-        if m["flags"] & (MAT_NODRAW | MAT_SKY):
+        # the sky's surfaces stay (the renderer draws the sky where the view sees them)
+        if m["flags"] & MAT_NODRAW:
             stats["skipped"] += 1
             continue
         if stype == MST_PATCH:
@@ -624,7 +625,17 @@ def build(args):
             tris = [(int(idx[k]), int(idx[k + 1]), int(idx[k + 2])) for k in range(0, len(idx) - 2, 3)]
         stats["surfaces"] += 1
         stats["tris_in"] += len(tris)
-        verts, tris = split_long(verts, tris, args.edge, 3.5)
+        if m["flags"] & MAT_SKY:
+            # not drawn: the surface's bounds alone, as one triangle from its
+            # lowest to its highest corner and a corner along its widest side
+            # (where the view sees it, the sky is)
+            lo, hi = verts[:, :3].min(0), verts[:, :3].max(0)
+            a, b, c = verts[0].copy(), verts[0].copy(), verts[0].copy()
+            a[:3], b[:3], c[:3] = lo, hi, lo
+            c[int(np.argmax(hi - lo))] = hi[int(np.argmax(hi - lo))]
+            verts, tris = np.array([a, b, c]), [(0, 1, 2)]
+        else:
+            verts, tris = split_long(verts, tris, args.edge, 3.5)
         if m["tex"] >= 0:
             tw, th = textures[m["tex"]][1]["w"], textures[m["tex"]][1]["h"]
             for t in tris:

@@ -11,7 +11,7 @@
    The game's shaders are rp_shader.c's, its models rp_model.c's (MD3, on
    VU1).
 
-   Not yet: the map's doors and platforms, beams, lights, marks, the sky. They
+   Not yet: the map's doors and platforms, beams, lights, marks. They
    are counted. Each main view's camera goes into quake3.cam
    (ps2_ren_report), for the viewer (tools/q3view) to fly the same path.
    r_ps2draw 0: nothing is drawn, a timedemo then costs what the game side
@@ -37,6 +37,7 @@
 #include "rp_model.h"
 #include "rp_poly.h"
 #include "rp_shader.h"
+#include "rp_sky.h"
 #include "rp_tex.h"
 #include "rp_world.h"
 
@@ -87,6 +88,7 @@ static void screen_init(void) {
 
 /* ---- the world ---------------------------------------------------------------------- */
 
+static qhandle_t sky_shader; /* the map's sky (its first material that is sky) */
 static const void *world_map;
 static u32 world_size;
 static int world_ok;
@@ -335,6 +337,11 @@ static void RP_RenderScene(const refdef_t *fd) {
 		int draw_world = world && world_ok && !(skip & 2);
 		if (draw_world) {
 			rp_world_cull(&world_st);
+			/* the sky first, where the view sees the map's sky surfaces */
+			u32 sky_strips = sky_shader ? rp_world_sky() : 0;
+			const struct rp_shader *sky = sky_strips ? rp_shader_get(sky_shader) : NULL;
+			if (sky)
+				rp_sky_draw(sky, now, sky_strips);
 			rp_world_add(0);
 #define ACC(f) world_sum.f += world_st.f
 			ACC(seen), ACC(groups), ACC(drawn), ACC(clip), ACC(back), ACC(verts);
@@ -799,11 +806,14 @@ static void RP_LoadWorld(const char *name) {
 	rp_light_load(name);
 	/* the materials that are scripts: their stages */
 	memset(wshader, 0, sizeof wshader);
+	sky_shader = 0;
 	for (u32 i = 0; i < rp_world_materials() && i < MAX_WMAT; i++) {
 		u32 flags = 0;
 		const char *mn = rp_world_material(i, &flags);
 		if (mn && (flags & (RP_MAT_SCRIPT | RP_MAT_SKY)) && !(flags & RP_MAT_NODRAW))
 			wshader[i] = rp_shader_register(mn, flags & RP_MAT_LIGHTMAP ? 0 : -3, 1);
+		if (!sky_shader && (flags & RP_MAT_SKY))
+			sky_shader = wshader[i];
 	}
 	rp_world_script(world_passes);
 	ri.Printf(PRINT_ALL, "ps2: renderer: world %s, %u KB\n", path, world_size / 1024);

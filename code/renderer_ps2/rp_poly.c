@@ -33,6 +33,7 @@ static inline float dot3(const float *a, const float *b) { return a[0] * b[0] + 
 /* ---- polygons ---------------------------------------------------------------------------- */
 
 static struct rp_state pstate;
+static u32 pstrips = ~0u;
 static int prun = -1, prun_far;
 static u32 pview;                /* the view the matrices are of */
 static const void *pmatrix[2];   /* sixteenths, whole units */
@@ -104,7 +105,10 @@ void rp_poly_state(const struct rp_state *s) {
 	pstate = *s;
 	pstate.prog = RP_PROG_WORLD, pstate.lm_ok = 0;
 	prun = -1;
+	pstrips = ~0u;
 }
+
+void rp_poly_strips(u32 mask) { pstrips = mask; }
 
 void rp_poly(const struct rp_vert *v, u32 n) {
 	const struct rp_view *vw = &rp_view;
@@ -139,7 +143,7 @@ void rp_poly(const struct rp_vert *v, u32 n) {
 		return;
 	}
 	u32 far = big > NEAR_MAX;
-	u32 mask = cut ? vw->all : rp_strip_lines(lo, hi);
+	u32 mask = (cut ? vw->all : rp_strip_lines(lo, hi)) & pstrips;
 	if (!mask) {
 		rp_poly_stats.culled++;
 		return;

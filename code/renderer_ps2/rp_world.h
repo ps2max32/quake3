@@ -38,8 +38,9 @@ const char *rp_world_material(u32 i, u32 *flags);
 #define RP_WORLD_PASSES 5 /* a script's stages and a lightmap pass */
 typedef u32 (*rp_world_passes_fn)(u32 mat, struct rp_state *pass, int *first);
 void rp_world_script(rp_world_passes_fn fn);
-/* After rp_world_cull: the view sees the sky's surfaces. */
-int rp_world_sky(void);
+/* After rp_world_cull: the strips in which the view sees the sky's surfaces
+   (0: none). */
+u32 rp_world_sky(void);
 
 /* In a frame, after rp_view_set: what of the world the view sees. Then its
    draws into the frame's list: those that write depth (blended 0), and the

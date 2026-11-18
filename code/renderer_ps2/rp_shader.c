@@ -368,8 +368,19 @@ static void parse_shader(char *body, struct rp_shader *sh) {
 			sh->polygon_offset = 1;
 		else if (!Q_stricmp(t, "nomipmaps") || !Q_stricmp(t, "nopicmip"))
 			sh->nomip |= !Q_stricmp(t, "nomipmaps");
-		else if (!Q_stricmp(t, "skyparms"))
+		else if (!Q_stricmp(t, "skyparms")) {
 			sh->sky = 1;
+			char far[MAX_QPATH];
+			Q_strncpyz(far, COM_ParseExt(&p, qfalse), sizeof far);
+			if (far[0] && strcmp(far, "-")) {
+				static const char *const suf[6] = {"rt", "bk", "lf", "ft", "up", "dn"};
+				for (int i = 0; i < 6; i++)
+					sh->box[i] = image_load(va("%s_%s", far, suf[i]));
+			}
+			t = COM_ParseExt(&p, qfalse);
+			sh->cloud = t[0] && strcmp(t, "-") ? (float)atof(t) : 512.0f;
+			COM_ParseExt(&p, qfalse); /* the near box: not drawn, as the engine */
+		}
 		else if (!Q_stricmp(t, "deformVertexes")) {
 			t = COM_ParseExt(&p, qfalse);
 			sh->deform = !Q_stricmp(t, "autosprite") ? DEFORM_AUTOSPRITE : !Q_stricmp(t, "autosprite2") ? DEFORM_AUTOSPRITE2

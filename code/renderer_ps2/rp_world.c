@@ -244,7 +244,7 @@ static struct {
 } wrun[MAX_WRUN];
 static u32 nitem, nwrun;
 static const void *wmatrix;
-static int sky_seen;
+static u32 sky_seen; /* the strips the view sees sky surfaces in */
 static rp_world_passes_fn passes_fn;
 
 u32 rp_world_materials(void) { return pm.h ? pm.h->nmat : 0; }
@@ -256,7 +256,7 @@ const char *rp_world_material(u32 i, u32 *flags) {
 	return pm.mat[i].name;
 }
 void rp_world_script(rp_world_passes_fn fn) { passes_fn = fn; }
-int rp_world_sky(void) { return sky_seen; }
+u32 rp_world_sky(void) { return sky_seen; }
 
 /* A plane against a box (mins at b[0..2], maxs at b[4..6], as a group and a
    chunk have them): which of the box's numbers make the corner farthest
@@ -326,7 +326,7 @@ void rp_world_cull(struct rp_world_stats *st) {
 					continue;
 				/* the sky's surfaces are not drawn: where they are seen, the sky is */
 				if (sky) {
-					sky_seen = 1;
+					sky_seen |= gmask;
 					continue;
 				}
 				int one = !(gmask & (gmask - 1));

@@ -20,6 +20,9 @@ struct rp_vert {
 void rp_poly_state(const struct rp_state *s);
 /* A convex polygon of n vertices (3 .. 16), world coordinates. */
 void rp_poly(const struct rp_vert *v, u32 n);
+/* The strips the polygons after this may be drawn in (~0: all; set back
+   to ~0 by rp_poly_state). */
+void rp_poly_strips(u32 mask);
 
 /* The state of the pictures that follow (prog and z are set here). */
 void rp_pic_state(const struct rp_state *s);
