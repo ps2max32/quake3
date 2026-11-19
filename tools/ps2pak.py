@@ -98,6 +98,13 @@ def palette(a, alpha, n=256):
         return pal
     pal = np.hstack([pal, np.full((len(pal), 1), 128)]).astype(np.float64)
     px = a.reshape(-1, 4)
+    # fewer colours than entries (a font: one colour, its shape in the alpha):
+    # the entries left go to the texels farthest from the ones there are
+    while len(pal) < n:
+        d = ((px.astype(np.float64) - pal[nearest(px, np.clip(np.rint(pal), 0, 255))]) ** 2).sum(1)
+        if d.max() == 0:
+            break
+        pal = np.vstack([pal, px[d.argmax()].astype(np.float64)])
     for _ in range(12):
         idx = nearest(px, pal)
         sums = np.zeros((len(pal), 4))
