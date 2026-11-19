@@ -480,6 +480,7 @@ static void ps2_beam_report(void) {
    its addresses, waiting as the kernel's idle thread), prints that and
    ends the program. It cannot help when interrupts are off. */
 #include <mx/thread.h>
+#include <mx/vu.h>
 static volatile u32 wd_beat;
 static u8 wd_stack[16384] MX_FAST_BSS MX_ALIGNED(16);
 static void watchdog(void *arg) {
@@ -493,6 +494,13 @@ static void watchdog(void *arg) {
 		}
 		if (++still == 60) {
 			mx_printf("ps2: watchdog: frame %u for 60 s; where it is, the next 5 s:\n", last);
+			/* what the drawing waits for: VU1 running or at an XGKICK, VIF1's
+			   command and its DMA, the GIF */
+			mx_printf("ps2: watchdog: VPU-STAT %08x (VU1 %s%s), VIF1 STAT %08x CODE %08x NUM %u, D1 CHCR %08x MADR %08x "
+			          "TADR %08x QWC %u, GIF STAT %08x\n", mx_vpu_stat(), mx_vpu_stat() & MX_VPU_VBS1 ? "runs" : "idle",
+			          mx_vpu_stat() & MX_VPU_VGW1 ? ", waits for the GIF" : "", MX_R32(0x10003C00), MX_R32(0x10003C30),
+			          MX_R32(0x10003C40), MX_DMA_REG(MX_CH_VIF1, CHCR), MX_DMA_REG(MX_CH_VIF1, MADR),
+			          MX_DMA_REG(MX_CH_VIF1, TADR), MX_DMA_REG(MX_CH_VIF1, QWC), MX_R32(0x10003020));
 			mx_prof_stop();
 			mx_prof_start(1000);
 		}

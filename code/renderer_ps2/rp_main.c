@@ -701,10 +701,13 @@ static void RP_EndFrame(int *frontEndMsec, int *backEndMsec) {
 		*frontEndMsec = 0;
 	if (backEndMsec)
 		*backEndMsec = 0;
-	/* the counts are the timedemo's: from its first frame on */
+	/* the counts are the timedemo's: from its first frame on; or a place's,
+	   from the view r_ps2beamat names */
 	int df = ps2_demo_frame();
 	if (df && r_ps2passes->integer && mx_hires_passes())
 		passes_frame(mx_frame_number() - 1, df);
+	if (!df && r_ps2beamat->integer && st.views >= (unsigned)r_ps2beamat->integer)
+		df = 1;
 	if (df && !st_frames) {
 		st_at = st;
 		rp_list_stats = (struct rp_list_stats){0};
