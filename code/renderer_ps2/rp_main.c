@@ -599,6 +599,18 @@ static void quads_draw(u32 from, u32 to) {
 				const struct quad *q = &quad[quad_order[k]];
 				struct rp_vert v[16];
 				int moved = rp_stage_tcmod(stg, q->time, m);
+				if (sh->polygon_offset) {
+					/* a mark at the eye (the shadow under the player's own feet, a burn
+					   he stands on) is not drawn: across the eye's plane it would be
+					   cut, and what a cut leaves wrong of a mark darkens the picture */
+					const struct rp_view *vw = &rp_view;
+					int at_eye = 0;
+					for (u32 a = 0; a < q->n; a++)
+						at_eye |= (q->v[a].xyz[0] - vw->org[0]) * vw->F[0] + (q->v[a].xyz[1] - vw->org[1]) * vw->F[1] +
+						          (q->v[a].xyz[2] - vw->org[2]) * vw->F[2] < 16.0f;
+					if (at_eye)
+						continue;
+				}
 				for (u32 a = 0; a < q->n; a++) {
 					v[a] = q->v[a];
 					if (a && !memcmp(q->v[a].rgba, q->v[0].rgba, 4))
