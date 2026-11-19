@@ -666,6 +666,104 @@ static void env_rows(struct rp_state *s, const struct pm_chunk *ch) {
 		m[4][a] = s->cadd[a];
 }
 
+/* alphaGen lightingSpecular: the engine's alpha of a vertex is the fourth
+   power of the cosine between the eye's direction and the reflection of the
+   direction to a light at a fixed place of the map. With the eye's direction
+   mirrored in the chunk's direction that is the cosine between two unit
+   vectors, l to the light and v' : 1 - |l - v'|^2 / 2. The difference l - v'
+   is made straight around the chunk's middle (its three parts linear in the
+   vertex's position), which the program that lays a texture on the world by
+   position takes: two parts, across the bisector of l and v', are the
+   coordinates in a texture of (1 - r^2 / 2)^4; the third, along the bisector
+   (0 at the middle), is the program's fall-off 1 - z^2. The picture times
+   1 + that: the texture brighter by its shine. 0: none on this chunk. */
+#define SPEC 64
+static u8 spec_tex[SPEC * SPEC] MX_FAST_BSS MX_ALIGNED(64);
+static u32 spec_clut[256] MX_FAST_BSS MX_ALIGNED(64);
+static struct rp_image *spec_img;
+
+static struct rp_image *spec_image(void) {
+	if (spec_img)
+		return spec_img;
+	for (int y = 0; y < SPEC; y++)
+		for (int x = 0; x < SPEC; x++) {
+			float dx = ((float)x + 0.5f) * (3.0f / SPEC) - 1.5f, dy = ((float)y + 0.5f) * (3.0f / SPEC) - 1.5f;
+			float v = 1.0f - (dx * dx + dy * dy) * 0.5f;
+			int edge = x == 0 || y == 0 || x == SPEC - 1 || y == SPEC - 1;
+			v = v <= 0 || edge ? 0 : v * v;
+			spec_tex[y * SPEC + x] = (u8)(v * v * 255.0f);
+		}
+	for (u32 i = 0; i < 256; i++)
+		spec_clut[(i & ~0x18u) | (i & 8) << 1 | (i & 16) >> 1] = (i + 1) >> 1 << 24 | 0x808080;
+	mx_dcache_writeback(spec_tex, sizeof spec_tex);
+	mx_dcache_writeback(spec_clut, sizeof spec_clut);
+	static const u8 *level;
+	level = spec_tex;
+	spec_img = rp_image_static("*shine", MX_GS_PSM_T8, SPEC, SPEC, 1, 0, &level, spec_clut);
+	return spec_img;
+}
+
+static int spec_rows(struct rp_state *s, const struct pm_chunk *ch) {
+	static const float lorg[3] = {-960.0f, 1980.0f, 96.0f}; /* the engine's (RB_CalcSpecularAlpha) */
+	const struct rp_view *vw = &rp_view;
+	if (ch->sine >= 200)
+		return 0;
+	float ps = pm.h->pos_scale, n[3], c[3], l[3], v[3], vr[3], a0[3], e[3][3], dl = 0, de = 0, nl = 0, nv = 0, aa = 0, el = 0;
+	for (int a = 0; a < 3; a++) {
+		c[a] = (ch->mins[a] + ch->maxs[a]) * 0.5f;
+		l[a] = lorg[a] - c[a], v[a] = vw->org[a] - c[a];
+		dl += l[a] * l[a], de += v[a] * v[a], nl += (float)(ch->cone[a] * ch->cone[a]);
+	}
+	dl = sqrtf(dl), de = sqrtf(de), nl = sqrtf(nl);
+	if (dl < 1.0f || de < 1.0f || nl < 1.0f)
+		return 0;
+	for (int a = 0; a < 3; a++) {
+		n[a] = (float)ch->cone[a] / nl, l[a] /= dl, v[a] /= de;
+		nv += n[a] * v[a];
+	}
+	for (int a = 0; a < 3; a++) {
+		vr[a] = 2.0f * nv * n[a] - v[a];
+		a0[a] = l[a] - vr[a], e[2][a] = l[a] + vr[a];
+		aa += a0[a] * a0[a], el += e[2][a] * e[2][a];
+	}
+	/* no shine at its middle (the cosine under 0.2) */
+	if (aa > 1.6f || el < 0.01f)
+		return 0;
+	el = 1.0f / sqrtf(el);
+	for (int a = 0; a < 3; a++)
+		e[2][a] *= el;
+	/* two directions across the bisector */
+	int k = fabsf(e[2][0]) < fabsf(e[2][1]) ? (fabsf(e[2][0]) < fabsf(e[2][2]) ? 0 : 2) : (fabsf(e[2][1]) < fabsf(e[2][2]) ? 1 : 2);
+	float u[3] = {k == 0, k == 1, k == 2};
+	e[0][0] = e[2][1] * u[2] - e[2][2] * u[1], e[0][1] = e[2][2] * u[0] - e[2][0] * u[2], e[0][2] = e[2][0] * u[1] - e[2][1] * u[0];
+	el = 1.0f / sqrtf(e[0][0] * e[0][0] + e[0][1] * e[0][1] + e[0][2] * e[0][2]);
+	for (int a = 0; a < 3; a++)
+		e[0][a] *= el;
+	e[1][0] = e[2][1] * e[0][2] - e[2][2] * e[0][1], e[1][1] = e[2][2] * e[0][0] - e[2][0] * e[0][2], e[1][2] = e[2][0] * e[0][1] - e[2][1] * e[0][0];
+	float (*m)[4] = s->model;
+	memset(m, 0, 5 * sizeof m[0]);
+	for (int j = 0; j < 3; j++) {
+		/* the part of l - v' along e[j] by the vertex's position: at the middle,
+		   and its slope there */
+		float sc = j < 2 ? 1.0f / 3.0f : 1.41421356f, off = j < 2 ? 0.5f : 0.0f;
+		float le = 0, ne = 0, er[3], ver = 0, at = 0, gc = 0;
+		for (int a = 0; a < 3; a++)
+			le += l[a] * e[j][a], ne += n[a] * e[j][a], at += a0[a] * e[j][a];
+		for (int a = 0; a < 3; a++) {
+			er[a] = 2.0f * ne * n[a] - e[j][a];
+			ver += v[a] * er[a];
+		}
+		for (int a = 0; a < 3; a++) {
+			float g = -(e[j][a] - l[a] * le) / dl + (er[a] - v[a] * ver) / de;
+			m[a][j] = ps * sc * g;
+			gc += g * c[a];
+		}
+		m[3][j] = off + sc * (at - gc);
+	}
+	m[4][0] = m[4][1] = m[4][2] = 128.0f, m[4][3] = 128.0f;
+	return 1;
+}
+
 /* The draws of a run of n items (chunks of one material and lightmap page)
    with the matrix given: the map's own pass and the script's; -1: the list
    is full. */
@@ -748,9 +846,20 @@ static int run_draw(const void *matrix, const struct item *it, u32 n) {
 			if (k && pass[k - 1].prog == RP_PROG_DLIGHT) {
 				/* a stage with tcGen environment: a run a chunk, with the chunk's
 				   reflection of the eye */
+				if (pass[k - 1].menv == 2) {
+					/* the shine of alphaGen lightingSpecular: its texture */
+					struct rp_image *im = spec_image();
+					if (!im || !(t = rp_image_place(im)))
+						continue;
+					pass[k - 1].tex = *t, pass[k - 1].tex_ok = 1, pass[k - 1].texels = 1.0f;
+				}
 				for (u32 i = 0; i < n; i++) {
 					const struct pm_chunk *ch = &pm.chunk[it[i].chunk];
-					env_rows(&pass[k - 1], ch);
+					if (pass[k - 1].menv == 2) {
+						if (!spec_rows(&pass[k - 1], ch))
+							continue;
+					} else
+						env_rows(&pass[k - 1], ch);
 					if (rp_run(matrix, &pass[k - 1]) < 0)
 						return -1;
 					rp_draw(pm.base + ch->off_data, it[i].mask, it[i].clip, ch->nverts, ch->nbatch);

@@ -316,6 +316,7 @@ static void parse_stage(char **p, struct rp_shader *sh, struct rp_stage *st) {
 				st->alphagen = !Q_stricmp(t, "vertex")           ? A_VERTEX
 				               : !Q_stricmp(t, "entity")         ? A_ENTITY
 				               : !Q_stricmp(t, "oneMinusEntity") ? A_ONE_MINUS_ENTITY
+				               : !Q_stricmp(t, "lightingSpecular") ? A_SPECULAR
 				                                                 : A_IDENTITY;
 		} else if (!Q_stricmp(t, "tcGen") || !Q_stricmp(t, "texgen")) {
 			t = arg(p);

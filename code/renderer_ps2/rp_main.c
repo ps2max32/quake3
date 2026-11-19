@@ -1420,6 +1420,17 @@ static u32 world_passes(u32 mat, struct rp_state *pass, int *first) {
 	for (int k = 0; late && k < sh->lm_at && k < sh->nstage; k++)
 		product &= sh->st[k].blend == RP_BLEND_BRIGHTEN || sh->st[k].blend == RP_BLEND_FILTER ||
 		           sh->st[k].blend == RP_BLEND_INVFILTER;
+	/* alphaGen lightingSpecular on the stage the map's own pass draws (88
+	   scripts: the shining walls of the "base" maps, blendFunc GL_DST_COLOR
+	   GL_SRC_ALPHA over the lightmap: the lightmap times the texture plus its
+	   alpha, which is the shine of a light at a fixed place in the map): the
+	   shine as a pass of its own, each chunk's (rp_world.c) */
+	if (lit && !late && sh->st[0].alphagen == A_SPECULAR && !(rp_debug & 16777216)) {
+		struct rp_state *s = &pass[n++];
+		memset(s, 0, RP_STATE_HEAD);
+		s->prog = RP_PROG_DLIGHT, s->menv = 2, s->blend = RP_BLEND_BRIGHTEN, s->z = RP_Z_TEST;
+		s->clamp = 1, s->nomip = 1, s->tcc = 1, s->alpha = RP_ALPHA_GT0;
+	}
 	for (int k = lit && !late ? 1 : 0; k <= sh->nstage && n < RP_WORLD_PASSES; k++) {
 		if (late && k == sh->lm_at) {
 			memset(&pass[n], 0, RP_STATE_HEAD);

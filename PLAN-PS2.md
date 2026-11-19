@@ -789,6 +789,22 @@ PS2 renderer follows. The same place by `+devmap`, `+setviewpos`,
   on such a material goes without the vertices' colour (three scripts). The
   cheeks have the PC's brightness (109 for 113) but not the red of their
   light (the hue alone is not in the map's vertices for these).
+- **The shine of `alphaGen lightingSpecular`** (88 scripts, in 23 of the 35
+  maps: the shining walls and trims of the "base" maps; `blendFunc
+  GL_DST_COLOR GL_SRC_ALPHA` over the lightmap, so the lightmap times the
+  texture plus its alpha, and the alpha is the fourth power of the cosine
+  between the eye and the reflection of a light at a fixed place of the
+  map). It was not drawn: those walls were a quarter darker than the PC's
+  (q3dm12: 71 for 102). It is a pass of its own over the map's, a chunk at
+  a time, by the program that lays a texture on the world by position: the
+  eye's direction mirrored in the chunk's makes the cosine one between two
+  unit vectors, whose difference is made straight around the chunk's
+  middle; two of its parts are the coordinates in a texture of the fourth
+  power, the third the program's fall-off. The picture times 1 + that (the
+  dynamic lights' blend), so the texture brighter by its shine, where the
+  engine adds the shine by the texture's alpha: about the same for these
+  grey textures. Chunks without shine at their middle have no pass. q3dm12:
+  81 and 94 for the PC's 83 and 102. `r_ps2debug 16777216` leaves it out.
 - Mirrors and portals (7 maps) are still black surfaces.
 - **The sky had no clouds**, one colour: its layers were drawn with the
   texture level chosen for a surface 16,000 units away, the smallest. They

@@ -102,7 +102,8 @@ struct rp_state {
 	u8 clamp;              /* the texture is not repeated */
 	u8 cull;               /* RP_PROG_MODEL: RP_CULL_* */
 	u8 lm_only;            /* RP_PROG_WORLD: the lightmap pass alone (the texture's draws nothing); 2: at half */
-	u8 menv;               /* RP_PROG_MODEL: tcGen environment (model[6 .. 9]) */
+	u8 menv;               /* RP_PROG_MODEL: tcGen environment (model[6 .. 9]); the world's passes: 1 a stage
+	                          with tcGen environment, 2 the shine of alphaGen lightingSpecular (rp_world.c) */
 	float texels;          /* of the texture's first level a unit of the surface (the MIPMAP level) */
 	/* RP_PROG_STAGE: the texture coordinates' matrix (s' = tm[0] s + tm[1] t +
 	   tm[2], t' = tm[3] s + tm[4] t + tm[5]); the colour: the vertex's times
