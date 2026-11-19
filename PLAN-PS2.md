@@ -539,10 +539,14 @@ corridor 9.2 and court 11.2 (14.5 and 15.6 the evening before), q3dm12 13.6
   was on the screen two fields later than it could be. With one the
   timedemo repeats 52 fields of 2190 where it repeated 10.
 - The lamps' glows and bulbs turn to the eye (map file version 10).
-- **Open**: a run on the PS2 stopped three times in some 150 (twice in a
-  standing view, once at the timedemo's end, before the client's shutdown);
-  not seen again in 8 runs of 3000 frames with the watchdog, which now
-  prints VU1's, VIF1's and the GIF's state.
+- **Runs that seemed to hang did not.** Four of some 170 runs on the PS2
+  ran into the runner's timeout (two standing views, two timedemos). Each
+  had ended by itself: its picture was written, and the kernel's status said
+  ready, with the program's return counted and its status 0, while the
+  runner still waited. The last seconds of the program's output, the end
+  marker with them, had not reached the host. That is the host link's, not
+  the game's: a run's end should be taken from the kernel's status when the
+  marker does not come.
 
 ## 3. Why the earlier attempts stalled
 
