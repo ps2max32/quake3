@@ -649,7 +649,9 @@ int main(int argc, char **argv) {
 	   (make pak: baseq3/ps2tex.pk3) a byte a texel. Measured on the PS2 with
 	   demo four: 13.6 fps against 12.4 with r_picmip 1 (less swapping, the
 	   textures fit), the HUD's pictures as sharp (they have no picmip) */
-	char cmdline[MAX_STRING_CHARS];
+	/* the PS2's own settings are 800 characters: room for a run's arguments
+	   after them (a line cut off loses its last ones without a word) */
+	static char cmdline[4 * MAX_STRING_CHARS];
 	Q_strncpyz(cmdline,
 	           "+set fs_basepath . +set fs_homepath . +set vm_game 0 +set vm_cgame 0 "
 	           "+set vm_ui 0 +set sv_pure 0 +set r_vertexLight 0 +set r_textureMode GL_LINEAR_MIPMAP_LINEAR +set r_picmip 2 "
