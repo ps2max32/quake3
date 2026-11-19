@@ -1281,6 +1281,13 @@ void ps2_ren_report(void) {
 		           "(%u KB), %u KB in use by %u entries; %u evicted\n",
 		           rp_tex_stats.frames ? rp_tex_stats.used_kb / rp_tex_stats.frames : 0, rp_tex_stats.used_max_kb, vs.pages,
 		           vs.pages * 8, vs.used_blocks / 4, vs.entries, vs.evicted);
+		{
+			struct mx_vcache_space sp;
+			mx_vcache_space(&sp);
+			Com_Printf("ps2: renderer: GS memory now: the entries' texels %u KB, between them in their pages %u KB, whole "
+			           "pages past large pieces %u KB, free in pages of small pieces %u KB\n",
+			           sp.need_blocks / 4, sp.span_waste / 4, sp.round_waste / 4, sp.small_free / 4);
+		}
 		u32 fr = rp_tex_stats.frames ? rp_tex_stats.frames * 4 : 1;
 		const u32 *kb = rp_tex_stats.kind_blocks;
 		Com_Printf("ps2: renderer: GS memory: of a frame's images the map's and the scripts' %u KB, lightmap pages %u KB, "
@@ -1307,10 +1314,10 @@ void ps2_ren_report(void) {
 	if (st_frames)
 		Com_Printf("ps2: renderer: a frame: %u runs, %u draws; over the strips %u vertices in %u batches, %u set-ups, %u "
 		           "quadwords of records, %u of chains; %u draws left out (no memory); textures sent %u (%u KB), %u "
-		           "found no room (%u placed without their finest levels; %u frames with more images than fit: at full size %u KB a frame, %u at most), %u waited a frame\n", rp_list_stats.runs / st_frames, rp_list_stats.draws / st_frames,
+		           "found no room (%u placed without their finest levels for want of room, %u as their distance needs no more (%u hundredths of a level sooner, up to %u, %u times too low); %u frames with more images than fit: at full size %u KB a frame, %u at most), %u waited a frame\n", rp_list_stats.runs / st_frames, rp_list_stats.draws / st_frames,
 		           rp_list_stats.sent / st_frames, rp_list_stats.batches / st_frames, rp_list_stats.setups / st_frames,
 		           rp_list_stats.qw / st_frames, rp_list_stats.dyn_qw / st_frames, rp_list_stats.lost,
-		           rp_tex_stats.uploads, rp_tex_stats.upload_kb, rp_tex_stats.full, rp_tex_stats.coarse, rp_tex_stats.tight, rp_tex_stats.frames ? rp_tex_stats.want_sum / rp_tex_stats.frames : 0, rp_tex_stats.want_max / 4, rp_tex_stats.later);
+		           rp_tex_stats.uploads, rp_tex_stats.upload_kb, rp_tex_stats.full, rp_tex_stats.coarse, rp_tex_stats.far, (unsigned)(rp_tex_stats.far_bias_sum * 100 / (rp_tex_stats.tight ? rp_tex_stats.tight : 1)), (unsigned)(rp_tex_stats.far_bias_max * 100), rp_tex_stats.far_floors, rp_tex_stats.tight, rp_tex_stats.frames ? rp_tex_stats.want_sum / rp_tex_stats.frames : 0, rp_tex_stats.want_max / 4, rp_tex_stats.later);
 	if (st_frames) {
 		static const char *const prog[RP_PROGS] = {"the world's", "GS packets", "the models'", "the stages'", "the lights'"};
 		for (int k = 0; k < RP_PROGS; k++)
@@ -1475,6 +1482,10 @@ static void RP_LoadWorld(const char *name) {
 		return;
 	}
 	world_ok = 1;
+	/* the pool of fine levels for a map that has textures of 256 texels, the
+	   cache's memory back for one that has none (no frame in flight then) */
+	frames_flush();
+	rp_tex_fine_use(rp_world_fine());
 	rp_light_load(name);
 	/* the materials that are scripts: their stages */
 	memset(wshader, 0, sizeof wshader);

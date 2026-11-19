@@ -420,13 +420,16 @@ static u16 want_tex[MAX_TEX];
 static u32 nwant;
 unsigned world_st_fine, world_st_cand;
 
+int rp_world_fine(void) { return fine_on; }
+
 static void want_levels(void) {
 	static u16 cand[MAX_TEX];
 	static float key[MAX_TEX];
 	u32 nc = 0, units = rp_tex_fine_pool();
 	for (u32 i = 0; i < nwant; i++) {
-		u32 t = want_tex[i];
-		if (rp_tex_level_at(want_rho[t], 0) == 0) {
+		u32 t = want_tex[i], lv = rp_tex_level_at(want_rho[t], 0);
+		rp_image_want(wtex[t], want_rho[t]);
+		if (lv == 0 && wfine[t]) {
 			float k = want_rho[t] * (wtex[t]->fine ? 0.6f : 1.0f);
 			u32 n = nc++;
 			for (; n > 0 && key[cand[n - 1]] > k; n--)
@@ -453,6 +456,8 @@ void rp_world_cull(struct rp_world_stats *st) {
 	st = st ? st : &none;
 	*st = (struct rp_world_stats){0};
 	nitem = nwrun = 0;
+	/* GS memory is short: the textures from the level their distance needs */
+	int far_on = rp_tex_tight();
 	wmatrix = 0;
 	sky_seen = sky_full = 0;
 	nwsprite = 0;
@@ -589,7 +594,8 @@ void rp_world_cull(struct rp_world_stats *st) {
 					   takes the level by the depth): for the pool of fine levels */
 					{
 						const struct pm_mat *cm = &pm.mat[ch->mat];
-						if (fine_on && cm->tex >= 0 && cm->tex < MAX_TEX && wtex[cm->tex] && wfine[cm->tex]) {
+						if ((far_on || wfine[cm->tex < MAX_TEX && cm->tex >= 0 ? cm->tex : 0]) && cm->tex >= 0 &&
+						    cm->tex < MAX_TEX && wtex[cm->tex]) {
 							float w = cut ? 4.0f : rp_box_dist(&v->fr[0], ch->mins, ch->maxs, 0) / v->fr_len[0] + 4.0f;
 							float rho = cm->texels * (w < 4.0f ? 4.0f : w) / v->fx;
 							if (!want_rho[cm->tex])

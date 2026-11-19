@@ -37,15 +37,30 @@ static u32 fine_page, fine_n, fine_cfg = 16;
 void rp_tex_fine_units(u32 units) { fine_cfg = units > FINE_MAX ? FINE_MAX : units & ~1u; }
 u32 rp_tex_fine_pool(void) { return fine_n; }
 
+void rp_tex_fine_use(int on) {
+	u32 want = on ? fine_cfg : 0;
+	if (want == fine_n)
+		return;
+	/* the cache gives its pages back (its entries go: every image is sent again
+	   when it is next drawn), the pool takes or gives its own, the cache takes
+	   the rest as it needs them */
+	mx_vcache_init(0, mx_hires_passes() ? MX_VCACHE_ASYNC : MX_VCACHE_STREAM, MX_VCACHE_AUTO);
+	for (u32 k = 0; k < fine_n; k++)
+		if (fine_unit[k])
+			fine_unit[k]->fine = 0, fine_unit[k] = 0;
+	if (fine_n)
+		mx_vram_give(fine_page, fine_n * FINE_UNIT), fine_n = 0;
+	if (want) {
+		u32 p = mx_vram_find(want * FINE_UNIT);
+		if (p != ~0u && mx_vram_take(p, want * FINE_UNIT, MX_VRAM_APP) == 0)
+			fine_page = p, fine_n = want;
+	}
+}
+
 void rp_tex_init(void) {
-	/* the pool's pages first: the cache takes the rest */
+	/* no pool until a map has images for it (rp_tex_fine_use) */
 	fine_n = 0;
 	memset(fine_unit, 0, sizeof fine_unit);
-	if (fine_cfg) {
-		u32 p = mx_vram_find(fine_cfg * FINE_UNIT);
-		if (p != ~0u && mx_vram_take(p, fine_cfg * FINE_UNIT, MX_VRAM_APP) == 0)
-			fine_page = p, fine_n = fine_cfg;
-	}
 	mx_vcache_init(0, mx_hires_passes() ? MX_VCACHE_ASYNC : MX_VCACHE_STREAM, MX_VCACHE_AUTO);
 	if (!heap_pin) {
 		heap_pin = mx_heap_create("q3.tex", MX_MEM_PINNED, 0);
@@ -66,6 +81,24 @@ static u32 frame_blocks; /* GS memory (256-byte blocks) of the images the frame 
    again for two seconds: images that push each other out of GS memory
    every frame are sent again every frame. */
 static u32 want_blocks, tight, calm;
+/* While tight, how much sooner (levels) a texture of the world goes to a
+   coarser level than its distance asks: a quarter of a level more after each
+   frame in which an image found no room at all, so up to where the frame's
+   images fit (to half a level when images only lost their finest levels for
+   want of room: the view weapon's, which then stay so, as going further
+   takes more from the walls than it gives the weapon); back to none when
+   the frames fit at full size again (tight ends). It goes down a quarter
+   when the frame's images would take under 93 % of GS memory with it, for
+   half a second (lower_blocks: what the textures placed coarser would take
+   more). When that was too much (an image without room right after), the
+   value it came from is the floor: no lower again but under 85 %, until the
+   view is another (its images at full size 5 % of GS memory more or less)
+   or tight ends: a view at the edge loses an image for one frame once. */
+static float far_bias, far_floor;
+static u32 full_at, coarse_at; /* rp_tex_stats.full and coarse at the frame before */
+static u32 lower_blocks, lower_calm, lowered_at, floor_want;
+#define LOWER_WAIT 30
+#define FAR_BIAS_MAX 2.0f
 static int keeping; /* rp_tex_frame asks for the screen's pictures: not a draw's asking */
 #define KEPT 128
 static struct rp_image *kept[KEPT]; /* the screen's pictures asked for lately */
@@ -106,7 +139,7 @@ static u32 kind_of(const char *name) {
 void rp_tex_frame(void) {
 	mx_vcache_frame(mx_frame_number(), mx_frame_done());
 	frame_uploads = 0;
-	u32 kb = frame_blocks / 4;
+	u32 kb = frame_blocks / 4, drawn = frame_blocks;
 	rp_tex_stats.frames++, rp_tex_stats.used_kb += kb;
 	if (kb > rp_tex_stats.used_max_kb)
 		rp_tex_stats.used_max_kb = kb;
@@ -123,6 +156,31 @@ void rp_tex_frame(void) {
 			calm = 0;
 		else if (tight && ++calm > 60)
 			tight = 0;
+		u32 frame = mx_frame_number();
+		u32 pred = (drawn + lower_blocks) * 100;
+		/* the counts were set to 0 (a run's statistics begin) */
+		if (rp_tex_stats.full < full_at || rp_tex_stats.coarse < coarse_at)
+			full_at = rp_tex_stats.full, coarse_at = rp_tex_stats.coarse;
+		if (far_floor > 0 && (want_blocks > floor_want ? want_blocks - floor_want : floor_want - want_blocks) * 20 > cap)
+			far_floor = 0;
+		if (!tight)
+			far_bias = 0, far_floor = 0, lower_calm = 0;
+		else if ((rp_tex_stats.full != full_at && far_bias < FAR_BIAS_MAX) ||
+		         (rp_tex_stats.coarse != coarse_at && far_bias < 0.5f)) {
+			far_bias += 0.25f, lower_calm = 0;
+			if (lowered_at && frame - lowered_at < 120 && rp_tex_stats.full != full_at)
+				far_floor = far_bias, floor_want = want_blocks, rp_tex_stats.far_floors++;
+		} else if (far_bias > 0 && rp_tex_stats.full == full_at &&
+		           (pred < cap * 85 || (pred < cap * 93 && far_bias > far_floor))) {
+			if (++lower_calm >= LOWER_WAIT)
+				far_bias -= 0.25f, lower_calm = 0, lowered_at = frame;
+		} else
+			lower_calm = 0;
+		lower_blocks = 0;
+		full_at = rp_tex_stats.full, coarse_at = rp_tex_stats.coarse;
+		if (far_bias > rp_tex_stats.far_bias_max)
+			rp_tex_stats.far_bias_max = far_bias;
+		rp_tex_stats.far_bias_sum += far_bias;
 		if (want_blocks > rp_tex_stats.want_max)
 			rp_tex_stats.want_max = want_blocks;
 		rp_tex_stats.want_sum += want_blocks / 4;
@@ -440,7 +498,7 @@ static void texflush(void) {
 
 u32 rp_image_fine_units(const struct rp_image *im) {
 	u32 bytes = im->psm == MX_GS_PSM_T4 ? (u32)im->w * im->h / 2 : (u32)im->w * im->h;
-	if (!fine_n || im->split || im->levels < 3 || (im->w > im->h ? im->w : im->h) != 256 || bytes > 2u * FINE_UNIT * 8192)
+	if (!fine_cfg || im->split || im->levels < 3 || (im->w > im->h ? im->w : im->h) != 256 || bytes > 2u * FINE_UNIT * 8192)
 		return 0;
 	return bytes > FINE_UNIT * 8192 ? 2 : 1;
 }
@@ -524,6 +582,14 @@ static void fine_join(struct rp_image *im) {
 	rp_tex_stats.fine++;
 }
 
+int rp_tex_tight(void) { return tight; }
+
+void rp_image_want(struct rp_image *im, float rho) {
+	im->want = (u8)rp_tex_level_at(rho, far_bias), im->want_lo = (u8)rp_tex_level_at(rho, far_bias - 0.5f);
+	im->want_less = (u8)rp_tex_level_at(rho, far_bias - 0.75f);
+	im->want_frame = mx_frame_number() + 1;
+}
+
 const struct mx_tex *rp_image_place(struct rp_image *im) {
 	u32 frame = mx_frame_number();
 	if (!keeping) {
@@ -537,7 +603,7 @@ const struct mx_tex *rp_image_place(struct rp_image *im) {
 	if (im->frame == frame + 1 && !again)
 		return im->ok ? &im->t : 0;
 	struct mx_tex was = im->t;
-	u32 was_from = im->from;
+	u32 was_from = im->from, was_there = im->frame == frame && im->ok;
 	u32 tw = log2u(im->w), th = log2u(im->h), from = 0;
 	u32 cpsm = im->clut && !im->wide ? MX_GS_PSM_CT32 : MX_VCACHE_NO_CLUT;
 	/* not there, and the frame has sent its share: not this frame (asked again
@@ -567,6 +633,15 @@ const struct mx_tex *rp_image_place(struct rp_image *im) {
 		base++;
 	int fine = base == 1 && im->fine && im->fine_frame == frame + 1 && !f0;
 	f0 = f0 + base;
+	/* tight: a texture of the world from the level its distance needs */
+	if (tight && !fine && !rp_tex_full && im->kind == RP_IMAGE_WORLD && im->want_frame == frame + 1 && im->want > f0) {
+		u32 last = im->split ? im->m.tail : im->levels > 2 ? (u32)im->levels - 2 : 0, f = im->want_lo;
+		if (was_there && was_from >= im->want_lo && was_from <= im->want)
+			f = was_from;
+		f = f > last ? last : f, f = f > 2 ? 2 : f;
+		if (f > f0)
+			f0 = f, rp_tex_stats.far++;
+	}
 	int r = im->split ? mx_vcache_tex_mem(im->key, &im->m, im->psm, tw, th, cpsm, f0, 0, &im->t, &from)
 	                  : mx_vcache_tex(mx_vcache_tex_key(im->key, f0), im->psm, tw - f0, th - f0, im->levels - f0, cpsm, &im->t);
 	if (!im->split)
@@ -605,6 +680,12 @@ const struct mx_tex *rp_image_place(struct rp_image *im) {
 	}
 	im->from = (u8)from, im->ok = 1;
 	u32 blocks = im->t.blocks + (im->wide ? 4 : 0);
+	/* what it would take more with the levels a quarter less soon */
+	if (tight && im->kind == RP_IMAGE_WORLD && im->want_frame == frame + 1 && from > base) {
+		u32 less = im->want_less > base ? im->want_less : base;
+		if (less < from)
+			lower_blocks += (blocks << (2 * (from - less))) - blocks;
+	}
 	frame_blocks += blocks, rp_tex_stats.kind_blocks[im->kind] += blocks;
 	want_blocks += blocks << (2 * (from > base ? from - base : 0));
 	im->uses++;

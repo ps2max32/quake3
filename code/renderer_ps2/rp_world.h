@@ -68,6 +68,8 @@ void rp_world_dlights(const struct rp_dlight *l, unsigned n, unsigned max);
 /* The fog on the view's opaque chunks that lie in a fog volume: after
    rp_world_add(0) and the lights. */
 void rp_world_fog(void);
+/* the map loaded has textures with a level over 128 texels (the pool of fine levels) */
+int rp_world_fine(void);
 struct rp_dl_stats {
 	unsigned lights, runs, chunks; /* lights drawn, their runs, the chunks drawn again for them */
 };

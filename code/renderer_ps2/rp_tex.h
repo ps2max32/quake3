@@ -32,6 +32,9 @@ struct rp_image {
 	                           are not in memory yet) */
 	u8 ok;
 	u32 uses;               /* frames that drew with it */
+	u8 want, want_lo;       /* the level it is wanted from in want_frame (rp_image_want), and half a level finer */
+	u8 want_less;           /* and with the levels a quarter of a level less soon */
+	u32 want_frame;         /* that frame, + 1 */
 	u8 fine;                /* its first level's unit in the pool of fine levels, + 1; 0: none */
 	u32 fine_frame;         /* the frame rp_image_fine gave it that level for, + 1 */
 	u32 *luma[2];           /* rp_image_luma's CLUTs */
@@ -48,6 +51,10 @@ struct rp_tex_stats {
 	u32 uploads, upload_kb; /* textures sent to GS memory, since the start */
 	u32 full;               /* not placed: no room in GS memory */
 	u32 coarse;             /* placed without their finest levels: no room for all of them */
+	u32 far;                /* placed from the level its distance needs (tight), not from its first */
+	float far_bias_max;     /* the most levels sooner than the distance asks (tight, images without room) */
+	float far_bias_sum;     /* its sum over the tight frames */
+	u32 far_floors;         /* times going lower was too much (an image without room for a frame) */
 	u32 fine, fine_sent, fine_wait; /* first levels drawn from the pool; sent there; not there yet (its units in flight) */
 	u32 tight;              /* frames whose images did not fit GS memory at their full size */
 	u32 want_max, want_sum; /* a frame's images at their full size: the most (blocks), the sum (KB) */
@@ -98,13 +105,29 @@ extern int rp_tex_full;
    the few textures whose texels are largest on the screen is in a pool of
    its own: GS memory in units of 4 pages (a level of 256 x 256 is 8 pages
    in a row, which the cache seldom has free between its small pieces).
-   rp_tex_fine_units: the pool's units, before rp_tex_init (0: none).
+   rp_tex_fine_units: the pool's units when a map uses it (0: never).
    rp_image_fine_units: the units an image's first level takes (0: it has
    no such level). rp_image_fine: the image is drawn with its first level
    this frame (sent to the pool now if it was not there, in place of one no
    frame in flight draws with); 0: not this frame. rp_tex_level_at: the
    level for rho texels of the first level a pixel, b levels coarser. */
+/* While a frame's images are more than GS memory holds (rp_tex_tight), a
+   texture of the world is placed from the level its nearest surface in the
+   view is drawn with, and no finer: a wall far away takes a quarter or a
+   sixteenth of its memory and looks the same (the GS takes that level
+   there). rp_image_want: the size of its texels there (in pixels), told
+   for the frame before the image is placed. The level stays the one of the
+   frame before while that is within half a level of what is needed: a
+   texture at a boundary is not sent again each frame. While images still
+   find no room, the levels go coarser sooner than the distance asks, a
+   quarter of a level a frame, until the frame's images have room. */
+int rp_tex_tight(void);
+void rp_image_want(struct rp_image *im, float rho);
 void rp_tex_fine_units(u32 units);
+/* The pool takes its GS memory (on) or gives it back to the cache: when a
+   map is loaded, by whether the map has images for it (the cache's entries
+   go: no frame in flight may read them). */
+void rp_tex_fine_use(int on);
 u32 rp_tex_fine_pool(void);
 u32 rp_image_fine_units(const struct rp_image *im);
 int rp_image_fine(struct rp_image *im);
