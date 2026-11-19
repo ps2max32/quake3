@@ -11,8 +11,7 @@
    The game's shaders are rp_shader.c's, its models rp_model.c's (MD3, on
    VU1).
 
-   Not yet: beams, lights, marks. They
-   are counted. Each main view's camera goes into quake3.cam
+   Not yet: lights, marks. They are counted. Each main view's camera goes into quake3.cam
    (ps2_ren_report), for the viewer (tools/q3view) to fly the same path.
    r_ps2draw 0: nothing is drawn, a timedemo then costs what the game side
    costs (game, cgame, client, sound, collision); 1 and a sum of: 2 no world,
@@ -175,6 +174,9 @@ static void RP_AddRefEntityToScene(const refEntity_t *e) {
 		return;
 	if (e->reType == RT_SPRITE && e->radius > 0 && nsprite < MAX_SPRITE)
 		sprites[nsprite++] = *e;
+	/* the railgun's trail and the lightning: quads between two points */
+	if ((e->reType == RT_RAIL_CORE || e->reType == RT_RAIL_RINGS || e->reType == RT_LIGHTNING) && nsprite < MAX_SPRITE)
+		sprites[nsprite++] = *e;
 	/* a body seen only in mirrors is not this view's */
 	if (e->reType == RT_MODEL && !(e->renderfx & RF_THIRD_PERSON) && nment < MAX_MODEL)
 		ments[nment++] = *e;
@@ -208,16 +210,117 @@ struct quad {
 	const struct rp_vert *v;
 	u32 n;
 };
-#define MAX_QUAD (MAX_SPRITE + MAX_POLY)
+#define MAX_BEAM_QUAD 256
+#define MAX_QUAD (MAX_SPRITE + MAX_POLY + MAX_BEAM_QUAD)
 static struct quad quad[MAX_QUAD];
 static u16 quad_order[MAX_QUAD];
 static struct rp_vert sprite_vert[MAX_SPRITE][4];
 
 float rp_sin1(float turns);
 
+/* ---- beams: the railgun's core and rings, the lightning (the engine's
+   RB_SurfaceRailCore, RB_SurfaceRailRings, RB_SurfaceLightningBolt) ---- */
+
+static struct rp_vert beam_vert[MAX_BEAM_QUAD][4];
+static u32 nbeam;
+
+static void beam_quad(u32 *n, const refEntity_t *e, const struct rp_shader *sh, float now, float (*p)[3], float (*st)[2],
+                      float first) {
+	if (nbeam == MAX_BEAM_QUAD || *n == MAX_QUAD)
+		return;
+	struct rp_vert *v = beam_vert[nbeam++];
+	for (int k = 0; k < 4; k++) {
+		VectorCopy(p[k], v[k].xyz);
+		v[k].st[0] = st[k][0], v[k].st[1] = st[k][1];
+		for (int c = 0; c < 4; c++)
+			v[k].rgba[c] = (u8)((float)e->shaderRGBA[c] * (k == 0 && c < 3 ? first : 1.0f));
+	}
+	struct quad *q = &quad[(*n)++];
+	q->shader = e->customShader, q->sort = sh->sort, q->time = now - e->shaderTime;
+	memcpy(q->ent, e->shaderRGBA, 4);
+	q->v = v, q->n = 4;
+}
+
+/* a band from start to end, span each way along up; its texture repeats
+   every 256 units (in pieces of 1024: the 16-bit coordinates) */
+static void beam_core(u32 *n, const refEntity_t *e, const struct rp_shader *sh, float now, const float *start,
+                      const float *dir, float len, const float *up, float span) {
+	for (float at = 0; at < len; at += 1024.0f) {
+		float l = len - at < 1024.0f ? len - at : 1024.0f, a[3], b[3], p[4][3], st[4][2] = {{0, 0}, {0, 1}, {0, 1}, {0, 0}};
+		VectorMA(start, at, dir, a);
+		VectorMA(a, l, dir, b);
+		VectorMA(a, span, up, p[0]);
+		VectorMA(a, -span, up, p[1]);
+		VectorMA(b, -span, up, p[2]);
+		VectorMA(b, span, up, p[3]);
+		st[2][0] = st[3][0] = l * (1.0f / 256.0f);
+		beam_quad(n, e, sh, now, p, st, 0.25f);
+	}
+}
+
+static void scene_beam(u32 *n, const refdef_t *fd, const refEntity_t *e, const struct rp_shader *sh, float now) {
+	float start[3], end[3], dir[3], v1[3], v2[3], right[3];
+	if (e->reType == RT_LIGHTNING) {
+		VectorCopy(e->origin, start);
+		VectorCopy(e->oldorigin, end);
+	} else {
+		VectorCopy(e->oldorigin, start);
+		VectorCopy(e->origin, end);
+	}
+	VectorSubtract(end, start, dir);
+	float len = VectorNormalize(dir);
+	if (len < 1.0f)
+		return;
+	if (e->reType == RT_RAIL_RINGS) {
+		/* a small quad across the trail every 32 units */
+		float up[3], pos[4][3], step[3];
+		static const float st[4][2] = {{1, 0}, {1, 1}, {0, 1}, {0, 0}};
+		int segs = (int)(len * (1.0f / 32.0f));
+		segs = segs <= 0 ? 1 : segs;
+		PerpendicularVector(right, dir);
+		CrossProduct(dir, right, up);
+		VectorScale(dir, 32.0f, step);
+		for (int i = 0; i < 4; i++) {
+			float c = rp_sin1((45.0f + i * 90.0f) * (1.0f / 360.0f) + 0.25f), sn = rp_sin1((45.0f + i * 90.0f) * (1.0f / 360.0f));
+			for (int k = 0; k < 3; k++)
+				pos[i][k] = start[k] + (right[k] * c + up[k] * sn) * 4.0f + (segs > 1 ? step[k] : 0);
+		}
+		if (segs > 1)
+			segs--;
+		for (int i = 0; i < segs && i < 96; i++) {
+			beam_quad(n, e, sh, now, pos, (float (*)[2])st, 1.0f);
+			for (int j = 0; j < 4; j++)
+				VectorAdd(pos[j], step, pos[j]);
+		}
+		return;
+	}
+	/* the band faces the eye: across the plane of the eye and its two ends */
+	VectorSubtract(start, fd->vieworg, v1);
+	VectorNormalize(v1);
+	VectorSubtract(end, fd->vieworg, v2);
+	VectorNormalize(v2);
+	CrossProduct(v1, v2, right);
+	if (VectorNormalize(right) == 0)
+		return;
+	if (e->reType == RT_RAIL_CORE) {
+		beam_core(n, e, sh, now, start, dir, len, right, 6.0f);
+		return;
+	}
+	/* the lightning: four bands, each turned 45 degrees about the bolt */
+	for (int i = 0; i < 4; i++) {
+		float side[3], t[3];
+		beam_core(n, e, sh, now, start, dir, len, right, 8.0f);
+		CrossProduct(dir, right, side);
+		for (int k = 0; k < 3; k++)
+			t[k] = right[k] * 0.70710678f + side[k] * 0.70710678f;
+		VectorCopy(t, right);
+	}
+}
+
 static u32 scene_quads(const refdef_t *fd) {
 	u32 n = 0;
 	float now = fd->time * 0.001f;
+	nbeam = 0;
 	for (u32 i = first_poly; i < npoly; i++) {
 		struct rp_shader *sh = rp_shader_get(polys[i].shader);
 		if (!sh || !sh->nstage)
@@ -232,6 +335,10 @@ static u32 scene_quads(const refdef_t *fd) {
 		struct rp_shader *sh = rp_shader_get(e->customShader);
 		if (!sh || !sh->nstage)
 			continue;
+		if (e->reType != RT_SPRITE) {
+			scene_beam(&n, fd, e, sh, now);
+			continue;
+		}
 		/* the square faces the eye, turned by its rotation */
 		float left[3], up[3];
 		if (e->rotation == 0) {
