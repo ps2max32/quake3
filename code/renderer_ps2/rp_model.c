@@ -630,7 +630,9 @@ int rp_model_rect(const refEntity_t *e, float *rect) {
 
 static inline float dot3(const float *a, const float *b) { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; }
 
-int rp_scene_world; /* the scene being drawn has the map's world (rp_main.c) */
+int rp_scene_world;
+struct rp_dlight rp_dlights[RP_DLIGHTS];
+unsigned rp_ndlight; /* the scene being drawn has the map's world (rp_main.c) */
 /* the surface on VU1: a chain of its pieces */
 static const void *surf_chain(struct msurf *sf, int frame, int oldframe) {
 	/* a frame that is not ready: the other one, or the block drawn last */
@@ -724,7 +726,31 @@ void rp_model_draw(const refEntity_t *e, float t) {
 	/* the light, its direction in the model's space */
 	vec3_t amb, dirc, dir;
 	float ld[3];
-	rp_light_at(e->renderfx & RF_LIGHTING_ORIGIN ? e->lightingOrigin : e->origin, rp_scene_world, amb, dirc, dir);
+	const float *lorg = e->renderfx & RF_LIGHTING_ORIGIN ? e->lightingOrigin : e->origin;
+	rp_light_at(lorg, rp_scene_world, amb, dirc, dir);
+	if (rp_scene_world && rp_ndlight) {
+		/* the dynamic lights, as the engine adds them (R_SetupEntityLighting): each
+		   16 at its radius, by the square of the distance, to the directed light,
+		   and its direction by as much */
+		float len = sqrtf(dot3(dirc, dirc)), ldir[3] = {dir[0] * len, dir[1] * len, dir[2] * len};
+		for (unsigned i = 0; i < rp_ndlight; i++) {
+			const struct rp_dlight *l = &rp_dlights[i];
+			float dv[3] = {l->org[0] - lorg[0], l->org[1] - lorg[1], l->org[2] - lorg[2]};
+			float dist = sqrtf(dot3(dv, dv)), inv = dist > 0 ? 1.0f / dist : 0;
+			float dd = dist < 16.0f ? 16.0f : dist, power = 16.0f * l->radius * l->radius / (dd * dd);
+			if (power < 1.0f)
+				continue;
+			for (int a = 0; a < 3; a++) {
+				dirc[a] += power * l->col[a];
+				dirc[a] = dirc[a] > 255.0f ? 255.0f : dirc[a];
+				ldir[a] += power * dv[a] * inv;
+			}
+		}
+		len = sqrtf(dot3(ldir, ldir));
+		if (len > 0)
+			for (int a = 0; a < 3; a++)
+				dir[a] = ldir[a] / len;
+	}
 	for (int a = 0; a < 3; a++) {
 		amb[a] = amb[a] > 127 ? 127 : amb[a];
 		ld[a] = dot3(dir, e->axis[a]) / sc;

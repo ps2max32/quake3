@@ -39,6 +39,14 @@ int rp_model_blended(const refEntity_t *e);
 int rp_model_rect(const refEntity_t *e, float *rect);
 /* the scene being drawn has the map's world: the models stand in its light */
 extern int rp_scene_world;
+/* the scene's dynamic lights (a rocket, a shot's flash): the models are lit
+   by them as the engine's are (the world is not) */
+#define RP_DLIGHTS 32
+struct rp_dlight {
+	float org[3], radius, col[3];
+};
+extern struct rp_dlight rp_dlights[RP_DLIGHTS];
+extern unsigned rp_ndlight;
 
 struct rp_model_stats {
 	u32 drawn, culled, cut;   /* entities: inside the guard band, out of view, across a plane (cut on VU1) */

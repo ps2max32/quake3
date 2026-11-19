@@ -585,6 +585,13 @@ corridor 9.2 and court 11.2 (14.5 and 15.6 the evening before), q3dm12 13.6
   one for the model, the engine's is each vertex's): 25 cycles a vertex for
   21. Far off, where one stage is drawn, an item whose first stage is its
   shine shows its skin. No difference in the timedemo's passes.
+- **Dynamic lights on models**: a rocket, a shot's flash add to a model's
+  directed light and turn its direction, as the engine's do (16 at the
+  light's radius, by the square of the distance). The world is not lit by
+  them yet: that needs a pass of its own over the chunks near a light (a
+  projection of the light's spot by position, or its falloff by vertex:
+  the map's triangles are large for the second), and its fill is the
+  screen's when the light is at the eye, every shot.
 
 ## 3. Why the earlier attempts stalled
 

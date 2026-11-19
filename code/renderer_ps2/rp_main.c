@@ -11,7 +11,7 @@
    The game's shaders are rp_shader.c's, its models rp_model.c's (MD3, on
    VU1).
 
-   Not yet: lights. They are counted. Each main view's camera goes into quake3.cam
+   Not yet: lights on the world (the models are lit by them). They are counted. Each main view's camera goes into quake3.cam
    (ps2_ren_report), for the viewer (tools/q3view) to fly the same path.
    r_ps2draw 0: nothing is drawn, a timedemo then costs what the game side
    costs (game, cgame, client, sound, collision); 1 and a sum of: 2 no world,
@@ -175,6 +175,7 @@ static unsigned long long st_mark_cycles, st_quad_cycles;
 static void RP_ClearScene(void) {
 	cur_ents = cur_polys = cur_polyverts = cur_lights = 0;
 	first_sprite = nsprite, first_poly = npoly, first_ment = nment;
+	rp_ndlight = 0;
 }
 
 static void RP_AddRefEntityToScene(const refEntity_t *e) {
@@ -209,6 +210,11 @@ static void RP_AddPolyToScene(qhandle_t shader, int numVerts, const polyVert_t *
 
 static void RP_AddLightToScene(const vec3_t org, float intensity, float r, float g, float b) {
 	st.lights++, cur_lights++;
+	if (rp_ndlight < RP_DLIGHTS && intensity > 0) {
+		struct rp_dlight *l = &rp_dlights[rp_ndlight++];
+		VectorCopy(org, l->org);
+		l->radius = intensity, l->col[0] = r, l->col[1] = g, l->col[2] = b;
+	}
 }
 
 /* a scene's quads in the order they are drawn: by their shader's sort, then
@@ -685,6 +691,7 @@ static void RP_RenderScene(const refdef_t *fd) {
 		}
 	}
 	first_sprite = nsprite, first_poly = npoly, first_ment = nment;
+	rp_ndlight = 0;
 	if (!world)
 		return;
 	int df = ps2_demo_frame();
