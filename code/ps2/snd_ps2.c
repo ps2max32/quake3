@@ -130,7 +130,7 @@ _Static_assert(sizeof(struct mx_snd_sample) == sizeof(((sfx_t *)0)->ps2Sample[0]
 #define SAMPLE(sfx, loop) ((struct mx_snd_sample *)(sfx)->ps2Sample[loop])
 
 #define HW_SFX 4096
-#define HW_PRELOAD (1280u << 10)   /* of SPU RAM's 1.8 MiB */
+#define HW_PRELOAD (1664u << 10)   /* of SPU RAM's 1.8 MiB: all but room for a long sound or two */
 #define HW_PRELOAD_ONE (48 << 10)
 static sfx_t *hw_all[HW_SFX];    /* the sounds with their ADPCM here */
 static sfx_t *hw_loaded[HW_SFX]; /* those with a sample in SPU RAM */
@@ -202,6 +202,8 @@ static struct mx_snd_sample *hw_sample(sfx_t *sfx, int loop)
 		return NULL;
 	}
 	hw_ups++;
+	if (Cvar_VariableIntegerValue("s_ps2log"))
+		Com_Printf("SPUCOPY %s %d %d %d ms\n", sfx->soundName, loop, sfx->ps2Bytes, Sys_Milliseconds() - t0);
 	hw_bytes += (unsigned)sfx->ps2Bytes;
 	int in = 0;
 	for (int i = 0; i < hw_nloaded; i++)
