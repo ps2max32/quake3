@@ -708,6 +708,65 @@ PS2 renderer follows. The same place by `+devmap`, `+setviewpos`,
   misses a light that falls between the vertices of a large surface. It
   is now the sum of the lightmap's texels nearer to that vertex than to
   the surface's others (the map tool; the maps are to be made again).
+- **Water was white and hid its floor** (q3ctf2, and every `liquids`
+  script with `blendFunc GL_DST_COLOR GL_ONE`: 63 stages in the game's
+  scripts). That blend is the picture times 1 + the texture; it was drawn
+  as the picture plus the texture, which on a dark floor is the texture
+  alone, three layers of it. The GS has no product of two colours, but it
+  has the picture times 1 + alpha (the blend of the dynamic lights' spot):
+  the stage is drawn so, with the texture's brightness as its alpha (the
+  CLUT the filter stages have). The hue of the texture is lost (the water
+  is 8 of 255 less blue than the PC's), its brightness is the PC's.
+  And the `$lightmap` stage after such stages was twice too bright: the
+  engine's frame is half the picture (overbright doubles it at the end), so
+  a lightmap stage over what is in the frame multiplies by the lightmap's
+  value itself, where over a stage of the surface (drawn at half) it comes
+  out as twice it. The pass after stages that are all products now has a
+  CLUT of half the brightness. q3ctf2's pool against the PC (mean of a
+  region, 0-255): near 28 55 54 for the PC's 29 57 56 (it was 40 91 93),
+  far 63 91 98 for 55 91 104 (it was 142 158 161).
+- **More images than GS memory holds** (q3ctf2 and q3tourney4 from their
+  spawn points: 1.4 to 1.7 MB of images at full size for the cache's 1.2).
+  The images drawn last found no room: the view weapon, the HUD's head and
+  icons, a few walls (white). Now, while a frame's images are more than fit,
+  a texture of the world is placed from the level its nearest surface in
+  the view is drawn with (the GS takes that level there anyway), and no
+  finer; and while an image still finds no room, the levels go coarser
+  sooner than the distance asks, a quarter of a level a frame, to two
+  levels at most. Back down when the frame's images would take under 93 %
+  of the memory with a quarter less (computed from the textures' sizes,
+  not tried), and after one try that was too much not again for that view.
+  A texture keeps the level of the frame before within half a level, so
+  one at a boundary is not sent again each frame. Both views: no image
+  without room (744 and 3829 in 370 frames before), the far walls a little
+  less sharp. It does nothing while the images fit (the timedemo).
+  The views are what they are: at 1920 across most of a view's textures
+  are near enough for their first level, so the far ones give 100 KB of
+  the 300 that lack; lightmap pages are a quarter of the memory (packed by
+  place already), and the cache's own loss is 10 %.
+- **The console's font took 65 KB of GS memory** in every frame with text
+  on it (256 x 256, 8 bits): one colour with 242 values of alpha, which
+  the texture tool's palette of 16 could not hold, as it began from the
+  colours alone (one). The palette's free entries now go to the texels
+  farthest from the ones there are: the font, the menu's font and 40 small
+  pictures (the HUD's icons, the crosshairs) are 4-bit (half the memory),
+  30 more pictures with alpha have a better palette of 256.
+- **Girders and grates were not lit** (q3dm19: gold girders at full
+  brightness in a dark hall; 50 of the game's scripts are a texture whose
+  alpha is tested with a `$lightmap` stage after it). Such a surface has no
+  lightmap pass on the PS2 (the pass cannot leave out the texels the test
+  leaves out) and is lit by its vertices, but its stage is `rgbGen
+  identity`: it was drawn unlit. The map tool now marks these materials
+  and gives their vertices the lightmap's light around each (the mean of
+  the surface's texels nearest to it; the BSP's own vertex colours are
+  another light), and the stages before the script's `$lightmap` stage
+  take the vertex's colour. The maps are to be made again (same version:
+  a flag more).
+- **Heads, torches and skulls on the walls twice too bright** (q3dm2's
+  wall head: 92 50 12 for the PC's 51 28 8). They are models built into
+  the map with `rgbGen vertex`, which the engine draws at half the vertex's
+  colour (its identityLight; only `exactVertex`, and a surface without a
+  script, takes the colour whole). The world's stages took it whole.
 - Mirrors and portals (7 maps) are still black surfaces.
 - **The sky had no clouds**, one colour: its layers were drawn with the
   texture level chosen for a surface 16,000 units away, the smallest. They
