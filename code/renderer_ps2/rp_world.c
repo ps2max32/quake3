@@ -111,6 +111,8 @@ static struct {
 #define MAX_TEX 512
 #define MAX_LM 512
 static struct rp_image *wtex[MAX_TEX], *wlm[MAX_LM];
+static u8 wfine[MAX_TEX]; /* the units a texture's first level takes in the pool of fine levels; 0: it has none */
+static int fine_on;       /* a texture of the map has */
 /* the lightmaps' CLUT for a surface without a texture (one with a texture
    has it in its texture's CLUT, tools/ps2bin.py): entry 128 + i's alpha is
    brightness i as the blend's factor (Cd * As, 0x80 is 1.0): twice the
@@ -121,7 +123,8 @@ static u64 lm_clut_key;
 static void images_free(void) {
 	/* the textures are the file of images' (the shaders' too): not freed here */
 	for (u32 i = 0; i < MAX_TEX; i++)
-		wtex[i] = 0;
+		wtex[i] = 0, wfine[i] = 0;
+	fine_on = 0;
 	for (u32 i = 0; i < MAX_LM; i++)
 		rp_image_free(wlm[i]), wlm[i] = 0;
 }
@@ -131,6 +134,8 @@ static void images_load(void) {
 	u32 bytes = 0, none = 0;
 	for (u32 i = 0; i < h->ntex && i < MAX_TEX; i++) {
 		wtex[i] = rp_image_bin(pm.tex[i].name, &bytes);
+		wfine[i] = wtex[i] ? (u8)rp_image_fine_units(wtex[i]) : 0;
+		fine_on |= wfine[i] != 0;
 		none += !wtex[i];
 	}
 	/* the lightmap pages: 64 x 64 mostly (a view takes the ones it draws with) */
@@ -394,6 +399,42 @@ static inline float sel_near(const struct psel *p, const float *b) {
 	return p->n[0] * b[p->near[0]] + p->n[1] * b[p->near[1]] + p->n[2] * b[p->near[2]] - p->d;
 }
 
+/* The pool of fine levels (rp_tex.h): the view's textures that have a level
+   over 128 texels and are drawn with it (the texels of that level a pixel
+   where the texture is nearest: under 2), and the pool's units to those
+   whose texels are largest on the screen, nearest first. One that has a
+   unit goes before others: the levels do not come and go with every step. */
+static float want_rho[MAX_TEX];
+static u16 want_tex[MAX_TEX];
+static u32 nwant;
+unsigned world_st_fine, world_st_cand;
+
+static void want_levels(void) {
+	static u16 cand[MAX_TEX];
+	static float key[MAX_TEX];
+	u32 nc = 0, units = rp_tex_fine_pool();
+	for (u32 i = 0; i < nwant; i++) {
+		u32 t = want_tex[i];
+		if (rp_tex_level_at(want_rho[t], 0) == 0) {
+			float k = want_rho[t] * (wtex[t]->fine ? 0.6f : 1.0f);
+			u32 n = nc++;
+			for (; n > 0 && key[cand[n - 1]] > k; n--)
+				cand[n] = cand[n - 1];
+			cand[n] = (u16)t, key[t] = k;
+		}
+		want_rho[t] = 0;
+	}
+	for (u32 c = 0; c < nc; c++) {
+		u32 t = cand[c], n = wfine[t];
+		if (n > units)
+			continue;
+		units -= n;
+		world_st_fine += (unsigned)rp_image_fine(wtex[t]);
+	}
+	world_st_cand += nc;
+	nwant = 0;
+}
+
 void rp_world_cull(struct rp_world_stats *st) {
 	const struct pm_head *h = pm.h;
 	const struct rp_view *v = &rp_view;
@@ -533,6 +574,19 @@ void rp_world_cull(struct rp_world_stats *st) {
 					item[nitem].chunk = (u16)j, item[nitem].clip = (u8)cut;
 					item[nitem].mask = (u16)mask;
 					nitem++;
+					/* how large its texture's texels are where it is nearest (the GS
+					   takes the level by the depth): for the pool of fine levels */
+					{
+						const struct pm_mat *cm = &pm.mat[ch->mat];
+						if (fine_on && cm->tex >= 0 && cm->tex < MAX_TEX && wtex[cm->tex] && wfine[cm->tex]) {
+							float w = cut ? 4.0f : rp_box_dist(&v->fr[0], ch->mins, ch->maxs, 0) / v->fr_len[0] + 4.0f;
+							float rho = cm->texels * (w < 4.0f ? 4.0f : w) / v->fx;
+							if (!want_rho[cm->tex])
+								want_tex[nwant++] = (u16)cm->tex, want_rho[cm->tex] = rho;
+							else if (rho < want_rho[cm->tex])
+								want_rho[cm->tex] = rho;
+						}
+					}
 				}
 			}
 			if (nitem > first && nwrun == MAX_WRUN)
@@ -543,6 +597,8 @@ void rp_world_cull(struct rp_world_stats *st) {
 			}
 		}
 	}
+	if (nwant)
+		want_levels();
 }
 
 /* The draws of a run of n items (chunks of one material and lightmap page)

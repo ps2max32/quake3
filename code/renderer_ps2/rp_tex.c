@@ -17,6 +17,7 @@
 #include <mx/mx.h>
 #include <mx/vif.h>
 #include <mx/vm.h>
+#include <mx/vram.h>
 
 #include "rp_bin.h"
 #include "rp_tex.h"
@@ -28,7 +29,23 @@ static u64 serial;
 static struct mx_heap *heap_pin, *heap_asset;
 struct rp_tex_stats rp_tex_stats;
 
+#define FINE_UNIT 4 /* pages */
+#define FINE_MAX 32
+static struct rp_image *fine_unit[FINE_MAX];
+static u32 fine_page, fine_n, fine_cfg = 16;
+
+void rp_tex_fine_units(u32 units) { fine_cfg = units > FINE_MAX ? FINE_MAX : units & ~1u; }
+u32 rp_tex_fine_pool(void) { return fine_n; }
+
 void rp_tex_init(void) {
+	/* the pool's pages first: the cache takes the rest */
+	fine_n = 0;
+	memset(fine_unit, 0, sizeof fine_unit);
+	if (fine_cfg) {
+		u32 p = mx_vram_find(fine_cfg * FINE_UNIT);
+		if (p != ~0u && mx_vram_take(p, fine_cfg * FINE_UNIT, MX_VRAM_APP) == 0)
+			fine_page = p, fine_n = fine_cfg;
+	}
 	mx_vcache_init(0, mx_hires_passes() ? MX_VCACHE_ASYNC : MX_VCACHE_STREAM, MX_VCACHE_AUTO);
 	if (!heap_pin) {
 		heap_pin = mx_heap_create("q3.tex", MX_MEM_PINNED, 0);
@@ -54,6 +71,22 @@ static int keeping; /* rp_tex_frame asks for the screen's pictures: not a draw's
 static struct rp_image *kept[KEPT]; /* the screen's pictures asked for lately */
 static u32 nkept;
 int rp_tex_full;
+
+u32 rp_tex_level_at(float rho, float b) {
+	union {
+		float f;
+		u32 u;
+	} a = {rho};
+	if (!(rho > 0))
+		return 0;
+	/* log2 (below 0 where a texel is larger than a pixel: such a texture keeps
+	   its first level under a bias): the exponent and the fraction's first
+	   bits (a sixteenth of a level) */
+	float l = (float)((s32)(a.u >> 23) - 127) + (float)(a.u >> 19 & 15) * (1.0f / 16.0f) + b;
+	return l < 0 ? 0 : l > 6.0f ? 6 : (u32)l;
+}
+
+
 
 static int starts(const char *s, const char *with) {
 	while (*with && *s == *with)
@@ -297,6 +330,7 @@ static void luma_free(struct rp_image *im) {
 
 }
 
+static void fine_drop(struct rp_image *o);
 void rp_image_free(struct rp_image *im) {
 	if (!im || !im->used)
 		return;
@@ -304,6 +338,8 @@ void rp_image_free(struct rp_image *im) {
 		if (kept[i] == im)
 			kept[i] = kept[--nkept], im->kept = 0;
 	luma_free(im);
+	if (im->fine)
+		fine_drop(im);
 	for (u32 f = 0; f < im->levels; f++)
 		mx_vcache_drop(mx_vcache_tex_key(im->key, f));
 	if (im->wide)
@@ -391,6 +427,85 @@ static void texflush(void) {
 	mx_frame_commit(c);
 }
 
+u32 rp_image_fine_units(const struct rp_image *im) {
+	u32 bytes = im->psm == MX_GS_PSM_T4 ? (u32)im->w * im->h / 2 : (u32)im->w * im->h;
+	if (!fine_n || im->split || im->levels < 3 || (im->w > im->h ? im->w : im->h) != 256 || bytes > 2u * FINE_UNIT * 8192)
+		return 0;
+	return bytes > FINE_UNIT * 8192 ? 2 : 1;
+}
+
+static void fine_drop(struct rp_image *o) {
+	for (u32 k = 0; k < fine_n; k++)
+		if (fine_unit[k] == o)
+			fine_unit[k] = 0;
+	o->fine = 0;
+}
+
+int rp_image_fine(struct rp_image *im) {
+	u32 frame = mx_frame_number(), n = rp_image_fine_units(im);
+	if (!n)
+		return 0;
+	if (!im->fine) {
+		if (frame_uploads >= FRAME_UPLOADS)
+			return 0;
+		/* the units free, or of the image drawn with longest ago; not of one a
+		   frame in flight draws with, or this frame */
+		u32 done = mx_frame_done(), best_age = ~0u;
+		int best = -1;
+		for (u32 u = 0; u + n <= fine_n; u += n) {
+			u32 age = 0;
+			int ok = 1;
+			for (u32 k = u; k < u + n && ok; k++) {
+				const struct rp_image *o = fine_unit[k];
+				if (!o)
+					continue;
+				if (o->fine_frame > done || o->fine_frame == frame + 1)
+					ok = 0;
+				age = o->fine_frame > age ? o->fine_frame : age;
+			}
+			if (ok && age < best_age)
+				best = (int)u, best_age = age;
+		}
+		if (best < 0) {
+			rp_tex_stats.fine_wait++;
+			return 0;
+		}
+		for (u32 k = (u32)best; k < (u32)best + n; k++)
+			if (fine_unit[k])
+				fine_drop(fine_unit[k]);
+		for (u32 k = (u32)best; k < (u32)best + n; k++)
+			fine_unit[k] = im;
+		im->fine = (u8)(best + 1);
+		mx_hires_once(1);
+		int bad = image_xfer((fine_page + (u32)best * FINE_UNIT) * 32, mx_tex_tbw(im->w, im->psm), im->psm, im->w, im->h,
+		                     im->psm == MX_GS_PSM_T4 ? ((u32)im->w * im->h + 1) / 2 : (u32)im->w * im->h, im->level[0], 1);
+		texflush();
+		mx_hires_once(0);
+		if (bad) {
+			fine_drop(im);
+			return 0;
+		}
+		rp_tex_stats.uploads++, rp_tex_stats.fine_sent++, frame_uploads++;
+	}
+	im->fine_frame = frame + 1;
+	return 1;
+}
+
+/* the image's first level from the pool before the cache's levels (from its
+   second) in t */
+static void fine_join(struct rp_image *im) {
+	struct mx_tex c = im->t;
+	if (c.levels + 1 > MX_TEX_LEVELS)
+		return;
+	for (u32 l = c.levels; l > 0; l--)
+		im->t.tbp[l] = c.tbp[l - 1], im->t.tbw[l] = c.tbw[l - 1];
+	im->t.tbp[0] = (fine_page + (u32)(im->fine - 1) * FINE_UNIT) * 32;
+	im->t.tbw[0] = (u8)mx_tex_tbw(im->w, im->psm);
+	im->t.tw = (u8)log2u(im->w), im->t.th = (u8)log2u(im->h), im->t.levels = (u8)(c.levels + 1);
+	im->from = 0;
+	rp_tex_stats.fine++;
+}
+
 const struct mx_tex *rp_image_place(struct rp_image *im) {
 	u32 frame = mx_frame_number();
 	if (!keeping) {
@@ -426,6 +541,14 @@ const struct mx_tex *rp_image_place(struct rp_image *im) {
 	u32 f0 = tight && !rp_tex_full && (im->kind == RP_IMAGE_MODEL || im->kind == RP_IMAGE_OTHER) && im->levels > 2 && im->w >= 64;
 	if (f0 && im->split && f0 > im->m.tail)
 		f0 = 0;
+	/* an image of the file larger than 128 texels a side: the cache has it
+	   from its level of 128, as when the file had no more; its first level is
+	   the pool's, in the frames it has a unit there (rp_image_fine) */
+	u32 base = 0;
+	while (!im->split && base + 2 < (u32)im->levels && (im->w > im->h ? im->w : im->h) >> base > 128)
+		base++;
+	int fine = base == 1 && im->fine && im->fine_frame == frame + 1 && !f0;
+	f0 = f0 + base;
 	int r = im->split ? mx_vcache_tex_mem(im->key, &im->m, im->psm, tw, th, cpsm, f0, 0, &im->t, &from)
 	                  : mx_vcache_tex(mx_vcache_tex_key(im->key, f0), im->psm, tw - f0, th - f0, im->levels - f0, cpsm, &im->t);
 	if (!im->split)
@@ -465,10 +588,13 @@ const struct mx_tex *rp_image_place(struct rp_image *im) {
 	im->from = (u8)from, im->ok = 1;
 	u32 blocks = im->t.blocks + (im->wide ? 4 : 0);
 	frame_blocks += blocks, rp_tex_stats.kind_blocks[im->kind] += blocks;
-	want_blocks += blocks << (2 * from);
+	want_blocks += blocks << (2 * (from > base ? from - base : 0));
 	im->uses++;
-	if (r == MX_VCACHE_HIT && rc == MX_VCACHE_HIT)
+	if (r == MX_VCACHE_HIT && rc == MX_VCACHE_HIT) {
+		if (fine && from == 1)
+			fine_join(im);
 		return &im->t;
+	}
 	rp_tex_stats.uploads++, frame_uploads++;
 	mx_hires_once(1);
 	int bad = 0;
@@ -493,6 +619,8 @@ const struct mx_tex *rp_image_place(struct rp_image *im) {
 		rp_tex_stats.full++;
 		return 0;
 	}
+	if (fine && from == 1)
+		fine_join(im);
 	return &im->t;
 }
 

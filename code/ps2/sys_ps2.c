@@ -422,6 +422,9 @@ const struct mx_vm_config mx_vm_config = {
 	   needed, the rest of RAM VM's pages (Quake 3 waits on the swap file) */
 	.clean_frames = Q3_CLEAN_FRAMES,
 	.trace = Q3_VM_TRACE,
+	/* the files the PS2 renderer maps: the images (62 MiB with levels of 256
+	   texels), the models (27 MiB), a map */
+	.map_size = 128u << 20,
 };
 
 /* ---- measuring a run -------------------------------------------------------- */

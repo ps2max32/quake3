@@ -32,6 +32,8 @@ struct rp_image {
 	                           are not in memory yet) */
 	u8 ok;
 	u32 uses;               /* frames that drew with it */
+	u8 fine;                /* its first level's unit in the pool of fine levels, + 1; 0: none */
+	u32 fine_frame;         /* the frame rp_image_fine gave it that level for, + 1 */
 	u32 *luma[2];           /* rp_image_luma's CLUTs */
 	u32 *opaque;            /* rp_image_opaque's */
 	u64 opaque_key;
@@ -46,6 +48,7 @@ struct rp_tex_stats {
 	u32 uploads, upload_kb; /* textures sent to GS memory, since the start */
 	u32 full;               /* not placed: no room in GS memory */
 	u32 coarse;             /* placed without their finest levels: no room for all of them */
+	u32 fine, fine_sent, fine_wait; /* first levels drawn from the pool; sent there; not there yet (its units in flight) */
 	u32 tight;              /* frames whose images did not fit GS memory at their full size */
 	u32 want_max, want_sum; /* a frame's images at their full size: the most (blocks), the sum (KB) */
 	u32 later;              /* not placed in a frame that had sent its share of images */
@@ -89,6 +92,23 @@ const struct mx_tex *rp_image_place(struct rp_image *im);
 /* 1 while the view weapon's images are placed: all their levels, whatever
    GS memory is short of (it is the model nearest the eye). */
 extern int rp_tex_full;
+/* The pool of fine levels. The file's images are up to 256 texels a side,
+   but GS memory holds a frame's images only at 128 (the cache: every image
+   from its level of 128, as when the file had no more). The first level of
+   the few textures whose texels are largest on the screen is in a pool of
+   its own: GS memory in units of 4 pages (a level of 256 x 256 is 8 pages
+   in a row, which the cache seldom has free between its small pieces).
+   rp_tex_fine_units: the pool's units, before rp_tex_init (0: none).
+   rp_image_fine_units: the units an image's first level takes (0: it has
+   no such level). rp_image_fine: the image is drawn with its first level
+   this frame (sent to the pool now if it was not there, in place of one no
+   frame in flight draws with); 0: not this frame. rp_tex_level_at: the
+   level for rho texels of the first level a pixel, b levels coarser. */
+void rp_tex_fine_units(u32 units);
+u32 rp_tex_fine_pool(void);
+u32 rp_image_fine_units(const struct rp_image *im);
+int rp_image_fine(struct rp_image *im);
+u32 rp_tex_level_at(float rho, float b);
 /* A CLUT that is no image's (16 x 16, or 8 x 2 with small; CT32, the GS's
    order, where it is read from): its block in GS memory for this frame, or
    0. */

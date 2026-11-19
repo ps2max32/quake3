@@ -120,10 +120,14 @@ def convert(data, maxside, t4db):
         w0, h0 = max(1, w0 // 2), max(1, h0 // 2)
     # down to w0 x h0 the way the renderer goes: a resample to the powers of
     # two, then 2 x 2 levels
-    img = Image.fromarray(rgba, "RGBA")
+    a = rgba
     if (pw, ph) != (width, height):
-        img = img.resize((pw, ph), Image.Resampling.BOX)
-    a = np.asarray(img)
+        # the colour and the alpha each by itself: Pillow resamples an RGBA image
+        # with its colour times its alpha, and a texel of alpha 0 comes out black
+        # (a wall whose alpha is where it shines, not where it is seen through)
+        rgb = Image.fromarray(np.ascontiguousarray(rgba[..., :3]), "RGB").resize((pw, ph), Image.Resampling.BOX)
+        al = Image.fromarray(np.ascontiguousarray(rgba[..., 3]), "L").resize((pw, ph), Image.Resampling.BOX)
+        a = np.dstack([np.asarray(rgb), np.asarray(al)])
     while a.shape[1] > w0 or a.shape[0] > h0:
         a = mip(a)
     chans = 4 if alpha else 3

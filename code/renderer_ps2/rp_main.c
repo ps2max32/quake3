@@ -45,6 +45,7 @@
 
 refimport_t ri;
 static float scene_time; /* the scene's being drawn, for its shaders */
+extern unsigned world_st_fine, world_st_cand;
 static cvar_t *r_ps2draw, *r_ps2shot, *r_ps2passes, *r_ps2beamat, *r_ps2fill, *r_ps2marks, *r_ps2dlight;
 
 /* ---- the screen ------------------------------------------------------------------- */
@@ -75,6 +76,12 @@ static void screen_init(void) {
 	u32 sbytes = mx_hires_strip_records(srec, sizeof srec);
 	ri.Printf(PRINT_ALL, "ps2: renderer: 1080i, %u strips of %u lines, a strip's record %u KB\n", mx_hires_passes(),
 	          mx_hires_strip_height(), sbytes / 1024);
+	/* r_ps2texfine: the units (32 KB of GS memory, taken from the cache's) of
+	   the pool for the first levels of textures of 256 texels, for a file of
+	   images made with tools/ps2pak.py --max 256 (0, the default: none, they
+	   are drawn from their level of 128; 8: the four to eight textures
+	   nearest the eye are as sharp as the PC's) */
+	rp_tex_fine_units((u32)ri.Cvar_Get("r_ps2texfine", "0", CVAR_ARCHIVE | CVAR_LATCH)->integer);
 	rp_tex_init();
 	rp_list_init();
 	/* the images and the models: two files beside the paks, mapped */
@@ -935,6 +942,7 @@ static void RP_EndFrame(int *frontEndMsec, int *backEndMsec) {
 		st_at = st;
 		rp_list_stats = (struct rp_list_stats){0};
 		rp_tex_stats = (struct rp_tex_stats){0};
+		world_st_fine = world_st_cand = 0;
 		pass_tex_kb = 0;
 		u32 kb = rp_model_stats.kb;
 		rp_model_stats = (struct rp_model_stats){.kb = kb};
@@ -1266,10 +1274,10 @@ void ps2_ren_report(void) {
 	           "an image in GS memory\n", rp_poly_stats.polys, rp_poly_stats.cut, rp_poly_stats.culled,
 	           rp_poly_stats.pics, st_nostage);
 	Com_Printf("ps2: renderer: the scene's quads fill %u thousand pixels a frame, %u thousand at most (the "
-	           "screen is 1037 thousand); %u frames with more than twice the screen; over r_ps2fill in %u frames, %u sprites left out; %u parts of marks by %u rays in %u ms (%u at places known); the quads' draws %u ms; %u lights on the world in %u runs of %u chunks (%u left out for the passes' time)\n",
+	           "screen is 1037 thousand); %u frames with more than twice the screen; over r_ps2fill in %u frames, %u sprites left out; %u parts of marks by %u rays in %u ms (%u at places known); the quads' draws %u ms; %u lights on the world in %u runs of %u chunks (%u left out for the passes' time); %u of %u textures a frame with levels over 128 texels (%u sent to the pool, %u times not there yet)\n",
 	           (unsigned)(poly_px_sum / n / 1000), (unsigned)(poly_px_max / 1000), poly_px_over, st_fill_over, st_fill_out,
 	           st_mark_frags, st_mark_traces, (unsigned)(st_mark_cycles / (MX_EE_HZ / 1000)), st_mark_known,
-	           (unsigned)(st_quad_cycles / (MX_EE_HZ / 1000)), rp_dl_stats.lights, rp_dl_stats.runs, rp_dl_stats.chunks, st_dl_off);
+	           (unsigned)(st_quad_cycles / (MX_EE_HZ / 1000)), rp_dl_stats.lights, rp_dl_stats.runs, rp_dl_stats.chunks, st_dl_off, world_st_fine / n, world_st_cand / n, rp_tex_stats.fine_sent, rp_tex_stats.fine_wait);
 	unsigned v = st.views - st_at.views;
 	if (v && world_sum.drawn)
 		Com_Printf("ps2: renderer: the world, a view: %u groups in view, %u chunks (%u across a plane, %u more facing "

@@ -639,6 +639,44 @@ PS2 renderer follows. The same place by `+devmap`, `+setviewpos`,
   level only for the few textures near the eye, by the distance of the
   chunks that use them (the file of images grows fourfold and its pages
   are read from the USB stick as they are needed).
+- **Walls that were black** (q3ctf1's blue walls): `tools/ps2pak.py`
+  resampled an image whose sides are not powers of two with Pillow, which
+  multiplies an RGBA image's colour by its alpha first: where the alpha is
+  0 the colour came out black. On these walls the alpha is where they
+  shine, not where they are seen through. Colour and alpha are resampled
+  each by itself now.
+- **Textures of 256 texels** (the user's question: what do they give, with
+  GS memory as a cache that is refilled). A file of images with levels of
+  256 (`ps2pak.py --max 256`, 62 MiB for 24) and:
+  - *Everything from 256, the cache as it was*: the views want 1.7 to 1.9
+    MB of 1.2, and the textures that find no room are drawn from their
+    small levels, whichever they are: sharper floors, a banner more blurred
+    than before.
+  - *Only the levels a view needs* (a texture from the level its nearest
+    chunk is drawn with; the levels as pieces of the cache each by
+    themselves): at 1920 pixels across nearly every texture of a room
+    needs its level of 256 (two texels a pixel within 1000 units), so
+    little is saved, and the lookups of the pieces cost the EE 1 ms a
+    frame. Not kept.
+  - *A pool for the first levels* (kept, `r_ps2texfine`, off by default):
+    a level of 256 x 256 is 8 pages of GS memory in a row, which the cache
+    seldom has free between its small pieces. So the cache holds every
+    image from its level of 128, exactly as before, and the first level of
+    the textures whose texels are largest on the screen (nearest first;
+    one that has a place keeps it) is in a pool of its own, in units of 4
+    pages. With 8 units (256 KB, taken from the cache) the four to eight
+    textures nearest the eye are as sharp as the PC's: the floor under the
+    player, the wall beside him. Standing views fit. The timedemo (the PS2,
+    a file with the 256 levels of three maps): 20.0 ms a frame for 18.4,
+    no strip late; 34 MB of images sent for 17; 146 swap ins and 252 outs
+    for 43 and 117 (the first levels' data is three times the textures'
+    memory on the EE: most of the cost), and 1343 images that found no room
+    in the smaller cache for 93.
+  - What stands in the way of more: the EE's 32 MB (the paging), then GS
+    memory (1.2 MB beside beam racing's frame and Z), not the DMA. And
+    MXOS's window for mapped files is 64 MiB: the whole file of 256 levels
+    does not fit beside the models' (asked of MXOS: the program's
+    `map_size`, 128 MiB).
 - **The sky had no clouds**, one colour: its layers were drawn with the
   texture level chosen for a surface 16,000 units away, the smallest. They
   are drawn with the first level (a cloud's texel is pixels wide).
