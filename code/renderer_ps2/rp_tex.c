@@ -225,7 +225,18 @@ struct rp_image *rp_image_bin(const char *name, u32 *bytes) {
 	im->wide = e->psm == MX_GS_PSM_T4 && !e->alpha;
 	if (bytes)
 		*bytes += e->size;
-	rp_bin_touch(rp_bin_tex.base + e->off, e->size);
+	/* into memory now, but a first level of 256 texels: that one is read when
+	   the image is first given a place in the pool of fine levels
+	   (rp_image_fine), by the pager, ahead: it is three quarters of the
+	   image's bytes, and most images never come that near. (Letting it go
+	   again once it is in GS memory was worse: read again from the file at
+	   6 ms a page every time it comes back.) */
+	if (levels > 2 && (e->w > e->h ? e->w : e->h) == 256) {
+		const u8 *d = rp_bin_tex.base + e->off;
+		rp_bin_touch(d, (u32)(level[0] - d));
+		rp_bin_touch(level[1], e->size - (u32)(level[1] - d));
+	} else
+		rp_bin_touch(rp_bin_tex.base + e->off, e->size);
 	return im;
 }
 
@@ -445,9 +456,16 @@ int rp_image_fine(struct rp_image *im) {
 	u32 frame = mx_frame_number(), n = rp_image_fine_units(im);
 	if (!n)
 		return 0;
+	u32 fbytes = im->psm == MX_GS_PSM_T4 ? ((u32)im->w * im->h + 1) / 2 : (u32)im->w * im->h;
 	if (!im->fine) {
 		if (frame_uploads >= FRAME_UPLOADS)
 			return 0;
+		/* its texels are read from the file by the pager, ahead: not waited for */
+		if (!mx_mem_resident(im->level[0], fbytes)) {
+			mx_mem_prefetch(im->level[0], fbytes);
+			rp_tex_stats.fine_wait++;
+			return 0;
+		}
 		/* the units free, or of the image drawn with longest ago; not of one a
 		   frame in flight draws with, or this frame */
 		u32 done = mx_frame_done(), best_age = ~0u;

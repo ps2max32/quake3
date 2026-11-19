@@ -672,6 +672,11 @@ PS2 renderer follows. The same place by `+devmap`, `+setviewpos`,
     for 43 and 117 (the first levels' data is three times the textures'
     memory on the EE: most of the cost), and 1343 images that found no room
     in the smaller cache for 93.
+    A first level is read from the file when its image first gets a place
+    in the pool (by the pager, ahead; not at the map's load), and stays in
+    memory: letting it go once it is in GS memory made the frame 22.1 ms
+    (819 pages read again from the file, 6 ms each). With 4 units (two to
+    four textures): 19.5 ms, 516 images without room.
   - What stands in the way of more: the EE's 32 MB (the paging), then GS
     memory (1.2 MB beside beam racing's frame and Z), not the DMA. And
     MXOS's window for mapped files is 64 MiB: the whole file of 256 levels
