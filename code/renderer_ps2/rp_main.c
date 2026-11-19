@@ -11,7 +11,7 @@
    The game's shaders are rp_shader.c's, its models rp_model.c's (MD3, on
    VU1).
 
-   Not yet: lights on the world (the models are lit by them). They are counted. Each main view's camera goes into quake3.cam
+   The lights are counted. Each main view's camera goes into quake3.cam
    (ps2_ren_report), for the viewer (tools/q3view) to fly the same path.
    r_ps2draw 0: nothing is drawn, a timedemo then costs what the game side
    costs (game, cgame, client, sound, collision); 1 and a sum of: 2 no world,
@@ -20,7 +20,8 @@
    of the timedemo's frame n is saved as quake3.tga and the game quits.
    r_ps2passes 1: the timedemo's passes of beam racing as quake3.pass.
    r_ps2beamat n: beam racing's counts start at the n-th view of the world.
-   r_ps2fill: the limit of the sprites' fill (fill_budget). r_ps2marks 0: no marks. */
+   r_ps2fill: the limit of the sprites' fill (fill_budget). r_ps2marks 0: no marks.
+   r_ps2dlight n: the dynamic lights that light the world, at most (0: none). */
 
 #include "../qcommon/q_shared.h"
 #include "../qcommon/qfiles.h"
@@ -44,7 +45,7 @@
 
 refimport_t ri;
 static float scene_time; /* the scene's being drawn, for its shaders */
-static cvar_t *r_ps2draw, *r_ps2shot, *r_ps2passes, *r_ps2beamat, *r_ps2fill, *r_ps2marks;
+static cvar_t *r_ps2draw, *r_ps2shot, *r_ps2passes, *r_ps2beamat, *r_ps2fill, *r_ps2marks, *r_ps2dlight;
 
 /* ---- the screen ------------------------------------------------------------------- */
 
@@ -169,7 +170,7 @@ static u32 first_sprite, first_poly;           /* of the scene */
 static unsigned st_nostage, st_quads;
 static unsigned long long poly_px_sum, poly_px_max;
 static float quad_px; /* the frame's quads: the pixels they fill, every stage */
-static unsigned poly_px_over, st_fill_over, st_fill_out, st_mark_frags, st_mark_traces, st_mark_known;
+static unsigned poly_px_over, st_fill_over, st_fill_out, st_mark_frags, st_mark_traces, st_mark_known, st_dl_off;
 static unsigned long long st_mark_cycles, st_quad_cycles;
 
 static void RP_ClearScene(void) {
@@ -348,15 +349,11 @@ static qhandle_t wshader[MAX_WMAT];
    those frames cost; 0: no limit; more: that many hundredths of the screen. */
 #define FILL_US 0.0019f /* a pixel of a blended sprite, measured: 1.9 ms a million */
 static float fill_was[2]; /* what the last frame's quads filled, and the one's before */
-static float fill_budget(void) {
+
+/* what the passes of a field took, us: the sum of the strips' last passes */
+static float field_passes_us(void) {
 	static u32 was_n[MX_HIRES_PASSES], was_sum[MX_HIRES_PASSES];
 	static float strip_us[MX_HIRES_PASSES];
-	int f = r_ps2fill->integer;
-	float screen = (float)(mx_gs.w * mx_gs.h);
-	if (f <= 0)
-		return 1e30f;
-	if (f > 1)
-		return (float)f * 0.01f * screen;
 	float t = 0;
 	u32 np = mx_hires_passes();
 	for (u32 k = 0; k < np && k < MX_HIRES_PASSES; k++) {
@@ -366,12 +363,60 @@ static float fill_budget(void) {
 		was_n[k] = n, was_sum[k] = sum;
 		t += strip_us[k];
 	}
+	return t;
+}
+
+/* the pixels the field's time has room for, beside the rest of the frame */
+static float fill_room(void) {
+	float t = field_passes_us();
 	/* the frames those passes showed: the last or the one before (the smaller
 	   fill: the larger rest) */
 	float had = fill_was[0] < fill_was[1] ? fill_was[0] : fill_was[1];
 	float rest = t - FILL_US * had;
-	float room = 0.88f * 1e6f / (float)mx_gs.hz - (rest > 0 ? rest : 0);
-	float b = room / FILL_US;
+	return (0.88f * 1e6f / (float)mx_gs.hz - (rest > 0 ? rest : 0)) / FILL_US;
+}
+
+/* The dynamic lights that light the world this frame, into out (r_ps2dlight
+   at most): a light draws the chunks near it again, where its spot is. Each
+   is taken for the pixels of its sphere on the screen (most of the screen
+   when the eye is in it: a shot's flash), and the lights together may have
+   six tenths of the room; one that does not fit is left out (the models
+   are lit by it all the same). */
+static float light_px; /* what the frame's lights take */
+static unsigned dlights_choose(struct rp_dlight *out) {
+	const struct rp_view *vw = &rp_view;
+	float screen = (float)(mx_gs.w * mx_gs.h), room = r_ps2fill->integer == 1 ? 0.6f * fill_room() : 1e30f;
+	unsigned n = 0, max = (unsigned)r_ps2dlight->integer;
+	for (unsigned i = 0; i < rp_ndlight && n < max; i++) {
+		const struct rp_dlight *l = &rp_dlights[i];
+		float d[3] = {l->org[0] - vw->org[0], l->org[1] - vw->org[1], l->org[2] - vw->org[2]};
+		float dist = sqrtf(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]), R = l->radius, px = 0.6f * screen;
+		if (dist > R) {
+			/* all of it behind the eye */
+			if (d[0] * vw->F[0] + d[1] * vw->F[1] + d[2] * vw->F[2] < -R)
+				continue;
+			float a = 2.0f * (R * vw->fx / dist) * (R * vw->fy / dist);
+			px = a < px ? a : px;
+		}
+		if (light_px + px > room) {
+			st_dl_off++;
+			continue;
+		}
+		out[n++] = *l;
+		light_px += px;
+	}
+	return n;
+}
+
+static float fill_budget(void) {
+	int f = r_ps2fill->integer;
+	float screen = (float)(mx_gs.w * mx_gs.h);
+	if (f <= 0)
+		return 1e30f;
+	if (f > 1)
+		return (float)f * 0.01f * screen;
+	/* what the lights left, and half the screen whatever the room */
+	float b = fill_room() - light_px;
 	return b < 0.5f * screen ? 0.5f * screen : b > 8.0f * screen ? 8.0f * screen : b;
 }
 
@@ -619,6 +664,12 @@ static void RP_RenderScene(const refdef_t *fd) {
 			rp_world_areas(fd->areamask);
 			rp_world_cull(&world_st);
 			rp_world_add(0);
+			/* the dynamic lights on it: after its depth is there, before what stands in it */
+			if (r_ps2dlight->integer && rp_ndlight) {
+				static struct rp_dlight lit[RP_DLIGHTS];
+				unsigned n = dlights_choose(lit);
+				rp_world_dlights(lit, n, n);
+			}
 #define ACC(f) world_sum.f += world_st.f
 			ACC(seen), ACC(groups), ACC(drawn), ACC(clip), ACC(back), ACC(verts);
 #undef ACC
@@ -899,7 +950,8 @@ static void RP_EndFrame(int *frontEndMsec, int *backEndMsec) {
 		}
 		st_frames++;
 	}
-	fill_was[1] = fill_was[0], fill_was[0] = quad_px;
+	fill_was[1] = fill_was[0], fill_was[0] = quad_px + light_px;
+	light_px = 0;
 	quad_px = 0;
 }
 
@@ -1214,10 +1266,10 @@ void ps2_ren_report(void) {
 	           "an image in GS memory\n", rp_poly_stats.polys, rp_poly_stats.cut, rp_poly_stats.culled,
 	           rp_poly_stats.pics, st_nostage);
 	Com_Printf("ps2: renderer: the scene's quads fill %u thousand pixels a frame, %u thousand at most (the "
-	           "screen is 1037 thousand); %u frames with more than twice the screen; over r_ps2fill in %u frames, %u sprites left out; %u parts of marks by %u rays in %u ms (%u at places known); the quads' draws %u ms\n",
+	           "screen is 1037 thousand); %u frames with more than twice the screen; over r_ps2fill in %u frames, %u sprites left out; %u parts of marks by %u rays in %u ms (%u at places known); the quads' draws %u ms; %u lights on the world in %u runs of %u chunks (%u left out for the passes' time)\n",
 	           (unsigned)(poly_px_sum / n / 1000), (unsigned)(poly_px_max / 1000), poly_px_over, st_fill_over, st_fill_out,
 	           st_mark_frags, st_mark_traces, (unsigned)(st_mark_cycles / (MX_EE_HZ / 1000)), st_mark_known,
-	           (unsigned)(st_quad_cycles / (MX_EE_HZ / 1000)));
+	           (unsigned)(st_quad_cycles / (MX_EE_HZ / 1000)), rp_dl_stats.lights, rp_dl_stats.runs, rp_dl_stats.chunks, st_dl_off);
 	unsigned v = st.views - st_at.views;
 	if (v && world_sum.drawn)
 		Com_Printf("ps2: renderer: the world, a view: %u groups in view, %u chunks (%u across a plane, %u more facing "
@@ -1231,8 +1283,8 @@ void ps2_ren_report(void) {
 		           rp_list_stats.qw / st_frames, rp_list_stats.dyn_qw / st_frames, rp_list_stats.lost,
 		           rp_tex_stats.uploads, rp_tex_stats.upload_kb, rp_tex_stats.full, rp_tex_stats.coarse, rp_tex_stats.tight, rp_tex_stats.frames ? rp_tex_stats.want_sum / rp_tex_stats.frames : 0, rp_tex_stats.want_max / 4, rp_tex_stats.later);
 	if (st_frames) {
-		static const char *const prog[4] = {"the world's", "GS packets", "the models'", "the stages'"};
-		for (int k = 0; k < 4; k++)
+		static const char *const prog[RP_PROGS] = {"the world's", "GS packets", "the models'", "the stages'", "the lights'"};
+		for (int k = 0; k < RP_PROGS; k++)
 			Com_Printf("ps2: renderer: a frame, %s program: %u vertices (%u through the one that cuts) in %u batches, %u "
 			           "set-ups\n", prog[k], rp_list_stats.p_sent[k] / st_frames, rp_list_stats.p_clip[k] / st_frames,
 			           rp_list_stats.p_batches[k] / st_frames, rp_list_stats.p_setups[k] / st_frames);
@@ -1272,6 +1324,7 @@ static void RP_BeginRegistration(glconfig_t *config) {
 	r_ps2beamat = ri.Cvar_Get("r_ps2beamat", "0", 0);
 	r_ps2fill = ri.Cvar_Get("r_ps2fill", "1", CVAR_ARCHIVE);
 	r_ps2marks = ri.Cvar_Get("r_ps2marks", "1", CVAR_ARCHIVE);
+	r_ps2dlight = ri.Cvar_Get("r_ps2dlight", "4", CVAR_ARCHIVE);
 	rp_debug = (unsigned)ri.Cvar_Get("r_ps2debug", "0", 0)->integer;
 	screen_init();
 	/* no frame in flight draws what goes now: the map, the images */

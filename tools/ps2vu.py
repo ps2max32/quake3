@@ -75,6 +75,10 @@ Programs:
          with a vertex outside is not culled but put in the packet with ADC
          on all three (the vertices' offsets in their XYZ2's w), and after
          the packet is kicked q3mclip cuts those.
+    wd, wdc   a dynamic light's pass over the world's batches: w1 and w1c with
+         the texture coordinates from the position (DCTX: the light's spot,
+         a texture, laid along the surface) and the colour as the light's
+         times 1 - z^2, z how far the vertex is off the spot's plane.
     me, mec   m and mc with the texture coordinates of tcGen environment: the
          reflection of the eye's direction (one for the model: ECTX) in the
          vertex's normal, in place of the vertex's own.
@@ -130,6 +134,10 @@ ECTX = {"EX": 36, "EY": 37, "EZ": 38, "E0": 39}
 # a stage's, in the same room: the texture coordinates' matrix by columns (s' = TM0.x s + TM1.x
 # t + TM2.x, t' the y's; TM2.z 1), the colour's factor and what is added (0 .. 255)
 TCTX = {"TM0": 30, "TM1": 31, "TM2": 32, "CMUL": 33, "CADD": 34}
+# a dynamic light's, in the same room: the position (as the VIF wrote it) to the light's own
+# coordinates by columns (s' = DM0.x x + DM1.x y + DM2.x z + DM3.x: the spot's texture
+# coordinates in x and y, and in z how far off the spot's plane, in radii); DLC its colour
+DCTX = {"DM0": 30, "DM1": 31, "DM2": 32, "DM3": 33, "DLC": 34}
 # q3clip's registers: the loops' uniforms and tags are kept out of them
 CLIP_VF = set(range(1, 10)) | set(range(12, 21))
 
@@ -223,11 +231,34 @@ def kernels(vs):
             Op("sqcol", "L", "sq.xyzw {KO}, {off}({p})", None, [("KO", "xyzw")], mem=("sq", dst)),
         ]
 
+    # a dynamic light's pass: the spot's coordinates from the position, the colour by how
+    # far the vertex is off the spot's plane (1 - z^2, not below 0)
+    def dlight(dst):
+        return [
+            Op("da", "U", "mulax.xyz ACC, {DM0}, {F}x", ("ACC", ""), [("F", "x")]),
+            Op("db", "U", "madday.xyz ACC, {DM1}, {F}y", ("ACC", ""), [("ACC", ""), ("F", "y")]),
+            Op("dc", "U", "maddaz.xyz ACC, {DM2}, {F}z", ("ACC", ""), [("ACC", ""), ("F", "z")]),
+            Op("dd", "U", "maddw.xyz {G}, {DM3}, vf00w", ("G", "xyz"), [("ACC", "")]),
+            Op("ds", "U", "mulq.xy {M}, {G}, Q", ("M", "xy"), [("G", "xy"), ("Q", "")]),
+            Op("dq", "U", "addq.z {M}, vf00, Q", ("M", "z"), [("Q", "")]),
+            Op("sqst", "L", "sq.xyz {M}, {off}({p})", None, [("M", "xyz")], mem=("sq", dst)),
+            Op("dz", "U", "mul.z {G2}, {G}, {G}", ("G2", "z"), [("G", "z")]),
+            Op("ka", "U", "mulaw.xyzw ACC, {DLC}, vf00w", ("ACC", ""), []),
+            Op("kb", "U", "msubz.xyzw {KC}, {DLC}, {G2}z", ("KC", "xyzw"), [("ACC", ""), ("G2", "z")]),
+            Op("km", "U", "maxx.xyzw {KM}, {KC}, vf00x", ("KM", "xyzw"), [("KC", "xyzw")]),
+            Op("ki", "U", "ftoi0.xyzw {KO}, {KM}", ("KO", "xyzw"), [("KM", "xyzw")]),
+            Op("sqcol", "L", "sq.xyzw {KO}, {off}({p})", None, [("KO", "xyzw")], mem=("sq", dst + 1)),
+        ]
+
     mvp = [(g, CTX[g]) for g in ("C0", "C1", "C2", "C3")]
     clipu = [(g, CTX[g]) for g in ("CS", "CN")]
     stripu = [(g, CTX[g]) for g in ("SS", "SN")]
 
     stageu = [(g, q) for g, q in TCTX.items()]
+
+    def kd(name, clip, u):
+        ops = lambda c: pos(clip, False, c) + dlight(0 if clip else FAR)
+        return Kernel(name, ops, u, 0, STRIDE, mvp + (clipu if clip else stripu) + [(g, q) for g, q in DCTX.items()], {})
 
     def k(name, clip, two, u, stage=False):
         if two:
@@ -320,6 +351,8 @@ def kernels(vs):
         (k("q3w1c", True, False, 1), range(12, 23)),
         (k("q3w1t", False, False, 2, True), range(30, 56)),
         (k("q3w1tc", True, False, 1, True), range(18, 34)),
+        (kd("q3wd", False, 2), range(30, 60)),
+        (kd("q3wdc", True, 1), range(18, 36)),
     ]
 
 
@@ -884,6 +917,7 @@ def main():
     h += [f"#define Q3VU_M_{g} {q} /* q3m's uniforms */" for g, q in MCTX.items()]
     h += [f"#define Q3VU_M_{g} {q} /* q3me's more */" for g, q in ECTX.items()]
     h += [f"#define Q3VU_T_{g} {q} /* q3w1t's */" for g, q in TCTX.items()]
+    h += [f"#define Q3VU_D_{g} {q} /* q3wd's */" for g, q in DCTX.items()]
     h += [f"#define Q3VU_M_OUT {M_OUT}", f"#define Q3VU_M_IDX {M_IDX}", f"#define Q3VU_M_VERT {M_VERT}",
           f"#define Q3VU_M_VERTS {M_VERTS} /* a piece's vertices at most */",
           f"#define Q3VU_M_TRIS {M_TRIS} /* and its triangles */"]

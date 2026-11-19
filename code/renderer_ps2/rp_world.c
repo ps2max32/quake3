@@ -24,6 +24,7 @@
 
 #include "rp_bin.h"
 #include "rp_list.h"
+#include "rp_model.h"
 #include "rp_tex.h"
 #include "rp_world.h"
 #include "vu/q3vu.h"
@@ -634,6 +635,138 @@ void rp_world_add(int blended) {
 	for (u32 r = 0; r < nwrun; r++)
 		if (wrun[r].blended == blended && run_draw(wmatrix, &item[wrun[r].first], wrun[r].n) < 0)
 			return;
+}
+
+/* ---- dynamic lights. A light's spot is a texture (round, strong in the
+   middle) laid on the chunks near the light, and the picture there is made
+   brighter by it (times 1 + the spot's alpha, as the engine's lights
+   multiply what is there: the GS has no product of colours, so a light's
+   own colour is not in it; the models take that). Its
+   coordinates are the vertex's position along two of the world's axes, and
+   along the third the vertex's colour falls off (q3wd, tools/ps2vu.py). The
+   third axis is the one a chunk faces most (its normals' cone; else its
+   box's thinnest side), so on a floor or a wall the spot is round and
+   exact in every pixel; along the third axis it is by vertex. A light is
+   up to three runs: the chunks by axis. ---- */
+
+struct rp_dl_stats rp_dl_stats;
+#define dl_stats rp_dl_stats
+#define SPOT 64
+static u8 spot_tex[SPOT * SPOT] MX_FAST_BSS MX_ALIGNED(64);
+static u32 spot_clut[256] MX_FAST_BSS MX_ALIGNED(64);
+static struct rp_image *spot_img;
+
+static struct rp_image *spot_image(void) {
+	if (spot_img)
+		return spot_img;
+	for (int y = 0; y < SPOT; y++)
+		for (int x = 0; x < SPOT; x++) {
+			float dx = ((float)x + 0.5f) * (2.0f / SPOT) - 1.0f, dy = ((float)y + 0.5f) * (2.0f / SPOT) - 1.0f;
+			float v = 1.0f - (dx * dx + dy * dy);
+			int edge = x == 0 || y == 0 || x == SPOT - 1 || y == SPOT - 1;
+			spot_tex[y * SPOT + x] = (u8)(v <= 0 || edge ? 0 : v * 255.0f);
+		}
+	/* the strength by index, as alpha (0x80: 1), in the GS's order of a CLUT's entries */
+	for (u32 i = 0; i < 256; i++)
+		spot_clut[(i & ~0x18u) | (i & 8) << 1 | (i & 16) >> 1] = (i + 1) >> 1 << 24 | 0x808080;
+	mx_dcache_writeback(spot_tex, sizeof spot_tex);
+	mx_dcache_writeback(spot_clut, sizeof spot_clut);
+	static const u8 *level;
+	level = spot_tex;
+	spot_img = rp_image_static("*dlight", MX_GS_PSM_T8, SPOT, SPOT, 1, 0, &level, spot_clut);
+	return spot_img;
+}
+
+void rp_world_dlights(const struct rp_dlight *lights, unsigned nl, unsigned max) {
+	static u16 list[3][256];
+	if (!pm.h || !nitem || !nl)
+		return;
+	struct rp_image *im = spot_image();
+	if (!im)
+		return;
+	if (!wmatrix)
+		wmatrix = rp_matrix(pm.h->pos_scale, 0, 0);
+	float ps = pm.h->pos_scale;
+	if (!max)
+		return;
+	for (unsigned li = 0; li < nl && li < max; li++) {
+		const struct rp_dlight *l = &lights[li];
+		float R = l->radius;
+		if (R < 32.0f)
+			continue;
+		u32 cnt[3] = {0, 0, 0};
+		for (u32 r = 0; r < nwrun; r++) {
+			if (wrun[r].blended)
+				continue;
+			for (u32 i = wrun[r].first; i < (u32)wrun[r].first + wrun[r].n; i++) {
+				const struct pm_chunk *ch = &pm.chunk[item[i].chunk];
+				/* not what is seen through (its holes have the depth of what is behind) */
+				if (pm.mat[ch->mat].alpha)
+					continue;
+				/* the light reaches its box */
+				float d2 = 0, ext[3];
+				for (int a = 0; a < 3; a++) {
+					float d = l->org[a] < ch->mins[a] ? ch->mins[a] - l->org[a] : l->org[a] > ch->maxs[a] ? l->org[a] - ch->maxs[a] : 0;
+					d2 += d * d;
+					ext[a] = ch->maxs[a] - ch->mins[a];
+				}
+				if (d2 >= R * R)
+					continue;
+				int w;
+				if (ch->sine < 128) {
+					/* it faces one way: not lit from behind */
+					float back = 0;
+					for (int a = 0; a < 3; a++)
+						back += (float)ch->cone[a] * (l->org[a] - (ch->mins[a] + ch->maxs[a]) * 0.5f);
+					if (back < -127.0f * 8.0f)
+						continue;
+					int ax = ch->cone[0] < 0 ? -ch->cone[0] : ch->cone[0], ay = ch->cone[1] < 0 ? -ch->cone[1] : ch->cone[1],
+					    az = ch->cone[2] < 0 ? -ch->cone[2] : ch->cone[2];
+					w = ax > ay ? (ax > az ? 0 : 2) : (ay > az ? 1 : 2);
+				} else
+					w = ext[0] < ext[1] ? (ext[0] < ext[2] ? 0 : 2) : (ext[1] < ext[2] ? 1 : 2);
+				if (cnt[w] < 256)
+					list[w][cnt[w]++] = (u16)i;
+			}
+		}
+		for (int w = 0; w < 3; w++) {
+			if (!cnt[w])
+				continue;
+			struct rp_state s;
+			memset(&s, 0, sizeof s);
+			const struct mx_tex *t = rp_image_place(im);
+			if (!t)
+				return;
+			s.tex = *t, s.tex_ok = 1;
+			s.blend = RP_BLEND_BRIGHTEN, s.z = RP_Z_TEST, s.prog = RP_PROG_DLIGHT, s.clamp = 1, s.nomip = 1;
+			s.tcc = 1;
+			/* no pixel outside the spot is read and written again */
+			s.alpha = RP_ALPHA_GT0;
+			s.texels = 1.0f;
+			/* a position of the file (times ps: the world's) to the spot's s, t along
+			   the two other axes and, along w, how far off the light in radii */
+			int u = (w + 1) % 3, v = (w + 2) % 3;
+			float (*m)[4] = s.model;
+			m[u][0] = ps * 0.5f / R, m[3][0] = 0.5f - l->org[u] * 0.5f / R;
+			m[v][1] = ps * 0.5f / R, m[3][1] = 0.5f - l->org[v] * 0.5f / R;
+			m[w][2] = ps / R, m[3][2] = -l->org[w] / R;
+			/* its strength: the brightest of its colour, as the vertices' alpha (0x80:
+			   the spot's own) */
+			float lum = l->col[0] > l->col[1] ? l->col[0] : l->col[1];
+			lum = lum > l->col[2] ? lum : l->col[2];
+			m[4][0] = m[4][1] = m[4][2] = 128.0f;
+			m[4][3] = 128.0f * (lum > 1.0f ? 1.0f : lum);
+			if (rp_run(wmatrix, &s) < 0)
+				return;
+			for (u32 k = 0; k < cnt[w]; k++) {
+				const struct item *it = &item[list[w][k]];
+				const struct pm_chunk *ch = &pm.chunk[it->chunk];
+				rp_draw(pm.base + ch->off_data, it->mask, it->clip, ch->nverts, ch->nbatch);
+			}
+			dl_stats.runs++, dl_stats.chunks += cnt[w];
+		}
+		dl_stats.lights++;
+	}
 }
 
 int rp_world_bmodel(u32 n, const float *origin, const float (*axis)[3], int blended) {

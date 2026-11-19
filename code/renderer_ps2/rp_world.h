@@ -60,6 +60,15 @@ void rp_world_cull(struct rp_world_stats *st);
    coordinates. Returns the records. */
 u32 rp_world_sprites(u32 i, const float **rec, u32 *mat);
 void rp_world_add(int blended);
+/* The view's dynamic lights on the world's opaque chunks (after
+   rp_world_add(0)): each light's spot, added to the picture where the chunks
+   near it are; at most max lights, the first. */
+struct rp_dlight;
+void rp_world_dlights(const struct rp_dlight *l, unsigned n, unsigned max);
+struct rp_dl_stats {
+	unsigned lights, runs, chunks; /* lights drawn, their runs, the chunks drawn again for them */
+};
+extern struct rp_dl_stats rp_dl_stats;
 /* The map's brush model n ("*n": a door, a platform) at origin, turned by
    axis: its surfaces that write depth (blended 0) or the blended ones, into
    the frame's list. -1: the list is full. */

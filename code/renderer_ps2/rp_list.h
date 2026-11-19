@@ -73,15 +73,18 @@ void rp_dyn_end(u64 *end);
 /* ---- runs and draws ------------------------------------------------------------------ */
 
 enum { RP_BLEND_NONE, RP_BLEND_ADD, RP_BLEND_ALPHA, RP_BLEND_FILTER, RP_BLEND_OTHER, RP_BLEND_ADD_ALPHA,
-       RP_BLEND_INVFILTER, RP_BLEND_INVALPHA /* the picture where the alpha is 1 */ };
+       RP_BLEND_INVFILTER, RP_BLEND_INVALPHA /* the picture where the alpha is 1 */,
+       RP_BLEND_BRIGHTEN /* the picture times 1 + alpha: a light on what is there */ };
 enum { RP_ALPHA_NONE, RP_ALPHA_GT0, RP_ALPHA_LT128, RP_ALPHA_GE128 };
 /* the programs of a run: the world's (texture and lightmap from one vertex
    when the state has a lightmap); none: its draws are GIF packets (sprites
    of ST, RGBAQ, XYZ2 a vertex, PRIM from the state), no matrix; an MD3
    model's (tools/ps2vu.py, q3m: the state's model uniforms); a stage's: the
    world's one-pass program with the state's texture matrix and colour
-   (q3w1t), for draws in the world's batch format */
-enum { RP_PROG_WORLD, RP_PROG_GS, RP_PROG_MODEL, RP_PROG_STAGE };
+   (q3w1t), for draws in the world's batch format; a dynamic light's: its
+   spot laid on the world's batches (q3wd: the state's model[0 .. 4]: the
+   position to the spot's coordinates by columns, the light's colour) */
+enum { RP_PROG_WORLD, RP_PROG_GS, RP_PROG_MODEL, RP_PROG_STAGE, RP_PROG_DLIGHT, RP_PROGS };
 /* a model's triangles left out by the sign of their screen's cross product:
    none, those of one sign, those of the other */
 enum { RP_CULL_NONE, RP_CULL_NEG, RP_CULL_POS };
@@ -142,8 +145,8 @@ struct rp_list_stats {
 	u32 lost;          /* draws left out: no room */
 	u32 k_sent[16], k_batches[16], k_setups[16]; /* the last frame's, by strip */
 	u32 k_msent[16], k_mbatches[16], k_draws[16]; /* of them the models' program's; draws (CALLs) */
-	u32 p_sent[4], p_batches[4], p_setups[4];    /* sent, batches and setups by program (RP_PROG_*) */
-	u32 p_clip[4];                               /* of p_sent, by the programs that cut */
+	u32 p_sent[RP_PROGS], p_batches[RP_PROGS], p_setups[RP_PROGS]; /* sent, batches and setups by program (RP_PROG_*) */
+	u32 p_clip[RP_PROGS];                        /* of p_sent, by the programs that cut */
 };
 extern struct rp_list_stats rp_list_stats;
 

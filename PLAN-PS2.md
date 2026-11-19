@@ -587,11 +587,25 @@ corridor 9.2 and court 11.2 (14.5 and 15.6 the evening before), q3dm12 13.6
   shine shows its skin. No difference in the timedemo's passes.
 - **Dynamic lights on models**: a rocket, a shot's flash add to a model's
   directed light and turn its direction, as the engine's do (16 at the
-  light's radius, by the square of the distance). The world is not lit by
-  them yet: that needs a pass of its own over the chunks near a light (a
-  projection of the light's spot by position, or its falloff by vertex:
-  the map's triangles are large for the second), and its fill is the
-  screen's when the light is at the eye, every shot.
+  light's radius, by the square of the distance).
+- **Dynamic lights on the world.** A light's spot is a texture laid on the
+  chunks near it by position (`q3wd`, `q3wdc`: the texture coordinates are
+  the vertex's position along two of the world's axes, the vertex's alpha
+  falls off along the third, the axis the chunk faces most: on a floor or
+  a wall the spot is exact in every pixel), and the picture there is
+  multiplied by 1 + the spot's alpha, as the engine's lights multiply what
+  is there (adding the light's colour was a haze over dark walls). The GS
+  has no product of colours, so the world's light is white; the models
+  take its colour. Pixels outside the spot fail the alpha test. Cost in
+  the timedemo with every light (1.1 a frame, 21 chunks each): 0.5 ms a
+  field and 68 strips late; so a light is taken for the pixels of its
+  sphere on the screen and shares the sprites' room (`r_ps2fill`): 80 % of
+  the lights are drawn, 0.38 ms a field, no strip late. `r_ps2dlight n`:
+  n lights at most (4), 0 none.
+- **The view is too narrow.** The game takes its 90 degrees across the
+  1920 x 1080 picture, which leaves 59 up and down for the 74 of a 4:3
+  screen: the weapons are mostly below the picture's edge (the lightning
+  gun nearly all of it). Next: the 4:3 view's height, wider.
 
 ## 3. Why the earlier attempts stalled
 

@@ -292,7 +292,7 @@ int rp_run(const void *matrix, const struct rp_state *s) {
 	}
 	struct run *r = &run[nrun];
 	r->matrix = matrix;
-	__builtin_memcpy(&r->s, s, s->prog == RP_PROG_MODEL ? sizeof *s : RP_STATE_HEAD);
+	__builtin_memcpy(&r->s, s, s->prog == RP_PROG_MODEL || s->prog == RP_PROG_DLIGHT ? sizeof *s : RP_STATE_HEAD);
 	r->setup[0][0] = r->setup[0][1] = r->setup[1][0] = r->setup[1][1] = 0;
 	r->ghost[0] = r->ghost[1] = 0;
 	r->first = (u16)ndraw, r->n = 0;
@@ -338,6 +338,7 @@ static u64 blend_reg(const struct rp_state *s) {
 	       : s->blend == RP_BLEND_ADD_ALPHA ? mx_gs_alpha(0, 2, 0, 1, 0)
 	       : s->blend == RP_BLEND_INVFILTER ? mx_gs_alpha(2, 1, 0, 1, 0)
 	       : s->blend == RP_BLEND_INVALPHA  ? mx_gs_alpha(1, 0, 0, 0, 0)
+	       : s->blend == RP_BLEND_BRIGHTEN  ? mx_gs_alpha(1, 2, 0, 1, 0)
 	                                        : mx_gs_alpha(1, 2, 0, 2, 0);
 }
 
@@ -386,6 +387,7 @@ static const void *setup_chain(const struct rp_state *s, int cut, int state) {
 	u32 entry = menv                       ? (cut ? Q3MEC_SETUP : Q3ME_SETUP)
 	            : s->prog == RP_PROG_MODEL ? (cut ? Q3MC_SETUP : Q3M_SETUP)
 	            : s->prog == RP_PROG_STAGE ? (cut ? Q3W1TC_SETUP : Q3W1T_SETUP)
+	            : s->prog == RP_PROG_DLIGHT ? (cut ? Q3WDC_SETUP : Q3WD_SETUP)
 	            : lit                    ? (cut ? Q3W2C_SETUP : Q3W2_SETUP)
 	                                     : (cut ? Q3W1C_SETUP : Q3W1_SETUP);
 	/* context 2 writes no Z (beam racing's): blended draws, and those without depth */
@@ -411,6 +413,12 @@ static const void *setup_chain(const struct rp_state *s, int cut, int state) {
 			/* the gather's cull: the MAC flag's sign of z that leaves a triangle out */
 			c = mx_e_cnt(c, 1, mx_vif_nop(), mx_vif_unpack(MX_UNPACK_V4_32, Q3VU_CTX_CULL, 1, 0));
 			c = mx_e_w4(c, s->cull == RP_CULL_NEG ? 0x20 : s->cull == RP_CULL_POS ? 0 : 0x40, 0, 0, 0);
+		}
+		if (s->prog == RP_PROG_DLIGHT) {
+			_Static_assert(Q3VU_D_DM0 + 4 == Q3VU_D_DLC, "q3wd's uniforms in a row");
+			c = mx_e_cnt(c, 5, mx_vif_nop(), mx_vif_unpack(MX_UNPACK_V4_32, Q3VU_D_DM0, 5, 0));
+			for (int k = 0; k < 5; k++)
+				c = mx_e_w4(c, fbits(s->model[k][0]), fbits(s->model[k][1]), fbits(s->model[k][2]), fbits(s->model[k][3]));
 		}
 		if (s->prog == RP_PROG_STAGE) {
 			c = mx_e_cnt(c, 5, mx_vif_nop(), mx_vif_unpack(MX_UNPACK_V4_32, Q3VU_T_TM0, 5, 0));
