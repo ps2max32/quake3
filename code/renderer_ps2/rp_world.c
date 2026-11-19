@@ -887,7 +887,9 @@ void rp_world_fog(void) {
 			if (wrun[r].blended)
 				continue;
 			for (u32 i = wrun[r].first; i < (u32)wrun[r].first + wrun[r].n && cnt < 256; i++)
-				if (pm.chunk[item[i].chunk].fog == f)
+				/* not what is seen through (a grate): its holes have the depth of what
+				   is behind them, and the fog would fill them */
+				if (pm.chunk[item[i].chunk].fog == f && !pm.mat[pm.chunk[item[i].chunk].mat].alpha)
 					list[cnt++] = (u16)i;
 		}
 		if (!cnt)
