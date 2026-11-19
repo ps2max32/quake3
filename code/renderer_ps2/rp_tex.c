@@ -247,10 +247,40 @@ u32 rp_image_luma(struct rp_image *im, int twice) {
 	return rp_clut_place(im->luma_key[twice], im->luma[twice], n == 16);
 }
 
+/* The CLUT of an image with alpha of its own for a surface that does not
+   use that alpha and has a lightmap: its colours, and in the alpha of the
+   entries 128 .. 255 the lightmaps' brightness (as the CLUT of an image
+   without alpha has it, tools/ps2bin.py), so that the texture and the
+   lightmap are drawn with one CLUT, from one vertex. A T4's 16 colours are
+   the first 16 of the 256. Its block in GS memory for this frame, or 0. */
+u32 rp_image_opaque(struct rp_image *im) {
+	if (!im->clut || !im->alpha)
+		return 0;
+	if (!im->opaque) {
+		u32 *c = heap_pin ? mx_heap_alloc(heap_pin, 256 * 4, 64) : 0;
+		const u32 *src = im->clut;
+		if (!c)
+			return 0;
+		int t4 = im->psm == MX_GS_PSM_T4;
+		for (u32 k = 0; k < 256; k++) {
+			/* k: a place in the GS's order; i: the entry that lies there */
+			u32 i = (k & 0x18) == 0x08 ? k + 8 : (k & 0x18) == 0x10 ? k - 8 : k;
+			u32 rgb = !t4 ? src[k] & 0xFFFFFF : i < 16 ? src[i] & 0xFFFFFF : 0x808080;
+			u32 a = i < 128 ? 0x80 : i == 255 ? 255 : (i - 128) * 2;
+			c[k] = rgb | a << 24;
+		}
+		mx_dcache_writeback(c, 256 * 4);
+		im->opaque = c, im->opaque_key = rp_tex_key();
+	}
+	return rp_clut_place(im->opaque_key, im->opaque, 0);
+}
+
 static void luma_free(struct rp_image *im) {
 	for (int k = 0; k < 2; k++)
 		if (im->luma[k])
 			mx_heap_free(heap_pin, im->luma[k]), im->luma[k] = 0;
+	if (im->opaque)
+		mx_heap_free(heap_pin, im->opaque), im->opaque = 0;
 }
 
 void rp_image_free(struct rp_image *im) {

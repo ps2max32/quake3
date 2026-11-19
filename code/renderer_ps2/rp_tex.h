@@ -32,6 +32,8 @@ struct rp_image {
 	u8 ok;
 	u32 uses;               /* frames that drew with it */
 	u32 *luma[2];           /* rp_image_luma's CLUTs */
+	u32 *opaque;            /* rp_image_opaque's */
+	u64 opaque_key;
 	u64 luma_key[2];
 };
 
@@ -93,6 +95,11 @@ u32 rp_clut_place(u64 key, const void *clut, int small);
    twice: 0x80 from half white on): for blends that are a product with the
    picture, which the GS does with a source alpha. Its block in GS memory for
    this frame, or 0. */
+/* For an image with alpha of its own on a lightmapped surface that does not
+   use the alpha: a CLUT of its colours with the lightmaps' brightness in the
+   alpha of 128 .. 255 (16 x 16, CT32), its block in GS memory for this frame;
+   0: none (no room, or the image has no alpha). */
+u32 rp_image_opaque(struct rp_image *im);
 u32 rp_image_luma(struct rp_image *im, int twice);
 /* Free an image; all of them (nothing in flight may read them: after a
    frame without them is the one shown). */

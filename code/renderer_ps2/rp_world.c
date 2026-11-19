@@ -515,10 +515,16 @@ static int run_draw(const void *matrix, const struct item *it, u32 n) {
 		if (own && m->tex >= 0 && m->tex < MAX_TEX && wtex[m->tex] && (t = rp_image_place(wtex[m->tex])))
 			s.tex = *t, s.tex_ok = 1, s.tcc = wtex[m->tex]->alpha;
 		/* a texture whose CLUT's alpha is its own has no room for the lightmaps'
-		   brightness: its lightmap is a pass of its own, after the texture's
-		   (the texture's alpha is not read: the material neither blends nor
-		   tests it) */
-		if (own && s.tex_ok && wtex[m->tex]->alpha && (c0->flags & CH_LIGHTMAP)) {
+		   brightness (the material neither blends nor tests that alpha): drawn
+		   with a CLUT made for it; without one (no room) its lightmap is a
+		   pass of its own, after the texture's */
+		u32 ocbp = own && s.tex_ok && wtex[m->tex]->alpha && (c0->flags & CH_LIGHTMAP) ? rp_image_opaque(wtex[m->tex]) : 0;
+		if (ocbp) {
+			/* a CLUT of the image's colours and the lightmaps' brightness: as an
+			   image without alpha, the texture and the lightmap from one vertex */
+			s.tex.cbp = ocbp, s.tex.cpsm = MX_GS_PSM_CT32, s.tex.csm = 0, s.tcc = 0;
+		}
+		if (own && s.tex_ok && wtex[m->tex]->alpha && (c0->flags & CH_LIGHTMAP) && !ocbp) {
 			memmove(&pass[1], &pass[0], np * sizeof pass[0]);
 			memset(&pass[0], 0, sizeof pass[0]);
 			pass[0].prog = RP_PROG_WORLD, pass[0].lm_only = 1, pass[0].z = RP_Z_TEST;
