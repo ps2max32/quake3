@@ -375,14 +375,16 @@ static int ghost; /* the set-up being made draws nothing (rp_debug 131072) */
 static const void *setup_chain(const struct rp_state *s, int cut, int state) {
 	if (s->prog == RP_PROG_GS)
 		return setup_gs(s);
-	u64 *c0 = rp_dyn(38), *c = c0;
+	u64 *c0 = rp_dyn(44), *c = c0;
 	if (!c)
 		return 0;
 	int lit = s->lm_ok && s->prog == RP_PROG_WORLD && !(rp_debug & (2 | 128)), tex = s->tex_ok && !(rp_debug & (32 | 128));
 	_Static_assert(Q3VU_T_TM0 + 1 == Q3VU_T_TM1 && Q3VU_T_TM0 + 4 == Q3VU_T_CADD, "q3w1t's uniforms in a row");
 	u64 regs = (rp_debug & 16) || ghost ? 0xD12 : 0x512; /* ST, RGBAQ, XYZ2 (XYZ3: no drawing) */
 	int blend = s->blend != RP_BLEND_NONE || (rp_debug & 128);
-	u32 entry = s->prog == RP_PROG_MODEL   ? (cut ? Q3MC_SETUP : Q3M_SETUP)
+	int menv = s->prog == RP_PROG_MODEL && s->menv;
+	u32 entry = menv                       ? (cut ? Q3MEC_SETUP : Q3ME_SETUP)
+	            : s->prog == RP_PROG_MODEL ? (cut ? Q3MC_SETUP : Q3M_SETUP)
 	            : s->prog == RP_PROG_STAGE ? (cut ? Q3W1TC_SETUP : Q3W1T_SETUP)
 	            : lit                    ? (cut ? Q3W2C_SETUP : Q3W2_SETUP)
 	                                     : (cut ? Q3W1C_SETUP : Q3W1_SETUP);
@@ -401,8 +403,10 @@ static const void *setup_chain(const struct rp_state *s, int cut, int state) {
 			c = mx_e_qw(c, mx_giftag(n, tri, (s32)mx_gs_prim(prim, 0, 1, 0, 1, 0, 0, 1, 0), MX_GIF_FLG_PACKED, 3), regs);
 		}
 		if (s->prog == RP_PROG_MODEL) {
-			c = mx_e_cnt(c, 6, mx_vif_nop(), mx_vif_unpack(MX_UNPACK_V4_32, Q3VU_M_LERP, 6, 0));
-			for (int k = 0; k < 6; k++)
+			_Static_assert(Q3VU_M_LERP + 6 == Q3VU_M_EX && Q3VU_M_EX + 3 == Q3VU_M_E0, "q3me's uniforms after q3m's");
+			u32 nu = menv ? 10 : 6;
+			c = mx_e_cnt(c, nu, mx_vif_nop(), mx_vif_unpack(MX_UNPACK_V4_32, Q3VU_M_LERP, nu, 0));
+			for (u32 k = 0; k < nu; k++)
 				c = mx_e_w4(c, fbits(s->model[k][0]), fbits(s->model[k][1]), fbits(s->model[k][2]), fbits(s->model[k][3]));
 			/* the gather's cull: the MAC flag's sign of z that leaves a triangle out */
 			c = mx_e_cnt(c, 1, mx_vif_nop(), mx_vif_unpack(MX_UNPACK_V4_32, Q3VU_CTX_CULL, 1, 0));

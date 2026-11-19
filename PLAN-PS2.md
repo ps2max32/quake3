@@ -577,6 +577,14 @@ corridor 9.2 and court 11.2 (14.5 and 15.6 the evening before), q3dm12 13.6
 - A shader of the game without a script (`icons/noammo`) is the screen's,
   blended, as in the engine: it was a model's, opaque (a white square over
   the weapon without ammunition).
+- **tcGen environment on models** (the shine of the health orbs, armour,
+  ammunition, powerups, the weapons' glass: 92 model shaders): the stage
+  was drawn with the model's own texture coordinates, or left out. Two more
+  VU1 programs (`q3me`, `q3mec`: the models' with the reflection of the
+  eye's direction in the vertex's normal as coordinates; the direction is
+  one for the model, the engine's is each vertex's): 25 cycles a vertex for
+  21. Far off, where one stage is drawn, an item whose first stage is its
+  shine shows its skin. No difference in the timedemo's passes.
 
 ## 3. Why the earlier attempts stalled
 

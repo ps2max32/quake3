@@ -271,6 +271,294 @@ q3mc_drop:
 	nop                             nop                               
 	nop                             b q3mc_batch                      
 	nop                             nop                               
+; q3me: a vertex in 25 cycles, 4 stages; then the gather
+q3me_setup:
+	nop                             lq.xyzw vf31, 0(vi00)             
+	nop                             lq.xyzw vf30, 1(vi00)             
+	nop                             lq.xyzw vf29, 2(vi00)             
+	nop                             lq.xyzw vf28, 3(vi00)             
+	nop                             lq.xyzw vf27, 30(vi00)            
+	nop                             lq.xyzw vf26, 31(vi00)            
+	nop                             lq.xyzw vf25, 32(vi00)            
+	nop                             lq.xyzw vf24, 33(vi00)            
+	nop                             lq.xyzw vf23, 34(vi00)            
+	nop                             lq.xyzw vf22, 35(vi00)            
+	nop                             lq.xyzw vf21, 36(vi00)            
+	nop                             lq.xyzw vf20, 37(vi00)            
+	nop                             lq.xyzw vf19, 38(vi00)            
+	nop                             lq.xyzw vf18, 39(vi00)            
+	nop                             lq.xyzw vf08, 6(vi00)             
+	nop                             xtop vi08                         
+	nop                             xgkick vi08                       
+	nop[e]                          nop                               
+	nop                             nop                               
+q3me_batch:
+	nop                             xtop vi08                         
+	nop                             xitop vi09                        
+	nop                             iaddiu vi04, vi08, 352            
+	nop                             iadd vi05, vi09, vi09             
+	nop                             iadd vi05, vi05, vi05             
+	nop                             iadd vi05, vi05, vi04             
+	nop                             iaddiu vi05, vi05, 12             
+q3me_loop:
+	itof0.xyz vf02, vf02            iaddiu vi04, vi04, 4              ; ia.0 stage 1
+	itof0.xyz vf03, vf03            sq.xyz vf04, -16(vi04)            ; in.0 stage 1; sqs.0 stage 3
+	ftoi0.xyzw vf04, vf06           nop                               ; cint.0 stage 2
+	mulaw.xyzw ACC, vf26, vf00w     nop                               ; la.0 stage 1
+	sub.xyz vf01, vf01, vf02        nop                               ; sub.0 stage 1
+	maddax.xyzw ACC, vf25, vf03x    nop                               ; lx.0 stage 1
+	mulq.xyz vf05, vf05, Q          sq.xyzw vf04, -11(vi04)           ; mulq.0 stage 2; sqc.0 stage 2
+	madday.xyzw ACC, vf24, vf03y    nop                               ; ly.0 stage 1
+	mulx.xyz vf01, vf01, vf27x      nop                               ; mul.0 stage 1
+	maddz.xyzw vf04, vf23, vf03z    nop                               ; lz.0 stage 1
+	ftoi4.xyz vf05, vf05            nop                               ; ftoi.0 stage 2
+	mulax.xyz ACC, vf21, vf03x      nop                               ; ex.0 stage 1
+	add.xyz vf01, vf02, vf01        nop                               ; add.0 stage 1
+	max.xyzw vf02, vf04, vf26       nop                               ; cmax.0 stage 1
+	madday.xyz ACC, vf20, vf03y     sq.xyz vf05, -10(vi04)            ; ey.0 stage 1; sqp.0 stage 2
+	maddz.xyz vf04, vf19, vf03z     nop                               ; ez.0 stage 1
+	mulax.xyzw ACC, vf31, vf01x     nop                               ; mx.0 stage 1
+	madday.xyzw ACC, vf30, vf01y    nop                               ; my.0 stage 1
+	maddaz.xyzw ACC, vf29, vf01z    nop                               ; mz.0 stage 1
+	maddw.xyzw vf05, vf28, vf00w    nop                               ; mw.0 stage 1
+	mini.xyzw vf06, vf02, vf22      lq.xyz vf01, -1(vi04)             ; cmin.0 stage 1; lqb.0 stage 0
+	opmula.xyz ACC, vf03, vf04      lq.xyz vf02, -2(vi04)             ; eo.0 stage 1; lqa.0 stage 0
+	mulq.xyz vf04, vf07, Q          lq.xyz vf03, -3(vi04)             ; ms.0 stage 2; lqn.0 stage 0
+	maddw.xyz vf07, vf18, vf00w     ibne vi04, vi05, q3me_loop        ; ee.0 stage 1
+	itof0.xyz vf01, vf01            div Q, vf00w, vf05w               ; ib.0 stage 0; div.0 stage 1
+	nop                             ilw.x vi13, 306(vi08)             
+	nop                             iaddiu vi04, vi08, 307            
+	nop                             iaddiu vi06, vi08, 18             
+	nop                             iaddiu vi07, vi08, 352            
+	nop                             iaddiu vi11, vi00, 0x7fff         
+	nop                             iaddiu vi11, vi11, 1              
+	nop                             iadd vi05, vi13, vi04             
+	nop                             iaddiu vi12, vi00, 0              
+	nop                             ilw.x vi15, 71(vi00)              
+	nop                             iaddiu vi13, vi00, 0x20           
+q3me_gather:
+	nop                             ilw.x vi01, 0(vi04)               
+	nop                             ilw.y vi02, 0(vi04)               
+	nop                             ilw.z vi03, 0(vi04)               
+	nop                             iadd vi10, vi01, vi07             
+	nop                             lq.xyzw vf09, 0(vi10)             
+	nop                             lq.xyzw vf10, 1(vi10)             
+	nop                             lq.xyzw vf12, 2(vi10)             
+	nop                             sq.xyzw vf09, 0(vi06)             
+	nop                             sq.xyzw vf10, 1(vi06)             
+	nop                             sq.xyzw vf12, 2(vi06)             
+	nop                             isw.w vi11, 2(vi06)               
+	nop                             iadd vi10, vi02, vi07             
+	nop                             lq.xyzw vf09, 0(vi10)             
+	nop                             lq.xyzw vf10, 1(vi10)             
+	nop                             lq.xyzw vf13, 2(vi10)             
+	nop                             sq.xyzw vf09, 3(vi06)             
+	nop                             sq.xyzw vf10, 4(vi06)             
+	nop                             sq.xyzw vf13, 5(vi06)             
+	nop                             isw.w vi11, 5(vi06)               
+	nop                             iadd vi10, vi03, vi07             
+	nop                             lq.xyzw vf09, 0(vi10)             
+	nop                             lq.xyzw vf10, 1(vi10)             
+	nop                             lq.xyzw vf14, 2(vi10)             
+	nop                             sq.xyzw vf09, 6(vi06)             
+	nop                             sq.xyzw vf10, 7(vi06)             
+	nop                             sq.xyzw vf14, 8(vi06)             
+	nop                             isw.w vi00, 8(vi06)               
+	itof4.xy vf12, vf12             nop                               
+	itof4.xy vf13, vf13             nop                               
+	itof4.xy vf14, vf14             nop                               
+	sub.xy vf15, vf13, vf12         nop                               
+	sub.xy vf16, vf14, vf12         nop                               
+	opmula.xyz ACC, vf15, vf16      nop                               
+	opmsub.xyz vf15, vf16, vf15     nop                               
+	nop                             nop                               
+	nop                             nop                               
+	nop                             nop                               
+	nop                             fmand vi10, vi13                  
+	nop                             nop                               
+	nop                             ibeq vi10, vi15, q3me_drop        
+	nop                             nop                               
+q3me_keep:
+	nop                             iaddiu vi06, vi06, 9              
+	nop                             iaddiu vi12, vi12, 3              
+q3me_drop:
+	nop                             iaddiu vi04, vi04, 1              
+	nop                             nop                               
+	nop                             ibne vi04, vi05, q3me_gather      
+	nop                             nop                               
+	nop                             iaddiu vi12, vi12, 0x7fff         
+	nop                             iaddiu vi12, vi12, 1              
+	nop                             mfir.x vf08, vi12                 
+	nop                             iaddiu vi07, vi08, 17             
+	nop                             nop                               
+	nop                             nop                               
+	nop                             sq.xyzw vf08, 17(vi08)            
+	nop                             nop                               
+	nop                             nop                               
+	nop                             nop                               
+	nop                             xgkick vi07                       
+	nop[e]                          nop                               
+	nop                             nop                               
+	nop                             b q3me_batch                      
+	nop                             nop                               
+; q3mec: a vertex in 28 cycles, 3 stages; then the gather
+q3mec_setup:
+	nop                             lq.xyzw vf31, 30(vi00)            
+	nop                             lq.xyzw vf30, 31(vi00)            
+	nop                             lq.xyzw vf29, 32(vi00)            
+	nop                             lq.xyzw vf28, 33(vi00)            
+	nop                             lq.xyzw vf27, 34(vi00)            
+	nop                             lq.xyzw vf26, 35(vi00)            
+	nop                             lq.xyzw vf25, 36(vi00)            
+	nop                             lq.xyzw vf24, 37(vi00)            
+	nop                             lq.xyzw vf23, 38(vi00)            
+	nop                             lq.xyzw vf22, 39(vi00)            
+	nop                             lq.xyzw vf21, 0(vi00)             
+	nop                             lq.xyzw vf20, 1(vi00)             
+	nop                             lq.xyzw vf19, 2(vi00)             
+	nop                             lq.xyzw vf18, 3(vi00)             
+	nop                             lq.xyzw vf17, 4(vi00)             
+	nop                             lq.xyzw vf16, 5(vi00)             
+	nop                             lq.xyzw vf10, 6(vi00)             
+	nop                             xtop vi08                         
+	nop                             xgkick vi08                       
+	nop[e]                          nop                               
+	nop                             nop                               
+q3mec_batch:
+	nop                             xtop vi08                         
+	nop                             xitop vi09                        
+	nop                             iaddiu vi04, vi08, 352            
+	nop                             iadd vi05, vi09, vi09             
+	nop                             iadd vi05, vi05, vi05             
+	nop                             iadd vi05, vi05, vi04             
+	nop                             iaddiu vi05, vi05, 8              
+q3mec_loop:
+	itof0.xyz vf03, vf03            sq.xyzw vf04, -7(vi04)            ; ia.0 stage 1; sqc.0 stage 2
+	itof0.xyz vf01, vf01            sq.xyzw vf05, -5(vi04)            ; in.0 stage 1; sqw.0 stage 2
+	clipw.xyz vf07xyz, vf05w        iaddiu vi04, vi04, 4              ; clip.0 stage 2
+	mulaw.xyzw ACC, vf30, vf00w     nop                               ; la.0 stage 1
+	sub.xyz vf02, vf02, vf03        nop                               ; sub.0 stage 1
+	mulq.xyz vf04, vf05, Q          nop                               ; mulq.0 stage 2
+	maddax.xyzw ACC, vf29, vf01x    fcand vi01, 0x3f                  ; lx.0 stage 1; fc.0 stage 2
+	madday.xyzw ACC, vf28, vf01y    iaddiu vi02, vi01, 0x7fff         ; ly.0 stage 1; adc.0 stage 2
+	mulx.xyz vf02, vf02, vf31x      mfir.w vf05, vi02                 ; mul.0 stage 1; mfir.0 stage 2
+	ftoi4.xyz vf05, vf04            nop                               ; ftoi.0 stage 2
+	maddz.xyzw vf04, vf27, vf01z    nop                               ; lz.0 stage 1
+	mulax.xyz ACC, vf25, vf01x      nop                               ; ex.0 stage 1
+	add.xyz vf02, vf03, vf02        nop                               ; add.0 stage 1
+	madday.xyz ACC, vf24, vf01y     sq.xyzw vf05, -10(vi04)           ; ey.0 stage 1; sqp.0 stage 2
+	max.xyzw vf03, vf04, vf30       nop                               ; cmax.0 stage 1
+	maddz.xyz vf04, vf23, vf01z     nop                               ; ez.0 stage 1
+	mulax.xyzw ACC, vf21, vf02x     nop                               ; mx.0 stage 1
+	madday.xyzw ACC, vf20, vf02y    nop                               ; my.0 stage 1
+	maddaz.xyzw ACC, vf19, vf02z    nop                               ; mz.0 stage 1
+	maddw.xyzw vf05, vf18, vf00w    nop                               ; mw.0 stage 1
+	mini.xyzw vf03, vf03, vf26      nop                               ; cmin.0 stage 1
+	opmula.xyz ACC, vf01, vf04      nop                               ; eo.0 stage 1
+	mulq.xyz vf08, vf06, Q          lq.xyz vf01, -3(vi04)             ; ms.0 stage 2; lqn.0 stage 0
+	maddw.xyz vf06, vf22, vf00w     lq.xyz vf02, -1(vi04)             ; ee.0 stage 1; lqb.0 stage 0
+	ftoi0.xyzw vf04, vf03           lq.xyz vf03, -2(vi04)             ; cint.0 stage 1; lqa.0 stage 0
+	mulaw.xyz ACC, vf16, vf05w      div Q, vf00w, vf05w               ; ca.0 stage 1; div.0 stage 1
+	madd.xyz vf07, vf05, vf17       ibne vi04, vi05, q3mec_loop       ; cb.0 stage 1
+	itof0.xyz vf02, vf02            sq.xyz vf08, -12(vi04)            ; ib.0 stage 0; sqs.0 stage 2
+	nop                             ilw.x vi13, 306(vi08)             
+	nop                             iaddiu vi04, vi08, 307            
+	nop                             iaddiu vi06, vi08, 18             
+	nop                             iaddiu vi07, vi08, 352            
+	nop                             iaddiu vi11, vi00, 0x7fff         
+	nop                             iaddiu vi11, vi11, 1              
+	nop                             iadd vi05, vi13, vi04             
+	nop                             iaddiu vi12, vi00, 0              
+	nop                             ilw.x vi15, 71(vi00)              
+	nop                             iaddiu vi13, vi00, 0x20           
+q3mec_gather:
+	nop                             ilw.x vi01, 0(vi04)               
+	nop                             ilw.y vi02, 0(vi04)               
+	nop                             ilw.z vi03, 0(vi04)               
+	nop                             iaddiu vi09, vi00, 0              
+	nop                             iadd vi10, vi01, vi07             
+	nop                             lq.xyzw vf09, 0(vi10)             
+	nop                             lq.xyzw vf11, 1(vi10)             
+	nop                             lq.xyzw vf13, 2(vi10)             
+	nop                             ilw.w vi14, 2(vi10)               
+	nop                             sq.xyzw vf09, 0(vi06)             
+	nop                             sq.xyzw vf11, 1(vi06)             
+	nop                             sq.xyzw vf13, 2(vi06)             
+	nop                             ior vi09, vi09, vi14              
+	nop                             ior vi10, vi01, vi11              
+	nop                             isw.w vi10, 2(vi06)               
+	nop                             iadd vi10, vi02, vi07             
+	nop                             lq.xyzw vf09, 0(vi10)             
+	nop                             lq.xyzw vf11, 1(vi10)             
+	nop                             lq.xyzw vf14, 2(vi10)             
+	nop                             ilw.w vi14, 2(vi10)               
+	nop                             sq.xyzw vf09, 3(vi06)             
+	nop                             sq.xyzw vf11, 4(vi06)             
+	nop                             sq.xyzw vf14, 5(vi06)             
+	nop                             ior vi09, vi09, vi14              
+	nop                             ior vi10, vi02, vi11              
+	nop                             isw.w vi10, 5(vi06)               
+	nop                             iadd vi10, vi03, vi07             
+	nop                             lq.xyzw vf09, 0(vi10)             
+	nop                             lq.xyzw vf11, 1(vi10)             
+	nop                             lq.xyzw vf15, 2(vi10)             
+	nop                             ilw.w vi14, 2(vi10)               
+	nop                             sq.xyzw vf09, 6(vi06)             
+	nop                             sq.xyzw vf11, 7(vi06)             
+	nop                             sq.xyzw vf15, 8(vi06)             
+	nop                             ior vi09, vi09, vi14              
+	nop                             iand vi10, vi09, vi11             
+	nop                             ior vi10, vi10, vi03              
+	nop                             isw.w vi10, 8(vi06)               
+	nop                             iand vi09, vi09, vi11             
+	nop                             nop                               
+	nop                             ibne vi09, vi00, q3mec_keep       
+	nop                             nop                               
+	itof4.xy vf13, vf13             nop                               
+	itof4.xy vf14, vf14             nop                               
+	itof4.xy vf15, vf15             nop                               
+	sub.xy vf01, vf14, vf13         nop                               
+	sub.xy vf02, vf15, vf13         nop                               
+	opmula.xyz ACC, vf01, vf02      nop                               
+	opmsub.xyz vf01, vf02, vf01     nop                               
+	nop                             nop                               
+	nop                             nop                               
+	nop                             nop                               
+	nop                             fmand vi10, vi13                  
+	nop                             nop                               
+	nop                             ibeq vi10, vi15, q3mec_drop       
+	nop                             nop                               
+q3mec_keep:
+	nop                             iaddiu vi06, vi06, 9              
+	nop                             iaddiu vi12, vi12, 3              
+q3mec_drop:
+	nop                             iaddiu vi04, vi04, 1              
+	nop                             nop                               
+	nop                             ibne vi04, vi05, q3mec_gather     
+	nop                             nop                               
+	nop                             isw.y vi12, 306(vi08)             
+	nop                             iaddiu vi12, vi12, 0x7fff         
+	nop                             iaddiu vi12, vi12, 1              
+	nop                             mfir.x vf10, vi12                 
+	nop                             iaddiu vi07, vi08, 17             
+	nop                             nop                               
+	nop                             nop                               
+	nop                             sq.xyzw vf10, 17(vi08)            
+	nop                             nop                               
+	nop                             nop                               
+	nop                             nop                               
+	nop                             xgkick vi07                       
+	nop                             bal vi15, q3mclip                 
+	nop                             nop                               
+	nop                             lq.xyzw vf20, 1(vi00)             
+	nop                             lq.xyzw vf19, 2(vi00)             
+	nop                             lq.xyzw vf18, 3(vi00)             
+	nop                             lq.xyzw vf17, 4(vi00)             
+	nop                             lq.xyzw vf16, 5(vi00)             
+	nop[e]                          nop                               
+	nop                             nop                               
+	nop                             b q3mec_batch                     
+	nop                             nop                               
 ; q3w2: 2 vertices in 37 cycles, 3 stages
 q3w2_setup:
 	nop                             lq.xyzw vf31, 0(vi00)             

@@ -752,30 +752,34 @@ void rp_model_draw(const refEntity_t *e, float t) {
 			continue;
 		}
 		/* the stages: the first, then those that blend over it (one that does
-		   not would cover it; an environment stage is not drawn: no tcGen
-		   environment yet) */
+		   not would cover it) */
 		const void *chain = 0;
-		for (int k = 0; k < sh->nstage; k++) {
+		/* far off one stage is drawn. An item's first is often its shine (an
+		   environment map) with its skin blended over it: then the skin, alone */
+		int skin = !near && sh->nstage > 1 && sh->st[0].env && !sh->st[1].env && sh->st[1].blend == RP_BLEND_ALPHA;
+		for (int k = skin; k < sh->nstage; k++) {
 			const struct rp_stage *stg = &sh->st[k];
 			struct rp_state s;
 			/* the later stages (a glow, mostly) of the view weapon and of what
 			   is near: each is the model's vertices through VU1 once more */
-			if (k && !near) {
+			if (k > skin && !near) {
 				rp_model_stats.stages++;
 				continue;
 			}
-			if (k && (stg->env || stg->blend == RP_BLEND_NONE)) {
+			if (k && stg->blend == RP_BLEND_NONE) {
 				rp_model_stats.stages++;
 				continue;
 			}
 			if (!rp_stage_state(stg, t, &s)) {
-				if (!k) {
+				if (k == skin) {
 					rp_model_stats.nostage++;
 					break;
 				}
 				rp_model_stats.stages++;
 				continue;
 			}
+			if (skin)
+				s.blend = RP_BLEND_NONE, s.alpha = RP_ALPHA_NONE, s.z = RP_Z_WRITE;
 			/* the colour: lit, or the stage's own */
 			u8 col[4];
 			int lit = stg->rgbgen == RGB_LIGHTING;
@@ -801,6 +805,27 @@ void rp_model_draw(const refEntity_t *e, float t) {
 				u[5][a] = 255.0f;
 			}
 			u[1][3] = (float)col[3], u[5][3] = 255.0f;
+			if (stg->env) {
+				/* tcGen environment: the eye's direction from the model, in its
+				   space, one for all its vertices (the engine's is each vertex's) */
+				float ev[3], m[6], len = 0;
+				for (int a = 0; a < 3; a++) {
+					ev[a] = (vw->org[0] - e->origin[0]) * e->axis[a][0] + (vw->org[1] - e->origin[1]) * e->axis[a][1] +
+					        (vw->org[2] - e->origin[2]) * e->axis[a][2];
+					len += ev[a] * ev[a];
+				}
+				len = len > 0 ? 1.0f / sqrtf(len) : 0;
+				s.menv = 1;
+				for (int a = 0; a < 3; a++) {
+					ev[a] *= len;
+					u[6 + a][0] = -ev[a] * (1.0f / (127.0f * 127.0f)), u[6 + a][1] = 0;
+					u[6 + a][2] = ev[a] * (1.0f / (127.0f * 127.0f)), u[6 + a][3] = 0;
+				}
+				u[9][0] = 0.5f - 0.5f * ev[1], u[9][1] = 0.5f + 0.5f * ev[2], u[9][2] = 1.0f, u[9][3] = 0;
+				/* a tcMod's scroll moves it */
+				if (rp_stage_tcmod(stg, t, m))
+					u[9][0] += m[2], u[9][1] += m[5];
+			}
 			if (!matrix)
 				matrix = rp_matrix((float)MD3_XYZ_SCALE, e->origin, e->axis);
 			if (!chain)
@@ -808,7 +833,7 @@ void rp_model_draw(const refEntity_t *e, float t) {
 			if (!chain || rp_run(matrix, &s) < 0)
 				break;
 			rp_draw(chain, mask, cut, (u32)sf->md3->numTriangles * 3u, (u32)sf->npiece);
-			if (!k)
+			if (k == skin)
 				rp_model_stats.surfs++;
 		}
 	}

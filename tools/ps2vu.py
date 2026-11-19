@@ -75,6 +75,9 @@ Programs:
          with a vertex outside is not culled but put in the packet with ADC
          on all three (the vertices' offsets in their XYZ2's w), and after
          the packet is kicked q3mclip cuts those.
+    me, mec   m and mc with the texture coordinates of tcGen environment: the
+         reflection of the eye's direction (one for the model: ECTX) in the
+         vertex's normal, in place of the vertex's own.
 
 q3clip (the end of this file): a triangle left out is found by its vertex's w
 (ADC set, tools/ps2map.py's bit 13 clear). Its three positions before the
@@ -120,6 +123,10 @@ ROOM = {"PL": 12, "CO": 18, "WA": 30, "WB": 39, "R0": 48, "R1": 58, "SAVE": 68}
 M_OUT, M_IDX, M_VERT = 18, 306, 352
 M_VERTS, M_TRIS = 28, 32
 MCTX = {"LERP": 30, "AMB": 31, "DX": 32, "DY": 33, "DZ": 34, "C255": 35}
+# q3me's more: the eye's direction from the model (in its space) for tcGen environment, each of
+# its three numbers times (-1, 0, 1) / 127^2 (the normal's length is 127); E0: (0.5 - 0.5 y,
+# 0.5 + 0.5 z, 1) of it, plus the stage's scroll
+ECTX = {"EX": 36, "EY": 37, "EZ": 38, "E0": 39}
 # a stage's, in the same room: the texture coordinates' matrix by columns (s' = TM0.x s + TM1.x
 # t + TM2.x, t' the y's; TM2.z 1), the colour's factor and what is added (0 .. 255)
 TCTX = {"TM0": 30, "TM1": 31, "TM2": 32, "CMUL": 33, "CADD": 34}
@@ -231,9 +238,11 @@ def kernels(vs):
             ops = lambda c: pos(clip, two, c) + st("a", 0, FAR, stage) + (colt(FAR + 1) if stage else col)
         return Kernel(name, ops, u, 0, STRIDE, mvp + (clipu if clip else stripu) + (stageu if stage else []), {})
 
-    def model(clip):
-        ops = [
+    def model(clip, env=False):
+        ops = [] if env else [
             Op("lqs", "L", "lq.xyz {S}, {off}({p})", ("S", "xyz"), mem=("lq", 0)),
+        ]
+        ops += [
             Op("lqn", "L", "lq.xyz {N}, {off}({p})", ("N", "xyz"), mem=("lq", 1)),
             Op("lqa", "L", "lq.xyz {A}, {off}({p})", ("A", "xyz"), mem=("lq", 2)),
             Op("lqb", "L", "lq.xyz {B}, {off}({p})", ("B", "xyz"), mem=("lq", 3)),
@@ -259,7 +268,20 @@ def kernels(vs):
             Op("cmax", "U", "max.xyzw {CA}, {C}, {AMB}", ("CA", "xyzw"), [("C", "xyzw")]),
             Op("cmin", "U", "mini.xyzw {CB}, {CA}, {C255}", ("CB", "xyzw"), [("CA", "xyzw")]),
             Op("cint", "U", "ftoi0.xyzw {CO}, {CB}", ("CO", "xyzw"), [("CB", "xyzw")]),
-            Op("is", "U", "itof12.xyz {FS}, {S}", ("FS", "xyz"), [("S", "xyz")]),
+        ]
+        if env:
+            # tcGen environment, the eye's direction V one for the model: d = N . V (in all of
+            # ED, by signs), (s, t, 1) = E0 + (N.y d, -N.z d, 0): the outer product's first half
+            ops += [
+                Op("ex", "U", "mulax.xyz ACC, {EX}, {FN}x", ("ACC", ""), [("FN", "x")]),
+                Op("ey", "U", "madday.xyz ACC, {EY}, {FN}y", ("ACC", ""), [("ACC", ""), ("FN", "y")]),
+                Op("ez", "U", "maddz.xyz {ED}, {EZ}, {FN}z", ("ED", "xyz"), [("ACC", ""), ("FN", "z")]),
+                Op("eo", "U", "opmula.xyz ACC, {FN}, {ED}", ("ACC", ""), [("FN", "xyz"), ("ED", "xyz")]),
+                Op("ee", "U", "maddw.xyz {FS}, {E0}, vf00w", ("FS", "xyz"), [("ACC", "")]),
+            ]
+        else:
+            ops.append(Op("is", "U", "itof12.xyz {FS}, {S}", ("FS", "xyz"), [("S", "xyz")]))
+        ops += [
             Op("ms", "U", "mulq.xyz {SQ}, {FS}, Q", ("SQ", "xyz"), [("FS", "xyz"), ("Q", "")]),
             # in place: each over the input it came from
             Op("sqs", "L", "sq.xyz {SQ}, {off}({p})", None, [("SQ", "xyz")], mem=("sq", 0)),
@@ -280,13 +302,18 @@ def kernels(vs):
             ]
         else:
             ops.append(Op("sqp", "L", "sq.xyz {O}, {off}({p})", None, [("O", "xyz")], mem=("sq", 2)))
-        return Kernel("q3mc" if clip else "q3m", lambda c: ops, 1, 0, 4,
-                      mvp + [(g, q) for g, q in MCTX.items()] + (clipu if clip else []), {})
+        mu = [(g, q) for g, q in MCTX.items()] + ([(g, q) for g, q in ECTX.items()] if env else [])
+        # q3mec: the model's ten first, in the registers q3mclip leaves alone (the uniforms
+        # get vf31 downwards); the context's can be loaded again after it
+        return Kernel(("q3me" if env else "q3m") + ("c" if clip else ""), lambda c: ops, 1, 0, 4,
+                      (mu + mvp if clip and env else mvp + mu) + (clipu if clip else []), {})
 
     # name, the kernel, the IIs to try
     return [
         (model(False), range(21, 40)),
         (model(True), range(24, 44)),
+        (model(False, True), range(21, 46)),
+        (model(True, True), range(24, 50)),
         (k("q3w2", False, True, 2), range(24, 44)),
         (k("q3w1", False, False, 2), range(20, 40)),
         (k("q3w2c", True, True, 1), range(14, 25)),
@@ -431,9 +458,14 @@ def program(vs, kern, s, regs, words, two, clip):
 
 def program_m(vs, kern, s, regs, words):
     """q3m, q3mc: the set-up, then a batch: the piece's vertices by the loop, the gather, the kick."""
-    name, clip = kern.name, kern.name == "q3mc"
+    name, clip = kern.name, kern.name.endswith("c")
     used = set(regs.values())
     free = [f"vf{r:02d}" for r in range(1, 32) if f"vf{r:02d}" not in used]
+    # too few (q3mec): the loop's own registers too, but its uniforms' (the loop is over
+    # when the gather starts)
+    if len(free) < 9:
+        kept = {regs[g] for g, _ in kern.uniforms}
+        free += [f"vf{r:02d}" for r in range(1, 32) if f"vf{r:02d}" in used and f"vf{r:02d}" not in kept]
     if clip:
         # the tag is kept over q3mclip: not in its registers
         tag = [f for f in free if int(f[2:]) not in CLIP_VF][0]
@@ -805,7 +837,7 @@ def main():
         s, regs, words, pad, slop = schedule(vs, kern, iis, a.v)
         print(f"{kern.name}: {kern.u} vertices in {kern.ii} cycles ({kern.ii / kern.u:g} a vertex), {s.stages} stages, "
               f"pad {pad}, slop {slop}, {len(set(regs.values()))} VF registers")
-        if kern.name in ("q3m", "q3mc"):
+        if kern.name in ("q3m", "q3mc", "q3me", "q3mec"):
             prog, mpad, mslop = program_m(vs, kern, s, regs, words)
             # its stray stores stay between the entries and the buffer's end
             assert M_OUT + 9 * M_TRIS <= M_IDX and M_IDX + 1 + M_TRIS + mpad <= M_VERT
@@ -850,6 +882,7 @@ def main():
     h += [f"#define Q3VU_CTX_{g} {q}" for g, q in CTX.items()]
     h += [f"#define Q3VU_ROOM_{g} {q}" for g, q in ROOM.items()]
     h += [f"#define Q3VU_M_{g} {q} /* q3m's uniforms */" for g, q in MCTX.items()]
+    h += [f"#define Q3VU_M_{g} {q} /* q3me's more */" for g, q in ECTX.items()]
     h += [f"#define Q3VU_T_{g} {q} /* q3w1t's */" for g, q in TCTX.items()]
     h += [f"#define Q3VU_M_OUT {M_OUT}", f"#define Q3VU_M_IDX {M_IDX}", f"#define Q3VU_M_VERT {M_VERT}",
           f"#define Q3VU_M_VERTS {M_VERTS} /* a piece's vertices at most */",
