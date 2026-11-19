@@ -472,6 +472,41 @@ view weapon's) until the frames have fitted for two seconds, and any image
 that finds no room is placed without its finest one or two. Five strips of
 128 lines leave 1.4 MB but every pass plays more of the world.
 
+**Later that night**, each measured with the same timedemo and the two
+standing views of q3dm1 (a corridor beside a wall, a view into the court):
+
+| | The corridor | The court | The timedemo's strips still drawn when the beam came |
+|---|---|---|---|
+| Before | 14.5 ms | 15.6 ms | 680 of 6532 |
+| The sky where it is seen; the Z strip | 11.3 ms | 14.0 ms | 67 to 129 (run to run) |
+| A triangle to be cut tested against the pass's window first | 10.6 ms | 12.7 ms | 60 to 103 |
+
+- **What the programs that cut cost.** The world alone with the GS drawing
+  nothing: 3.46 ms a field in the corridor, 2.36 ms with nothing cut, 3.43
+  with every chunk through the programs that cut (so nearly all of that
+  view's chunks are across a plane); the court 4.54 and 2.81. A chunk across
+  the guard band is in every strip's record, and each pass cut all of its
+  triangles with a vertex outside: `q3cut_test` now leaves out those whose
+  corners are all beyond one side of the picture or of the pass's lines
+  (2.96 and 3.46 ms).
+- **The chunks' own visibility** (map file version 7): 249 draws a frame for
+  281 in the timedemo, 4 to 22 % fewer vertices a cluster before the frustum.
+- **The models** are 1.4 ms of the corridor's 4.9 ms with the GS drawing
+  nothing. Their later stages (the view weapon's and those of models within
+  600 units) add 2,000 vertices a frame to their 11,900.
+- **Not kept**: lightmaps as vertex colours where the light is linear over a
+  triangle (5 to 10 % of the lightmapped area within 4 of 255); taking and
+  freeing memory at the end of a map's load so that play finds free frames
+  (42 swap outs for 76, but 60 swap ins for 10); the models' files of fewer
+  details (a player's parts have 80 and 60 % of the vertices, the file of
+  models would be 56 MB for 26).
+- **The EE's frames over a field** (about 100 of 1258) are not the
+  renderer's: a profile has 38 % of the time waiting, the IOP's waits are
+  2.3 s of the demo's 21 s: the pager (76 pages to the swap file in 510 ms,
+  102 from files in 590 ms, 52 faults of the game's own thread) and the
+  sounds' first copies to SPU RAM (17 ms each; 2.7 MB of sounds for SPU
+  RAM's 1.8 MB, their ADPCM in the heap).
+
 ## 3. Why the earlier attempts stalled
 
 | Attempt | Result | Why |
