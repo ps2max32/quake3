@@ -49,6 +49,7 @@ static u32 frame_blocks; /* GS memory (256-byte blocks) of the images the frame 
    again for two seconds: images that push each other out of GS memory
    every frame are sent again every frame. */
 static u32 want_blocks, tight, calm;
+static int keeping; /* rp_tex_frame asks for the screen's pictures: not a draw's asking */
 int rp_tex_full;
 
 static int starts(const char *s, const char *with) {
@@ -85,6 +86,20 @@ void rp_tex_frame(void) {
 		rp_tex_stats.tight += tight;
 		want_blocks = 0;
 	}
+	/* The screen's pictures (the text, the HUD) drawn in the last half second
+	   keep their place: asked for here, first in every frame. They are drawn
+	   last, and a frame none of them was drawn in gave their room to the
+	   world's images; once every image in GS memory is one a frame in flight
+	   draws with, the text's 256 x 256 finds no 64 KB in one piece again, and
+	   it has one level (no coarser one to fall back on). */
+	u32 now = mx_frame_number();
+	keeping = 1;
+	for (u32 i = 0; i < image_hi; i++) {
+		struct rp_image *im = &images[i];
+		if (im->used && im->kind == RP_IMAGE_SCREEN && im->asked && now + 1 - im->asked <= 30)
+			rp_image_place(im);
+	}
+	keeping = 0;
 }
 
 u64 rp_tex_key(void) { return ++serial; }
@@ -328,6 +343,8 @@ static void texflush(void) {
 
 const struct mx_tex *rp_image_place(struct rp_image *im) {
 	u32 frame = mx_frame_number();
+	if (!keeping)
+		im->asked = frame + 1;
 	/* placed this frame already; but without its finest level, and now for
 	   the view weapon (rp_tex_full): once more, whole if there is room */
 	int again = im->frame == frame + 1 && rp_tex_full && im->ok && im->from;
