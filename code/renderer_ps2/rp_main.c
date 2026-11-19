@@ -1455,19 +1455,31 @@ static u32 world_passes(u32 mat, struct rp_state *pass, int *first) {
 			continue;
 		}
 		int vrgb = stg->rgbgen == RGB_VERTEX || stg->rgbgen == RGB_EXACT_VERTEX, va = stg->alphagen == A_VERTEX;
+		/* a surface whose alpha is tested has no lightmap pass (it cannot leave
+		   out the texels the test leaves out): the map gave its vertices the
+		   lightmap's light, which the stages before the script's $lightmap stage
+		   take (q3dm19's girders were lit as if there were no light: full) */
+		if ((flags & RP_MAT_ALIT) && !(flags & RP_MAT_VLM) && k < sh->lm_at &&
+		    (stg->rgbgen == RGB_IDENTITY || stg->rgbgen == RGB_IDENTITY_LIGHTING))
+			vrgb = 1;
 		/* before a late lightmap: half as bright (the lightmap pass doubles, as the
 		   engine's overbright does after its lightmap) */
 		float half = late && k < sh->lm_at ? 0.5f : 1.0f;
 		/* and of the lightmap's hue: the colours of a lightmapped chunk's
 		   vertices (128 is 1.0), as the map's own pass has it */
 		int hue = late && k < sh->lm_at;
+		/* rgbGen vertex is half the vertex's colour as the map has it (the
+		   engine's identityLight; the map's colours are exactVertex's, which an
+		   unscripted surface lit by its vertices has): the heads and torches on
+		   the walls were twice as bright as the PC's */
+		float vhalf = stg->rgbgen == RGB_VERTEX && !(flags & RP_MAT_VLM) ? 0.5f : 1.0f;
 		for (int a = 0; a < 4; a++) {
 			int v = a < 3 ? vrgb : va;
 			float h = a < 3 ? half : 1.0f;
 			if (hue && a < 3)
 				s->cmul[a] = vrgb ? 1.0f : (float)c[a] * h * (1.0f / 128.0f), s->cadd[a] = 0;
 			else
-				s->cmul[a] = v ? h : 0, s->cadd[a] = v ? 0 : (float)c[a] * h;
+				s->cmul[a] = v ? (a < 3 ? h * vhalf : h) : 0, s->cadd[a] = v ? 0 : (float)c[a] * h;
 		}
 		n++;
 	}

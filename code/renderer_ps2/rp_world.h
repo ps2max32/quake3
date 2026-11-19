@@ -25,7 +25,9 @@ int rp_world_load(const void *p, u32 size);
 void rp_world_free(void);
 /* The map's materials: their number; one's name (its shader's) and flags. */
 enum { RP_MAT_LIGHTMAP = 1, RP_MAT_SKY = 2, RP_MAT_NODRAW = 4, RP_MAT_DEFORM = 8, RP_MAT_TCMOD = 16, RP_MAT_SCRIPT = 32,
-       RP_MAT_VERTEX = 64, RP_MAT_ENV = 128 };
+       RP_MAT_VERTEX = 64, RP_MAT_ENV = 128,
+       RP_MAT_VLM = 256 /* rgbGen vertex times a lightmap: the vertices' colours are halved already */,
+       RP_MAT_ALIT = 512 /* its alpha is tested: the vertices' colours are the lightmap's light */ };
 u32 rp_world_materials(void);
 const char *rp_world_material(u32 i, u32 *flags);
 /* The passes of a material whose shader is a script (RP_MAT_SCRIPT), asked

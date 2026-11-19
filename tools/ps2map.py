@@ -126,6 +126,9 @@ MAT_LIGHTMAP, MAT_SKY, MAT_NODRAW, MAT_DEFORM, MAT_TCMOD, MAT_SCRIPT, MAT_VERTEX
 # the script's first stage has rgbGen vertex and a $lightmap stage follows: the texture times
 # the vertex's colour times the lightmap (banners, grates, wires)
 MAT_VLM = 256
+# a lightmapped surface whose alpha is tested: lit by its vertices, which have the lightmap's
+# light (the stages before the script's $lightmap stage take the vertex's colour)
+MAT_ALIT = 512
 BLEND_NONE, BLEND_ADD, BLEND_ALPHA, BLEND_FILTER, BLEND_OTHER = range(5)
 ALPHA_NONE, ALPHA_GT0, ALPHA_LT128, ALPHA_GE128 = range(4)
 CULL_FRONT, CULL_BACK, CULL_NONE = range(3)
@@ -554,12 +557,13 @@ def sample_lightmap(page, s, t):
     return c
 
 
-def vertex_hues(page, verts):
+def vertex_hues(page, verts, mean=False):
     """The lightmap's colour for each vertex of a surface: of the page's texels in the
     surface's rectangle, those nearer to this vertex than to any other, summed. The page
     the PS2 draws is the lightmap's brightness alone and its colour is the vertices': the
     colour at the vertex itself misses a light that falls between the vertices (an orange
-    pool on a large wall came out grey)."""
+    pool on a large wall came out grey). mean: their mean, the light itself (a vertex
+    without a texel: the lightmap at it)."""
     h, w = page.shape[0], page.shape[1]
     lx, ly = verts[:, 5] * w - 0.5, verts[:, 6] * h - 0.5
     x0, x1 = int(max(math.floor(lx.min()), 0)), int(min(math.ceil(lx.max()), w - 1))
@@ -572,6 +576,10 @@ def vertex_hues(page, verts):
     d = (px[:, None] - lx[None, :]) ** 2 + (py[:, None] - ly[None, :]) ** 2
     near = d.argmin(1)
     np.add.at(out, near, page[gy.ravel(), gx.ravel()].astype(np.float64))
+    if mean:
+        cnt = np.bincount(near, minlength=len(verts))
+        for i in range(len(verts)):
+            out[i] = out[i] / cnt[i] if cnt[i] else sample_lightmap(page, verts[i, 5], verts[i, 6])
     return out
 
 
@@ -721,13 +729,15 @@ def build(args):
         if surf & SURF_NODRAW:
             flags |= MAT_NODRAW
         ti = texture(tex)
+        alit = False
         if flags & MAT_LIGHTMAP and ti >= 0:
             if alpha != ALPHA_NONE:
+                alit = True
                 # the lightmap's pass cannot leave out the texels the test leaves out: lit by
                 # the vertices. (A texture with alpha that is not tested keeps its lightmap:
                 # the renderer draws it as a pass of its own, the CLUT's alpha being the
                 # texture's.)
-                flags = (flags & ~MAT_LIGHTMAP) | MAT_VERTEX
+                flags = (flags & ~MAT_LIGHTMAP) | MAT_VERTEX | MAT_ALIT
         mat_index[key] = len(mats)
         # deformVertexes autosprite, autosprite2: quads that turn to the eye
         sprite = 0
@@ -735,7 +745,7 @@ def build(args):
             if l[0].lower() == "deformvertexes" and len(l) > 1 and l[1].lower() in ("autosprite", "autosprite2"):
                 sprite = 1 if l[1].lower() == "autosprite" else 2
         mats.append(dict(name=name, tex=ti, texname=tex, flags=flags, blend=blend, alpha=alpha, cull=cull,
-                         surf=surf, cont=cont, sprite=sprite))
+                         surf=surf, cont=cont, sprite=sprite, alit=alit))
         return mat_index[key]
 
     # the world's size picks the positions' unit
@@ -827,9 +837,16 @@ def build(args):
         page = bsp.lightmaps[lm] if lm >= 0 and m["flags"] & MAT_LIGHTMAP else None
         vlm = bool(m["flags"] & MAT_VLM)
         hues = vertex_hues(page, np.asarray(verts)) if page is not None and len(verts) else None
+        # a lightmapped surface whose alpha is tested is lit by its vertices: with the
+        # lightmap's light around each (the BSP's vertex colours are another light:
+        # q3dm19's girders were bright gold where the lightmap, and the PC, has them dark)
+        alit = None
+        if m.get("alit") and lm >= 0 and page is None and len(verts) and not vlm:
+            alit = vertex_hues(bsp.lightmaps[lm], np.asarray(verts), mean=True)
         for t in tris:
             tv = [verts[i] for i in t]
             th = [hues[i] if hues is not None else None for i in t]
+            ta = [alit[i] if alit is not None else None for i in t]
             # degenerate after quantisation: left out
             qp = [tuple(int(round(v[k] * q)) for k in range(3)) for v in tv]
             if qp[0] == qp[1] or qp[1] == qp[2] or qp[0] == qp[2]:
@@ -837,7 +854,7 @@ def build(args):
             cs, ct = sum(v[3] for v in tv) / 3, sum(v[4] for v in tv) / 3
             cell = (math.floor(cs / 4) * 4, math.floor(ct / 4) * 4)
             out = []
-            for v, p, vh in zip(tv, qp, th):
+            for v, p, vh, va in zip(tv, qp, th, ta):
                 st = (int(round((v[3] - cell[0]) * 4096)), int(round((v[4] - cell[1]) * 4096)))
                 st = tuple(min(max(x, -32768), 32767) for x in st)
                 if page is not None:
@@ -852,7 +869,7 @@ def build(args):
                     col = tuple(int(round(h * 128)) for h in hue) + (128,)
                 else:
                     lmst = (0, 0)
-                    c = v[10:13] * 2
+                    c = (va if va is not None else v[10:13]) * 2
                     top = c.max()
                     if top > 255:
                         c = c * 255 / top
