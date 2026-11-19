@@ -714,6 +714,40 @@ static int mirror_view(const refdef_t *fd, const struct rp_cam *cam, float ys, f
 	for (int a = 0; a < 3; a++)
 		rp_view.fr[0].n[a] = pl[a];
 	rp_view.fr[0].d = pl[3], rp_view.fr_len[0] = 1.0f;
+	/* what is seen through the mirror's opening only: the view's sides as
+	   planes from the mirrored eye through the edges of the mirror (its
+	   chunks' box, on its plane), so a small mirror costs as little */
+	{
+		float lo[3], hi[3];
+		rp_world_bounds(mirror_is, pl, lo, hi);
+		if (lo[0] <= hi[0]) {
+			/* the plane's two directions: the axes the box is wide along */
+			int k = fabsf(pl[0]) > fabsf(pl[1]) ? (fabsf(pl[0]) > fabsf(pl[2]) ? 0 : 2) : (fabsf(pl[1]) > fabsf(pl[2]) ? 1 : 2);
+			int u = (k + 1) % 3, v = (k + 2) % 3;
+			float cn[4][3], mid[3] = {0, 0, 0};
+			for (int c = 0; c < 4; c++) {
+				cn[c][u] = (c == 1 || c == 2) ? hi[u] : lo[u];
+				cn[c][v] = c >= 2 ? hi[v] : lo[v];
+				/* on the plane along its normal's main axis */
+				cn[c][k] = (pl[3] - pl[u] * cn[c][u] - pl[v] * cn[c][v]) / pl[k];
+				for (int a = 0; a < 3; a++)
+					mid[a] += cn[c][a] * 0.25f;
+			}
+			for (int c = 0; c < 4; c++) {
+				float e0[3], e1[3], n[3];
+				VectorSubtract(cn[c], m.org, e0);
+				VectorSubtract(cn[(c + 1) & 3], m.org, e1);
+				CrossProduct(e0, e1, n);
+				float d = DotProduct(n, m.org), len = VectorLength(n);
+				if (len <= 0)
+					continue;
+				if (DotProduct(n, mid) - d < 0)
+					VectorNegate(n, n), d = -d;
+				VectorCopy(n, rp_view.fr[1 + c].n);
+				rp_view.fr[1 + c].d = d, rp_view.fr_len[1 + c] = len;
+			}
+		}
+	}
 	rp_view_mirror = 1;
 	float room[3] = {at[0] + pl[0] * 8.0f, at[1] + pl[1] * 8.0f, at[2] + pl[2] * 8.0f};
 	rp_world_pvs(room);
@@ -1512,7 +1546,10 @@ static void RP_BeginRegistration(glconfig_t *config) {
 	r_ps2fill = ri.Cvar_Get("r_ps2fill", "1", CVAR_ARCHIVE);
 	r_ps2marks = ri.Cvar_Get("r_ps2marks", "1", CVAR_ARCHIVE);
 	r_ps2dlight = ri.Cvar_Get("r_ps2dlight", "4", CVAR_ARCHIVE);
-	r_ps2mirror = ri.Cvar_Get("r_ps2mirror", "1", CVAR_ARCHIVE);
+	/* off: a mirror that fills much of the picture is two scenes a field, more
+	   than beam racing's passes have at 1080i (q3dm0's: half the passes left
+	   out, the game at a few frames a second) */
+	r_ps2mirror = ri.Cvar_Get("r_ps2mirror", "0", CVAR_ARCHIVE);
 	r_ps2markrays = ri.Cvar_Get("r_ps2markrays", "64", CVAR_ARCHIVE);
 	r_ps2clean = ri.Cvar_Get("r_ps2clean", "1", CVAR_ARCHIVE);
 	rp_debug = (unsigned)ri.Cvar_Get("r_ps2debug", "0", 0)->integer;

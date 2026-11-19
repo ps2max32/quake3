@@ -1159,6 +1159,24 @@ int rp_world_find(int (*is)(u32 mat), float *plane, u32 *from) {
 	return 0;
 }
 
+void rp_world_bounds(int (*is)(u32 mat), const float *plane, float *mins, float *maxs) {
+	for (int a = 0; a < 3; a++)
+		mins[a] = 1e9f, maxs[a] = -1e9f;
+	for (u32 i = 0; i < nitem; i++) {
+		const struct pm_chunk *ch = &pm.chunk[item[i].chunk];
+		float pl[4];
+		if (!is(ch->mat) || !chunk_plane(ch, pl))
+			continue;
+		float d = pl[3] - plane[3];
+		if (pl[0] * plane[0] + pl[1] * plane[1] + pl[2] * plane[2] < 0.99f || d < -8.0f || d > 8.0f)
+			continue;
+		for (int a = 0; a < 3; a++) {
+			mins[a] = ch->mins[a] < mins[a] ? ch->mins[a] : mins[a];
+			maxs[a] = ch->maxs[a] > maxs[a] ? ch->maxs[a] : maxs[a];
+		}
+	}
+}
+
 void rp_world_depth(int (*is)(u32 mat), const float *plane) {
 	int run = 0;
 	for (u32 i = 0; i < nitem; i++) {

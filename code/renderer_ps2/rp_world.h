@@ -79,6 +79,8 @@ void rp_world_pvs(const float *org);
    chunk number *from on: the next one's plane (the normal, and its distance
    along it) and 1, *from the number after it; 0: no more. */
 int rp_world_find(int (*is)(u32 mat), float *plane, u32 *from);
+/* The box of the chunks in view on that plane whose material is(mat) */
+void rp_world_bounds(int (*is)(u32 mat), const float *plane, float *mins, float *maxs);
 /* The chunks in view on that plane whose material is(mat), as depth alone
    (no colour): what is in the picture there stays, and nothing behind them
    is drawn over it (a mirror's view, under the mirror's own stages). */

@@ -845,7 +845,12 @@ PS2 renderer follows. The same place by `+devmap`, `+setviewpos`,
   fails every pixel and keeps its depth), so the view leaves the mirrored
   picture there and the mirror's stages are laid over it. The player's own
   body (RF_THIRD_PERSON) is drawn in it only. Not in it: sprites, marks,
-  lights, fog. `r_ps2mirror 0`: off. Portals with a camera elsewhere (q3dm0's
+  lights, fog. Its view is cut to what the mirror's opening shows (planes
+  from the mirrored eye through the mirror's edges). On the PS2 it is too
+  much when the mirror fills the picture (q3dm0 from 160 units: a field's
+  passes 16.7 ms, 992 of 2415 left out, the game at a few frames a second):
+  off by default, `r_ps2mirror 1` turns it on. A mirror at the size of a
+  quarter of the picture or less would be in budget. Portals with a camera elsewhere (q3dm0's
   teleporter, q3dm7, q3dm11) still show their script only.
 - **Marks: fewer rays.** A small mark (a bullet's) on a flat wall takes two
   rays: the first corner's gives the wall's plane, and when the opposite
