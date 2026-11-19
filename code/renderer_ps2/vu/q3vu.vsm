@@ -858,6 +858,59 @@ q3mclip_next:
 	nop                             b q3clip_ret                      
 	nop                             nop                               
 q3cut_test:
+	nop                             lq.xyz vf17, 69(vi00)             
+	nop                             lq.xyz vf18, 70(vi00)             
+	nop                             nop                               
+	nop                             nop                               
+	nop                             nop                               
+	mulaw.xyz ACC, vf18, vf09w      nop                               
+	madd.xyz vf14, vf09, vf17       nop                               
+	mulaw.xyz ACC, vf18, vf12w      nop                               
+	madd.xyz vf15, vf12, vf17       nop                               
+	mulaw.xyz ACC, vf18, vf13w      nop                               
+	madd.xyz vf16, vf13, vf17       nop                               
+	addw.x vf17, vf00, vf09w        nop                               
+	addw.y vf17, vf00, vf12w        nop                               
+	addw.z vf17, vf00, vf13w        nop                               
+	addx.x vf18, vf00, vf14x        nop                               
+	addx.y vf18, vf00, vf15x        nop                               
+	addx.z vf18, vf00, vf16x        nop                               
+	addy.x vf19, vf00, vf14y        nop                               
+	addy.y vf19, vf00, vf15y        nop                               
+	addy.z vf19, vf00, vf16y        nop                               
+	nop                             iaddiu vi06, vi00, 0xe0           
+	sub.xyz vf01, vf17, vf18        nop                               
+	nop                             nop                               
+	nop                             nop                               
+	nop                             nop                               
+	nop                             fmand vi01, vi06                  
+	nop                             nop                               
+	nop                             ibeq vi01, vi06, q3cut_out        
+	nop                             nop                               
+	add.xyz vf01, vf17, vf18        nop                               
+	nop                             nop                               
+	nop                             nop                               
+	nop                             nop                               
+	nop                             fmand vi01, vi06                  
+	nop                             nop                               
+	nop                             ibeq vi01, vi06, q3cut_out        
+	nop                             nop                               
+	sub.xyz vf01, vf17, vf19        nop                               
+	nop                             nop                               
+	nop                             nop                               
+	nop                             nop                               
+	nop                             fmand vi01, vi06                  
+	nop                             nop                               
+	nop                             ibeq vi01, vi06, q3cut_out        
+	nop                             nop                               
+	add.xyz vf01, vf17, vf19        nop                               
+	nop                             nop                               
+	nop                             nop                               
+	nop                             nop                               
+	nop                             fmand vi01, vi06                  
+	nop                             nop                               
+	nop                             ibeq vi01, vi06, q3cut_out        
+	nop                             nop                               
 	nop                             lq.xyz vf17, 4(vi00)              
 	nop                             lq.xyz vf18, 5(vi00)              
 	nop                             nop                               

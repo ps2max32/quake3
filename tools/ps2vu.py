@@ -662,6 +662,23 @@ def clipper():
     # corner outside, the first plane's the highest (for q3cut_poly), and the planes' rows.
     # Keeps vi02 .. vi05, vi07, vi09 .. vi15
     lab("q3cut_test")
+    # First against the picture's sides and the window of lines the pass draws (SS, SN:
+    # x * SS + w * SN within -w .. w is inside): all three corners outside one of the
+    # four and nothing of it is drawn in this pass. A wall beside the eye is across the
+    # guard band in every strip's pass, and beside the picture or outside the strip in
+    # most; cutting it is hundreds of cycles and three packets.
+    L(f"lq.xyz vf17, {CTX['SS']}(vi00)", f"lq.xyz vf18, {CTX['SN']}(vi00)", "nop", "nop", "nop")
+    U("mulaw.xyz ACC, vf18, vf09w", "madd.xyz vf14, vf09, vf17",
+      "mulaw.xyz ACC, vf18, vf12w", "madd.xyz vf15, vf12, vf17",
+      "mulaw.xyz ACC, vf18, vf13w", "madd.xyz vf16, vf13, vf17")
+    U("addw.x vf17, vf00, vf09w", "addw.y vf17, vf00, vf12w", "addw.z vf17, vf00, vf13w")
+    for r, c in ((18, "x"), (19, "y")):
+        U(f"add{c}.x vf{r}, vf00, vf14{c}", f"add{c}.y vf{r}, vf00, vf15{c}", f"add{c}.z vf{r}, vf00, vf16{c}")
+    L("iaddiu vi06, vi00, 0xe0")
+    for op, src in (("sub", 18), ("add", 18), ("sub", 19), ("add", 19)):
+        out.append((f"{op}.xyz vf01, vf17, vf{src}", "nop"))
+        gap(3)
+        L("fmand vi01, vi06", "nop", "ibeq vi01, vi06, q3cut_out", "nop")
     # scaled into the clip volume (vf14-16)
     L(f"lq.xyz vf17, {CTX['CS']}(vi00)", f"lq.xyz vf18, {CTX['CN']}(vi00)", "nop", "nop", "nop")
     U("mulaw.xyz ACC, vf18, vf09w", "madd.xyz vf14, vf09, vf17",
