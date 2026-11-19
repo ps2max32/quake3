@@ -110,8 +110,10 @@ static void frames_flush(void) {
 	mx_hires_clear(0, 0, 0);
 	u32 f = mx_frame_number();
 	mx_frame_end();
-	/* the frames before it are done when it has replaced them */
-	while (mx_frame_done() < f)
+	/* the frames before it are done when it has replaced them (a second at
+	   most: a pipeline that is held plays nothing) */
+	u32 t0 = mx_count();
+	while (mx_frame_done() < f && mx_count() - t0 < MX_EE_HZ)
 		mx_sleep_us(2000);
 }
 
