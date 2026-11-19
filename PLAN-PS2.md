@@ -547,6 +547,17 @@ corridor 9.2 and court 11.2 (14.5 and 15.6 the evening before), q3dm12 13.6
   marker with them, had not reached the host. That is the host link's, not
   the game's: a run's end should be taken from the kernel's status when the
   marker does not come.
+- **The strips that were still late** were all in one scene of the
+  timedemo (frames 416 to 424: a player bursts before the eye). Its passes
+  took 25 ms a field: 12,000 vertices a strip, and a hundred sprites of
+  blood that filled the screen up to six times. A million pixels of blended
+  sprites cost the GS 1.9 ms. The quads have a limit now (`r_ps2fill`, 1:
+  automatic): what the field's time leaves after the rest of the frame, by
+  the passes' measured times; over it the sprites that fill the most for
+  what shows of them (grown and faded) are left out. The timedemo, two
+  runs: no strip still drawn, no pass left out (14 to 27 and 4 to 5
+  without), 264 to 508 sprites left out in 56 frames; light scenes keep up
+  to 4.6 times the screen.
 
 ## 3. Why the earlier attempts stalled
 

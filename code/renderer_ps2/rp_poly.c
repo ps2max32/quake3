@@ -110,6 +110,43 @@ void rp_poly_state(const struct rp_state *s) {
 
 void rp_poly_strips(u32 mask) { pstrips = mask; }
 
+float rp_poly_area(const struct rp_vert *v, u32 n) {
+	const struct rp_view *vw = &rp_view;
+	float left = vw->cx - 2048.0f + (float)mx_gs.w * 0.5f, top = vw->cy - 2048.0f + (float)mx_gs.h * 0.5f;
+	float W = (float)mx_gs.w, H = (float)mx_gs.h;
+	float x0 = 1e9f, x1 = -1e9f, y0 = 1e9f, y1 = -1e9f, px[16], py[16];
+	u32 behind = 0;
+	if (n < 3 || n > 16)
+		return 0;
+	for (u32 i = 0; i < n; i++) {
+		float d[3] = {v[i].xyz[0] - vw->org[0], v[i].xyz[1] - vw->org[1], v[i].xyz[2] - vw->org[2]};
+		float w = dot3(vw->F, d);
+		if (w < 4.5f) {
+			behind++;
+			continue;
+		}
+		float iw = 1.0f / w;
+		px[i] = left - vw->fx * dot3(vw->L, d) * iw, py[i] = top - vw->fy * dot3(vw->U, d) * iw;
+		x0 = px[i] < x0 ? px[i] : x0, x1 = px[i] > x1 ? px[i] : x1;
+		y0 = py[i] < y0 ? py[i] : y0, y1 = py[i] > y1 ? py[i] : y1;
+	}
+	if (behind == n)
+		return 0;
+	if (behind)
+		return W * H; /* across the eye's plane: no telling, the screen */
+	float bx0 = x0 < 0 ? 0 : x0, bx1 = x1 > W ? W : x1, by0 = y0 < 0 ? 0 : y0, by1 = y1 > H ? H : y1;
+	if (bx1 <= bx0 || by1 <= by0)
+		return 0;
+	float box = (bx1 - bx0) * (by1 - by0), full = (x1 - x0) * (y1 - y0), a = 0;
+	for (u32 i = 0, j = n - 1; i < n; j = i++)
+		a += px[j] * py[i] - px[i] * py[j];
+	a = (a < 0 ? -a : a) * 0.5f;
+	/* the part of it on the screen: as its box's part */
+	if (full > box && full > 0)
+		a *= box / full;
+	return a < box ? a : box;
+}
+
 void rp_poly(const struct rp_vert *v, u32 n) {
 	const struct rp_view *vw = &rp_view;
 	float cam[16][3];

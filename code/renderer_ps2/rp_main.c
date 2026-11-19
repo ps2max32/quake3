@@ -43,7 +43,7 @@
 
 refimport_t ri;
 static float scene_time; /* the scene's being drawn, for its shaders */
-static cvar_t *r_ps2draw, *r_ps2shot, *r_ps2passes, *r_ps2beamat;
+static cvar_t *r_ps2draw, *r_ps2shot, *r_ps2passes, *r_ps2beamat, *r_ps2fill;
 
 /* ---- the screen ------------------------------------------------------------------- */
 
@@ -166,6 +166,9 @@ static struct rp_vert polyverts[MAX_POLYVERT];
 static u32 nsprite, npoly, npolyvert;          /* in the frame */
 static u32 first_sprite, first_poly;           /* of the scene */
 static unsigned st_nostage, st_quads;
+static unsigned long long poly_px_sum, poly_px_max;
+static float quad_px; /* the frame's quads: the pixels they fill, every stage */
+static unsigned poly_px_over, st_fill_over, st_fill_out;
 
 static void RP_ClearScene(void) {
 	cur_ents = cur_polys = cur_polyverts = cur_lights = 0;
@@ -215,6 +218,8 @@ struct quad {
 	float time;          /* the shader's */
 	const struct rp_vert *v;
 	u32 n;
+	float px;            /* the pixels it fills, about, over its stages */
+	float score;         /* a sprite's: px by how little of it shows (0: never left out) */
 };
 #define MAX_BEAM_QUAD 512
 #define MAX_QUAD (MAX_SPRITE + MAX_POLY + MAX_BEAM_QUAD)
@@ -327,6 +332,41 @@ static void scene_beam(u32 *n, const refdef_t *fd, const refEntity_t *e, const s
 #define MAX_WMAT 1024
 static qhandle_t wshader[MAX_WMAT];
 
+/* The pixels the scene's quads may fill this frame. A cloud of blood before
+   the eye is a hundred sprites, six times the screen: with the rest of a
+   busy scene more than the GS draws in a field, and the strips come late.
+   r_ps2fill 1 (the default): what the field's time leaves, from what the
+   passes took (the sum of the strips' last passes) less what the quads of
+   those frames cost; 0: no limit; more: that many hundredths of the screen. */
+#define FILL_US 0.0019f /* a pixel of a blended sprite, measured: 1.9 ms a million */
+static float fill_was[2]; /* what the last frame's quads filled, and the one's before */
+static float fill_budget(void) {
+	static u32 was_n[MX_HIRES_PASSES], was_sum[MX_HIRES_PASSES];
+	static float strip_us[MX_HIRES_PASSES];
+	int f = r_ps2fill->integer;
+	float screen = (float)(mx_gs.w * mx_gs.h);
+	if (f <= 0)
+		return 1e30f;
+	if (f > 1)
+		return (float)f * 0.01f * screen;
+	float t = 0;
+	u32 np = mx_hires_passes();
+	for (u32 k = 0; k < np && k < MX_HIRES_PASSES; k++) {
+		u32 n = mx_hires_stats.pass_n[k], sum = mx_hires_stats.pass_sum_us[k];
+		if (n > was_n[k])
+			strip_us[k] = (float)(sum - was_sum[k]) / (float)(n - was_n[k]);
+		was_n[k] = n, was_sum[k] = sum;
+		t += strip_us[k];
+	}
+	/* the frames those passes showed: the last or the one before (the smaller
+	   fill: the larger rest) */
+	float had = fill_was[0] < fill_was[1] ? fill_was[0] : fill_was[1];
+	float rest = t - FILL_US * had;
+	float room = 0.88f * 1e6f / (float)mx_gs.hz - (rest > 0 ? rest : 0);
+	float b = room / FILL_US;
+	return b < 0.5f * screen ? 0.5f * screen : b > 8.0f * screen ? 8.0f * screen : b;
+}
+
 /* a scene's quads; world: with the world's quads that turn to the eye, of the
    view's cull */
 static u32 scene_quads(const refdef_t *fd, int world) {
@@ -341,6 +381,7 @@ static u32 scene_quads(const refdef_t *fd, int world) {
 		q->shader = polys[i].shader, q->sort = sh->sort, q->time = now;
 		q->ent[0] = q->ent[1] = q->ent[2] = q->ent[3] = 255;
 		q->v = &polyverts[polys[i].first], q->n = polys[i].n;
+		q->px = rp_poly_area(q->v, q->n) * (float)sh->nstage, q->score = 0;
 	}
 	for (u32 i = first_sprite; i < nsprite; i++) {
 		const refEntity_t *e = &sprites[i];
@@ -375,6 +416,12 @@ static u32 scene_quads(const refdef_t *fd, int world) {
 		q->shader = e->customShader, q->sort = sh->sort, q->time = now - e->shaderTime;
 		memcpy(q->ent, e->shaderRGBA, 4);
 		q->v = v, q->n = 4;
+		/* what shows of it: its alpha, or its colour where that fades */
+		u32 c = e->shaderRGBA[0] > e->shaderRGBA[1] ? e->shaderRGBA[0] : e->shaderRGBA[1];
+		c = c > e->shaderRGBA[2] ? c : e->shaderRGBA[2];
+		c = c < e->shaderRGBA[3] ? c : e->shaderRGBA[3];
+		q->px = rp_poly_area(v, 4) * (float)sh->nstage;
+		q->score = q->px / (float)(c + 8) + 1e-6f;
 	}
 	/* the world's quads that turn to the eye (lamps' glows) */
 	if (world) {
@@ -416,17 +463,51 @@ static u32 scene_quads(const refdef_t *fd, int world) {
 				q->shader = hs, q->sort = sh->sort, q->time = now;
 				q->ent[0] = q->ent[1] = q->ent[2] = q->ent[3] = 255;
 				q->v = v, q->n = 4;
+				q->px = rp_poly_area(v, 4) * (float)sh->nstage, q->score = 0;
 			}
 		}
 	}
-	/* by sort, the order kept (few, and nearly in order: insertion) */
+	/* Over the frame's limit (fill_budget) sprites are left out: first the ones
+	   that fill the most for what shows of them (smoke and blood that has
+	   grown and faded). */
+	float fill = 0, hard = 0, top = 0, limit = 1e30f;
 	for (u32 i = 0; i < n; i++) {
-		u32 j = i;
+		fill += quad[i].px;
+		if (quad[i].score == 0)
+			hard += quad[i].px;
+		else if (quad[i].score > top)
+			top = quad[i].score;
+	}
+	float budget = fill_budget();
+	if (fill > budget) {
+		/* the highest score that stays: by halving */
+		float lo = 0, hi = top;
+		for (int it = 0; it < 12; it++) {
+			float mid = (lo + hi) * 0.5f, sum = hard;
+			for (u32 i = 0; i < n; i++)
+				if (quad[i].score != 0 && quad[i].score <= mid)
+					sum += quad[i].px;
+			if (sum <= budget)
+				lo = mid;
+			else
+				hi = mid;
+		}
+		limit = lo;
+		st_fill_over++;
+	}
+	/* by sort, the order kept (few, and nearly in order: insertion) */
+	u32 m = 0;
+	for (u32 i = 0; i < n; i++) {
+		if (quad[i].score > limit) {
+			st_fill_out++;
+			continue;
+		}
+		u32 j = m++;
 		for (; j > 0 && quad[quad_order[j - 1]].sort > quad[i].sort; j--)
 			quad_order[j] = quad_order[j - 1];
 		quad_order[j] = (u16)i;
 	}
-	return n;
+	return m;
 }
 
 /* the quads from..to of the order: the ones of one shader after each other
@@ -461,6 +542,9 @@ static void quads_draw(u32 from, u32 to) {
 				}
 				rp_poly(v, q->n);
 				st_quads++;
+				if (s == 0)
+					quad_px += q->px;
+
 			}
 		}
 		i = end;
@@ -681,6 +765,7 @@ static struct mx_hires_pass *pass_log;
 static struct {
 	u32 frame;
 	u16 demo, tex_kb;
+	u16 quad_kpx; /* the quads' fill, thousands of pixels */
 	u16 sent[8], batches[8], setups[8], msent[8], mbatches[8], draws[8];
 } frame_log[FRAME_LOG];
 static u32 pass_tex_kb;
@@ -696,6 +781,7 @@ static void passes_frame(u32 frame, int df) {
 	f->frame = frame, f->demo = (u16)df;
 	f->tex_kb = (u16)(rp_tex_stats.upload_kb - pass_tex_kb);
 	pass_tex_kb = rp_tex_stats.upload_kb;
+	f->quad_kpx = (u16)(quad_px * 0.001f);
 	for (int k = 0; k < 8; k++) {
 		f->sent[k] = (u16)rp_list_stats.k_sent[k], f->batches[k] = (u16)rp_list_stats.k_batches[k];
 		f->setups[k] = (u16)rp_list_stats.k_setups[k];
@@ -711,16 +797,16 @@ static void passes_report(void) {
 	mx_hires_log(0, 0);
 	static char text[64 * 96];
 	FILE *fo = fopen("quake3.pass", "w");
-	int len = sprintf(text, "# frame demo strip wait_us run_us over out sent batches setups tex_kb msent mbatches draws\n");
+	int len = sprintf(text, "# frame demo strip wait_us run_us over out sent batches setups tex_kb msent mbatches draws quad_kpx\n");
 	for (u32 i = first; i < n && fo; i++) {
 		const struct mx_hires_pass *e = &pass_log[i % PASS_LOG];
 		const typeof(frame_log[0]) *f = &frame_log[e->frame % FRAME_LOG];
 		u32 k = e->strip & 7;
 		int known = f->frame == e->frame;
-		len += sprintf(text + len, "%u %u %u %u %u %u %u %u %u %u %u %u %u %u\n", e->frame, known ? f->demo : 0, e->strip,
+		len += sprintf(text + len, "%u %u %u %u %u %u %u %u %u %u %u %u %u %u %u\n", e->frame, known ? f->demo : 0, e->strip,
 		               e->wait_us, e->run_us, e->over, e->out, known ? f->sent[k] : 0, known ? f->batches[k] : 0,
 		               known ? f->setups[k] : 0, known ? f->tex_kb : 0, known ? f->msent[k] : 0,
-		               known ? f->mbatches[k] : 0, known ? f->draws[k] : 0);
+		               known ? f->mbatches[k] : 0, known ? f->draws[k] : 0, known ? f->quad_kpx : 0);
 		if (len > (int)sizeof text - 96) {
 			fwrite(text, 1, len, fo);
 			len = 0;
@@ -772,8 +858,19 @@ static void RP_EndFrame(int *frontEndMsec, int *backEndMsec) {
 		u32 kb = rp_model_stats.kb;
 		rp_model_stats = (struct rp_model_stats){.kb = kb};
 	}
-	if (df)
+	if (df) {
+		/* what the frame's polygons (sprites, effects, the sky) cover */
+		unsigned long long px = (unsigned long long)quad_px;
+		if (st_frames) {
+			poly_px_sum += px;
+			if (px > poly_px_max)
+				poly_px_max = px;
+			poly_px_over += px > 2u * 1920 * 540;
+		}
 		st_frames++;
+	}
+	fill_was[1] = fill_was[0], fill_was[0] = quad_px;
+	quad_px = 0;
 }
 
 static int RP_MarkFragments(int numPoints, const vec3_t *points, const vec3_t projection, int maxPoints,
@@ -843,6 +940,9 @@ void ps2_ren_report(void) {
 	Com_Printf("ps2: renderer: polygons: %u drawn (%u across a plane), %u out of view; %u pictures; %u stages without "
 	           "an image in GS memory\n", rp_poly_stats.polys, rp_poly_stats.cut, rp_poly_stats.culled,
 	           rp_poly_stats.pics, st_nostage);
+	Com_Printf("ps2: renderer: the scene's quads fill %u thousand pixels a frame, %u thousand at most (the "
+	           "screen is 1037 thousand); %u frames with more than twice the screen; over r_ps2fill in %u frames, %u sprites left out\n",
+	           (unsigned)(poly_px_sum / n / 1000), (unsigned)(poly_px_max / 1000), poly_px_over, st_fill_over, st_fill_out);
 	unsigned v = st.views - st_at.views;
 	if (v && world_sum.drawn)
 		Com_Printf("ps2: renderer: the world, a view: %u groups in view, %u chunks (%u across a plane, %u more facing "
@@ -895,6 +995,7 @@ static void RP_BeginRegistration(glconfig_t *config) {
 	r_ps2shot = ri.Cvar_Get("r_ps2shot", "0", 0);
 	r_ps2passes = ri.Cvar_Get("r_ps2passes", "0", 0);
 	r_ps2beamat = ri.Cvar_Get("r_ps2beamat", "0", 0);
+	r_ps2fill = ri.Cvar_Get("r_ps2fill", "1", CVAR_ARCHIVE);
 	rp_debug = (unsigned)ri.Cvar_Get("r_ps2debug", "0", 0)->integer;
 	screen_init();
 	/* no frame in flight draws what goes now: the map, the images */
