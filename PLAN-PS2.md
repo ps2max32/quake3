@@ -780,6 +780,15 @@ PS2 renderer follows. The same place by `+devmap`, `+setviewpos`,
   drawn once more in the fog's colour, as strong as the world's surfaces
   have it there (one strength for the model: it is small against a fog's
   depth; the engine's is each vertex's). Not yet the sprites.
+- **q3dm1's throat was black** (the cheeks of the mouth: a scrolling
+  layer with `rgbGen vertex`, the skin blended over it with its own colour,
+  the lightmap last). Before a late lightmap every stage takes the
+  vertices' colour, which is the lightmap's hue; but a material whose first
+  stage is `rgbGen vertex` has that light in the colours too, and it is
+  dark there: the skin over it came out as dark. A stage of its own colour
+  on such a material goes without the vertices' colour (three scripts). The
+  cheeks have the PC's brightness (109 for 113) but not the red of their
+  light (the hue alone is not in the map's vertices for these).
 - Mirrors and portals (7 maps) are still black surfaces.
 - **The sky had no clouds**, one colour: its layers were drawn with the
   texture level chosen for a surface 16,000 units away, the smallest. They

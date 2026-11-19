@@ -1477,7 +1477,11 @@ static u32 world_passes(u32 mat, struct rp_state *pass, int *first) {
 		for (int a = 0; a < 4; a++) {
 			int v = a < 3 ? vrgb : va;
 			float h = a < 3 ? half : 1.0f;
-			if (hue && a < 3)
+			/* (a material whose first stage is rgbGen vertex has that light in its
+			   vertices' colours with the hue: a stage of its own colour would be
+			   as dark as the vertices, black in q3dm1's throat; it goes without
+			   the hue) */
+			if (hue && a < 3 && (vrgb || !(flags & RP_MAT_VLM)))
 				s->cmul[a] = vrgb ? 1.0f : (float)c[a] * h * (1.0f / 128.0f), s->cadd[a] = 0;
 			else
 				s->cmul[a] = v ? (a < 3 ? h * vhalf : h) : 0, s->cadd[a] = v ? 0 : (float)c[a] * h;
