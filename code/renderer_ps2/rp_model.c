@@ -40,6 +40,7 @@
 #include "rp_model.h"
 #include "rp_poly.h"
 #include "rp_shader.h"
+#include "rp_world.h"
 #include "vu/q3vu.h"
 
 struct rp_model_stats rp_model_stats;
@@ -767,6 +768,10 @@ void rp_model_draw(const refEntity_t *e, float t) {
 		rp_model_stats.cut++;
 	else
 		rp_model_stats.drawn++;
+	/* the fog it stands in (the world's surfaces there have it: a model
+	   without it shines out of a pit's haze) */
+	float fogc[3], foga = 0;
+	int fog = rp_scene_world && rp_world_fog_at(c, fogc, &foga);
 	for (int i = 0; i < h->numSurfaces; i++) {
 		struct msurf *sf = &m->surf[i];
 		qhandle_t hs = e->customShader ? e->customShader
@@ -861,6 +866,22 @@ void rp_model_draw(const refEntity_t *e, float t) {
 			rp_draw(chain, mask, cut, (u32)sf->md3->numTriangles * 3u, (u32)sf->npiece);
 			if (k == skin)
 				rp_model_stats.surfs++;
+		}
+		/* the fog over it: its surface once more in the fog's colour, as much
+		   of it as the fog is strong there (not over a surface that is itself
+		   blended: a glow has no body for the fog to cover) */
+		if (fog && chain && (skin || sh->st[0].blend == RP_BLEND_NONE)) {
+			struct rp_state s;
+			memset(&s, 0, sizeof s);
+			s.blend = RP_BLEND_ALPHA, s.z = RP_Z_TEST, s.prog = RP_PROG_MODEL, s.texels = 2.0f;
+			s.cull = sh->cull_none ? RP_CULL_NONE : (mirrored ^ sh->cull_back ^ RP_MODEL_FRONT_NEG) ? RP_CULL_POS : RP_CULL_NEG;
+			float (*u)[4] = s.model;
+			u[0][0] = e->backlerp;
+			for (int a = 0; a < 3; a++)
+				u[1][a] = fogc[a], u[5][a] = 255.0f;
+			u[1][3] = foga * 128.0f, u[5][3] = 255.0f;
+			if (rp_run(matrix, &s) >= 0)
+				rp_draw(chain, mask, cut, (u32)sf->md3->numTriangles * 3u, (u32)sf->npiece), rp_model_stats.fogged++;
 		}
 	}
 }

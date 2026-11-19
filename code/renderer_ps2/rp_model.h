@@ -55,6 +55,7 @@ struct rp_model_stats {
 	u32 paged;                /* frames of surfaces not ready when a draw wanted them (their vertices not in memory, or no room) */
 	u32 made, evicted;        /* frames of surfaces made ready; of them given up for others */
 	u32 kb;                   /* memory of the models' vertices */
+	u32 fogged;               /* surfaces drawn once more for the fog they stand in */
 };
 extern struct rp_model_stats rp_model_stats;
 

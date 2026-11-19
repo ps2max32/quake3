@@ -72,6 +72,11 @@ void rp_world_dlights(const struct rp_dlight *l, unsigned n, unsigned max);
 void rp_world_fog(void);
 /* the map loaded has textures with a level over 128 texels (the pool of fine levels) */
 int rp_world_fine(void);
+/* The fog at a place of the world, for what stands in it (a model is small
+   against a fog's depth: one strength for all of it, where the engine's is
+   each vertex's): its colour (0 .. 255) and strength (0 .. 1) as the
+   world's surfaces there have it this frame. 0: no fog there. */
+int rp_world_fog_at(const float *p, float *colour, float *strength);
 struct rp_dl_stats {
 	unsigned lights, runs, chunks; /* lights drawn, their runs, the chunks drawn again for them */
 };

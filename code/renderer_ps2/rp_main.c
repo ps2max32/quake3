@@ -696,7 +696,8 @@ static void RP_RenderScene(const refdef_t *fd) {
 				unsigned n = dlights_choose(lit);
 				rp_world_dlights(lit, n, n);
 			}
-			rp_world_fog();
+			if (!(rp_debug & 4194304))
+				rp_world_fog();
 #define ACC(f) world_sum.f += world_st.f
 			ACC(seen), ACC(groups), ACC(drawn), ACC(clip), ACC(back), ACC(verts);
 #undef ACC

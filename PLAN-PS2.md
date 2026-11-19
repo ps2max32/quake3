@@ -767,6 +767,19 @@ PS2 renderer follows. The same place by `+devmap`, `+setviewpos`,
   the map with `rgbGen vertex`, which the engine draws at half the vertex's
   colour (its identityLight; only `exactVertex`, and a surface without a
   script, takes the colour whole). The world's stages took it whole.
+- **A fog's own face was a sheet over it** (q3ctf1: the ground fog a
+  white floor; q3dm4: from inside the pit's fog the hall outside it a grey
+  wall). The fog's brush has a face whose script has no stage: the engine
+  draws it with the fog's pass alone. It was drawn by a pass of its own,
+  untextured, and the fog's pass over that. A script's material with no
+  stage, texture or lightmap now has no pass of its own; the fog's pass
+  over the face is what it was (seen from inside, the haze over what lies
+  outside the fog; from outside nothing). q3dm4's view against the PC: 65
+  59 52 for 67 61 55 (was 88 83 76).
+- **Fog on what stands in it**: a model whose middle is in a fog volume is
+  drawn once more in the fog's colour, as strong as the world's surfaces
+  have it there (one strength for the model: it is small against a fog's
+  depth; the engine's is each vertex's). Not yet the sprites.
 - Mirrors and portals (7 maps) are still black surfaces.
 - **The sky had no clouds**, one colour: its layers were drawn with the
   texture level chosen for a surface 16,000 units away, the smallest. They

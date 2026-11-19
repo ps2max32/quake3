@@ -683,6 +683,13 @@ static int run_draw(const void *matrix, const struct item *it, u32 n) {
 		if ((m->flags & MAT_SCRIPT) && passes_fn)
 			np = passes_fn(c0->mat, pass, &first);
 		int own = !(np && first);
+		/* a script with nothing to draw (no stage, texture or lightmap): a fog's
+		   face. The engine draws it with the fog's pass alone, as rp_world_fog
+		   does (seen from inside the fog it is the haze over what lies outside);
+		   drawn by a pass of its own it was a white or black sheet over the
+		   fog's floor. */
+		if ((m->flags & MAT_SCRIPT) && !np && m->tex < 0 && !(c0->flags & CH_LIGHTMAP))
+			return 0;
 		/* the run's texture and lightmap page in GS memory (sent there if they
 		   were not); the lightmap with its texture's CLUT */
 		if (own && m->tex >= 0 && m->tex < MAX_TEX && wtex[m->tex] && (t = rp_image_place(wtex[m->tex])))
@@ -1005,6 +1012,41 @@ void rp_world_fog(void) {
 			rp_draw(pm.base + ch->off_data, it->mask, it->clip, ch->nverts, ch->nbatch);
 		}
 	}
+}
+
+int rp_world_fog_at(const float *p, float *colour, float *strength) {
+	const struct pm_head *h = pm.h;
+	const struct rp_view *v = &rp_view;
+	if (!h || !h->nfog)
+		return 0;
+	const struct pm_fog *fogs = (const void *)(pm.base + h->off_fog);
+	for (u32 f = 0; f < h->nfog && f < 255; f++) {
+		const struct pm_fog *fg = &fogs[f];
+		if (p[0] < fg->mins[0] || p[1] < fg->mins[1] || p[2] < fg->mins[2] || p[0] > fg->maxs[0] || p[1] > fg->maxs[1] ||
+		    p[2] > fg->maxs[2])
+			continue;
+		/* as rp_world_fog's texture coordinates: the depth before the eye by the
+		   fog's opaque depth, and the share of the eye's ray that is in the fog */
+		float d = ((p[0] - v->org[0]) * v->F[0] + (p[1] - v->org[1]) * v->F[1] + (p[2] - v->org[2]) * v->F[2]) /
+		          (fg->depth > 1.0f ? fg->depth : 1.0f);
+		float share = 1.0f;
+		if (fg->surface) {
+			float eye = v->org[0] * fg->plane[0] + v->org[1] * fg->plane[1] + v->org[2] * fg->plane[2] - fg->plane[3];
+			float k = eye < 0 ? 1.0f / (128.0f - eye) : 1.0f / (eye + 16.0f), t0 = eye < 0 ? 0.0f : 1.0f;
+			share = t0 + k * (p[0] * fg->plane[0] + p[1] * fg->plane[1] + p[2] * fg->plane[2] - fg->plane[3]);
+		}
+		d = d < 0 ? 0 : d > 1.0f ? 1.0f : d, share = share < 0 ? 0 : share > 1.0f ? 1.0f : share;
+		float a = sqrtf(d * share);
+		if (a < 0.02f)
+			return 0;
+		for (int c = 0; c < 3; c++) {
+			float x = fg->colour[c] * 255.0f;
+			colour[c] = x > 255.0f ? 255.0f : x;
+		}
+		*strength = a;
+		return 1;
+	}
+	return 0;
 }
 
 int rp_world_bmodel(u32 n, const float *origin, const float (*axis)[3], int blended) {
