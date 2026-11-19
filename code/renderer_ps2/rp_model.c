@@ -730,6 +730,9 @@ void rp_model_draw(const refEntity_t *e, float t) {
 		ld[a] = dot3(dir, e->axis[a]) / sc;
 	}
 	const void *matrix = 0;
+	for (int a = 0; a < 3; a++)
+		d[a] = c[a] - vw->org[a];
+	int near = (e->renderfx & RF_DEPTHHACK) || dot3(d, d) < 600.0f * 600.0f;
 	float det = e->axis[0][0] * (e->axis[1][1] * e->axis[2][2] - e->axis[1][2] * e->axis[2][1]) -
 	            e->axis[0][1] * (e->axis[1][0] * e->axis[2][2] - e->axis[1][2] * e->axis[2][0]) +
 	            e->axis[0][2] * (e->axis[1][0] * e->axis[2][1] - e->axis[1][1] * e->axis[2][0]);
@@ -748,43 +751,64 @@ void rp_model_draw(const refEntity_t *e, float t) {
 			rp_model_stats.nostage++;
 			continue;
 		}
-		rp_model_stats.stages += sh->nstage - 1u;
-		const struct rp_stage *stg = &sh->st[0];
-		struct rp_state s;
-		if (!rp_stage_state(stg, t, &s)) {
-			rp_model_stats.nostage++;
-			continue;
+		/* the stages: the first, then those that blend over it (one that does
+		   not would cover it; an environment stage is not drawn: no tcGen
+		   environment yet) */
+		const void *chain = 0;
+		for (int k = 0; k < sh->nstage; k++) {
+			const struct rp_stage *stg = &sh->st[k];
+			struct rp_state s;
+			/* the later stages (a glow, mostly) of the view weapon and of what
+			   is near: each is the model's vertices through VU1 once more */
+			if (k && !near) {
+				rp_model_stats.stages++;
+				continue;
+			}
+			if (k && (stg->env || stg->blend == RP_BLEND_NONE)) {
+				rp_model_stats.stages++;
+				continue;
+			}
+			if (!rp_stage_state(stg, t, &s)) {
+				if (!k) {
+					rp_model_stats.nostage++;
+					break;
+				}
+				rp_model_stats.stages++;
+				continue;
+			}
+			/* the colour: lit, or the stage's own */
+			u8 col[4];
+			int lit = stg->rgbgen == RGB_LIGHTING;
+			rp_stage_colour(stg, t, e->shaderRGBA, e->shaderRGBA, col);
+			s.texels = 2.0f;
+			s.prog = RP_PROG_MODEL;
+			/* the faces away from the eye left out: the screen's winding of the
+			   engine's front faces, turned by a mirrored axis or a shader that
+			   culls its front */
+			if (sh->cull_none)
+				s.cull = RP_CULL_NONE;
+			else
+				s.cull = (mirrored ^ sh->cull_back ^ RP_MODEL_FRONT_NEG) ? RP_CULL_POS : RP_CULL_NEG;
+			float (*u)[4] = s.model;
+			u[0][0] = e->backlerp;
+			for (int a = 0; a < 3; a++) {
+				u[1][a] = lit ? amb[a] : (float)col[a];
+				/* normals of length 127 */
+				u[2][a] = lit ? dirc[a] * ld[0] * (1.0f / 127.0f) : 0;
+				u[3][a] = lit ? dirc[a] * ld[1] * (1.0f / 127.0f) : 0;
+				u[4][a] = lit ? dirc[a] * ld[2] * (1.0f / 127.0f) : 0;
+				u[5][a] = 255.0f;
+			}
+			u[1][3] = (float)col[3], u[5][3] = 255.0f;
+			if (!matrix)
+				matrix = rp_matrix((float)MD3_XYZ_SCALE, e->origin, e->axis);
+			if (!chain)
+				chain = surf_chain(sf, frame, oldframe);
+			if (!chain || rp_run(matrix, &s) < 0)
+				break;
+			rp_draw(chain, mask, cut, (u32)sf->md3->numTriangles * 3u, (u32)sf->npiece);
+			if (!k)
+				rp_model_stats.surfs++;
 		}
-		/* the colour: lit, or the stage's own */
-		u8 col[4];
-		int lit = stg->rgbgen == RGB_LIGHTING;
-		rp_stage_colour(stg, t, e->shaderRGBA, e->shaderRGBA, col);
-		s.texels = 2.0f;
-		s.prog = RP_PROG_MODEL;
-		/* the faces away from the eye left out: the screen's winding of the
-		   engine's front faces, turned by a mirrored axis or a shader that
-		   culls its front */
-		if (sh->cull_none)
-			s.cull = RP_CULL_NONE;
-		else
-			s.cull = (mirrored ^ sh->cull_back ^ RP_MODEL_FRONT_NEG) ? RP_CULL_POS : RP_CULL_NEG;
-		float (*u)[4] = s.model;
-		u[0][0] = e->backlerp;
-		for (int a = 0; a < 3; a++) {
-			u[1][a] = lit ? amb[a] : (float)col[a];
-			/* normals of length 127 */
-			u[2][a] = lit ? dirc[a] * ld[0] * (1.0f / 127.0f) : 0;
-			u[3][a] = lit ? dirc[a] * ld[1] * (1.0f / 127.0f) : 0;
-			u[4][a] = lit ? dirc[a] * ld[2] * (1.0f / 127.0f) : 0;
-			u[5][a] = 255.0f;
-		}
-		u[1][3] = (float)col[3], u[5][3] = 255.0f;
-		if (!matrix)
-			matrix = rp_matrix((float)MD3_XYZ_SCALE, e->origin, e->axis);
-		const void *chain = surf_chain(sf, frame, oldframe);
-		if (!chain || rp_run(matrix, &s) < 0)
-			continue;
-		rp_draw(chain, mask, cut, (u32)sf->md3->numTriangles * 3u, (u32)sf->npiece);
-		rp_model_stats.surfs++;
 	}
 }
