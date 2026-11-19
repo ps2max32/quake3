@@ -594,14 +594,46 @@ static void ps2_run_report(void) {
 		          "99 %% %u us, longest %u us; %d of %d frames over a 59.94 Hz field, %d over a 50 Hz field\n",
 		          demo_first, demo_last, avg, cyc_us(avg), fps10 / 10, fps10 % 10, cyc_us(sorted[n / 2]),
 		          cyc_us(sorted[n * 95 / 100]), cyc_us(sorted[n * 99 / 100]), cyc_us(sorted[n - 1]), over60, n, over50);
+		{
+			/* the frames by the fields they took (the picture is a field's: a frame
+			   takes one, or as many more as it is late), and which frames took
+			   more than one, as runs of the demo's frames */
+			u32 by[5] = {0, 0, 0, 0, 0};
+			u64 extra = 0;
+			static char runs[900];
+			int len = 0, from = -1, nruns = 0;
+			for (int i = 0; i <= n; i++) {
+				u32 c = i < n ? demo_cyc[demo_first + i] : 0;
+				u32 f = (c + FIELD_60 / 2) / FIELD_60;
+				f = f < 1 ? 1 : f > 4 ? 5 : f;
+				if (i < n) {
+					by[f - 1]++;
+					if (f > 1)
+						extra += c - FIELD_60;
+				}
+				if (f > 1 && from < 0)
+					from = i;
+				if (f <= 1 && from >= 0) {
+					nruns++;
+					if (len < (int)sizeof runs - 24)
+						len += sprintf(runs + len, i - 1 > from ? " %d-%d" : " %d", demo_first + from, demo_first + i - 1);
+					from = -1;
+				}
+			}
+			mx_printf("ps2: timedemo fields: %u frames took one field, %u two, %u three, %u four, %u more; over one field "
+			          "%u us a frame in all; the frames over one, in %d runs:%s\n",
+			          by[0], by[1], by[2], by[3], by[4], cyc_us((u32)(extra / n)), nruns, runs);
+		}
 		struct mx_vm_stats v;
 		mx_vm_stats(&v);
 		mx_printf("ps2: VM in those frames: a frame %u TLB refills (%u of code); in all %u swap ins (%u ms), "
-		          "%u swap outs (%u ms), %u pages from files (%u ms), %u pages dropped; %u of %u frames pinned\n",
+		          "%u swap outs (%u ms, %u by the writer), %u pages from files (%u ms), %u pages dropped; %u ms waiting "
+		          "for the VM's lock; %u of %u frames pinned\n",
 		          (v.refills - vm_at.refills) / n, (v.refills_i - vm_at.refills_i) / n, v.swap_ins - vm_at.swap_ins,
 		          (v.us_swap_in - vm_at.us_swap_in) / 1000, v.swap_outs - vm_at.swap_outs,
-		          (v.us_swap_out - vm_at.us_swap_out) / 1000, v.file_ins - vm_at.file_ins,
-		          (v.us_file_in - vm_at.us_file_in) / 1000, v.drops - vm_at.drops, v.pinned_frames, v.frames);
+		          (v.us_swap_out - vm_at.us_swap_out) / 1000, v.writer_outs - vm_at.writer_outs, v.file_ins - vm_at.file_ins,
+		          (v.us_file_in - vm_at.us_file_in) / 1000, v.drops - vm_at.drops, (v.us_lock - vm_at.us_lock) / 1000,
+		          v.pinned_frames, v.frames);
 		if (Q3_VM_HIST)
 			hist_report(n);
 		/* every frame's cycles, for the frames that are over */

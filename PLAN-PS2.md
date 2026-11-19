@@ -824,6 +824,19 @@ PS2 renderer follows. The same place by `+devmap`, `+setviewpos`,
   frames that take two (one in nine) and the waits for pages. Nothing in
   it is large: the next gain is in the frames that take two fields, not in
   a function.
+- **The frames that take two fields are waits for pages.** The timedemo's
+  report now has the frames by the fields they took: 1150 one, 91 two, 15
+  three, 2 more; the late ones single frames in 85 places, 1.46 ms a frame
+  over one field in all (so 18.5 ms for 16.7). In those frames the VM
+  wrote 75 pages to the swap file (0.49 s), read 104 from the mapped files
+  (0.62 s) and the main thread waited 0.38 s for the VM's lock while the
+  pager read: a wait of 6 ms costs a field. The run starts after the map's
+  load, whose dirty pages go out one by one as the demo brings in
+  textures and models' frames. Making room at the end of the load from the
+  program (4 MB asked for, read and given up as cold) made it worse: the
+  pages that went were mostly the files' (99 swap outs for 75, 41 swap ins
+  for 10). It is the VM's to solve (asked of MXOS: a call that writes the
+  dirty pages out after a load; no lock held through the pager's I/O).
 - Mirrors and portals (7 maps) are still black surfaces.
 - **The sky had no clouds**, one colour: its layers were drawn with the
   texture level chosen for a surface 16,000 units away, the smallest. They
