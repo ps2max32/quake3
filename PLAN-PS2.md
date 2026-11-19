@@ -837,7 +837,30 @@ PS2 renderer follows. The same place by `+devmap`, `+setviewpos`,
   pages that went were mostly the files' (99 swap outs for 75, 41 swap ins
   for 10). It is the VM's to solve (asked of MXOS: a call that writes the
   dirty pages out after a load; no lock held through the pager's I/O).
-- Mirrors and portals (7 maps) are still black surfaces.
+- **Mirrors** (q3dm0's; a portal script at a misc_portal_surface without a
+  camera of its own): the scene once more from the eye mirrored in the
+  mirror's plane, before the view (world, models, sky; the plane as its
+  near plane, the PVS from the mirror's room), its depth taken away again,
+  then the mirror's chunks as depth alone (`RP_ALPHA_DEPTH`: the GS's test
+  fails every pixel and keeps its depth), so the view leaves the mirrored
+  picture there and the mirror's stages are laid over it. The player's own
+  body (RF_THIRD_PERSON) is drawn in it only. Not in it: sprites, marks,
+  lights, fog. `r_ps2mirror 0`: off. Portals with a camera elsewhere (q3dm0's
+  teleporter, q3dm7, q3dm11) still show their script only.
+- **Marks: fewer rays.** A small mark (a bullet's) on a flat wall takes two
+  rays: the first corner's gives the wall's plane, and when the opposite
+  corner's ray ends on it the other two corners are where theirs meet it
+  (426 of the timedemo's marks). Shadows (48 across, asked every frame) by
+  a lattice of 24 for 12: a running player's comes to new points less
+  often. A frame has 64 rays for small marks (`r_ps2markrays`; 8 left out
+  in the timedemo). The timedemo's rays 19648 -> 9524, 688 -> 402 ms.
+- **mx_vm_clean** (kernel 43, asked of MXOS) at the end of a level's load
+  (`r_ps2clean`): the load's written pages go to the swap file then (424
+  pages, 2.5 s) and stay in memory; the timedemo's swap outs 77 -> 2, the
+  lock waits 407 -> 215 ms, 18.67 -> 18.47 ms a frame. The late frames left
+  are mostly the 104 pages read from the mapped files. (On a kernel before
+  43 the call does nothing.)
+- Portals to another place (7 maps) still show their script only.
 - **The sky had no clouds**, one colour: its layers were drawn with the
   texture level chosen for a surface 16,000 units away, the smallest. They
   are drawn with the first level (a cloud's texel is pixels wide).

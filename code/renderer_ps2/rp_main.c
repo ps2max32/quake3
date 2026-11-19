@@ -46,7 +46,7 @@
 refimport_t ri;
 static float scene_time; /* the scene's being drawn, for its shaders */
 extern unsigned world_st_fine, world_st_cand;
-static cvar_t *r_ps2draw, *r_ps2shot, *r_ps2passes, *r_ps2beamat, *r_ps2fill, *r_ps2marks, *r_ps2dlight;
+static cvar_t *r_ps2draw, *r_ps2shot, *r_ps2passes, *r_ps2beamat, *r_ps2fill, *r_ps2marks, *r_ps2dlight, *r_ps2mirror, *r_ps2clean, *r_ps2markrays;
 
 /* ---- the screen ------------------------------------------------------------------- */
 
@@ -167,6 +167,14 @@ static int ncams;
 #define MAX_MODEL 1024
 static refEntity_t sprites[MAX_SPRITE], ments[MAX_MODEL];
 static u32 nment, first_ment;
+/* the scene's portal surfaces (the game's misc_portal_surface): where, and
+   where its camera is (the same place: a mirror) */
+#define MAX_PORTAL 8
+static struct {
+	vec3_t org, cam;
+} portals[MAX_PORTAL];
+static u32 nportal;
+static unsigned st_mirrors;
 static struct {
 	qhandle_t shader;
 	u16 first, n;
@@ -179,10 +187,14 @@ static unsigned long long poly_px_sum, poly_px_max;
 static float quad_px; /* the frame's quads: the pixels they fill, every stage */
 static unsigned poly_px_over, st_fill_over, st_fill_out, st_mark_frags, st_mark_traces, st_mark_known, st_dl_off;
 static unsigned long long st_mark_cycles, st_quad_cycles;
+/* the rays of this frame's marks (a ray is 36 us on the PS2: a shotgun's
+   eleven marks at a corner were 10 ms of one frame, which cost it a field) */
+static unsigned mark_rays, st_mark_rays_max, st_mark_over, st_mark_flat;
 
 static void RP_ClearScene(void) {
 	cur_ents = cur_polys = cur_polyverts = cur_lights = 0;
 	first_sprite = nsprite, first_poly = npoly, first_ment = nment;
+	nportal = 0;
 	rp_ndlight = 0;
 }
 
@@ -197,9 +209,14 @@ static void RP_AddRefEntityToScene(const refEntity_t *e) {
 	/* the railgun's trail and the lightning: quads between two points */
 	if ((e->reType == RT_RAIL_CORE || e->reType == RT_RAIL_RINGS || e->reType == RT_LIGHTNING) && nsprite < MAX_SPRITE)
 		sprites[nsprite++] = *e;
-	/* a body seen only in mirrors is not this view's */
-	if (e->reType == RT_MODEL && !(e->renderfx & RF_THIRD_PERSON) && nment < MAX_MODEL)
+	/* (a body seen only in mirrors, RF_THIRD_PERSON, is kept for a mirror's view) */
+	if (e->reType == RT_MODEL && nment < MAX_MODEL)
 		ments[nment++] = *e;
+	if (e->reType == RT_PORTALSURFACE && nportal < MAX_PORTAL) {
+		VectorCopy(e->origin, portals[nportal].org);
+		VectorCopy(e->oldorigin, portals[nportal].cam);
+		nportal++;
+	}
 }
 
 static void RP_AddPolyToScene(qhandle_t shader, int numVerts, const polyVert_t *verts, int num) {
@@ -656,6 +673,80 @@ static struct {
 	int plain;  /* one stage, its texture coordinates as given */
 } last2d;
 
+/* A mirror in the view (a chunk of the world whose script is a portal's, at
+   a misc_portal_surface without a camera): the scene once more from the eye
+   mirrored in its plane, before the view itself, and the depth of it taken
+   away again. The view's own surfaces then cover all of it but where the
+   mirror is, whose stages are laid over what is there. What is behind the
+   mirror's plane is left out by chunk and by model (the plane as that
+   view's near one): not cut. Its quads (sprites, marks), lights and fog are
+   not in it. 1: drawn (the view is to be set again). */
+static int mirror_is(u32 mat) {
+	const struct rp_shader *sh = mat < MAX_WMAT ? rp_shader_get(wshader[mat]) : NULL;
+	return sh && sh->sort == SORT_PORTAL;
+}
+
+static int mirror_view(const refdef_t *fd, const struct rp_cam *cam, float ys, float now, float *pl) {
+	const float *at = NULL;
+	float eye = 0;
+	u32 from = 0;
+	/* the first surface of a portal in view that the eye is before and that
+	   has a mirror's entity on it */
+	while (!at && nportal && rp_world_find(mirror_is, pl, &from)) {
+		eye = DotProduct(pl, cam->org) - pl[3];
+		for (u32 i = 0; i < nportal && eye >= 1.0f; i++) {
+			float d = DotProduct(pl, portals[i].org) - pl[3];
+			if (d > -64.0f && d < 64.0f && VectorCompare(portals[i].org, portals[i].cam))
+				at = portals[i].org;
+		}
+	}
+	if (!at)
+		return 0;
+	struct rp_cam m = *cam;
+	for (int a = 0; a < 3; a++)
+		m.org[a] = cam->org[a] - 2.0f * eye * pl[a];
+	for (int i = 0; i < 3; i++) {
+		float s = DotProduct(pl, cam->axis[i]);
+		for (int a = 0; a < 3; a++)
+			m.axis[i][a] = cam->axis[i][a] - 2.0f * s * pl[a];
+	}
+	rp_view_rect(&m, (float)fd->x, (float)fd->y * ys, (float)fd->width, (float)fd->height * ys);
+	for (int a = 0; a < 3; a++)
+		rp_view.fr[0].n[a] = pl[a];
+	rp_view.fr[0].d = pl[3], rp_view.fr_len[0] = 1.0f;
+	rp_view_mirror = 1;
+	float room[3] = {at[0] + pl[0] * 8.0f, at[1] + pl[1] * 8.0f, at[2] + pl[2] * 8.0f};
+	rp_world_pvs(room);
+	struct rp_world_stats ws;
+	memset(&ws, 0, sizeof ws);
+	rp_world_cull(&ws);
+	rp_world_add(0);
+	for (int blended = 0; blended < 2; blended++) {
+		for (u32 i = first_ment; i < nment; i++) {
+			const refEntity_t *e = &ments[i];
+			if (e->renderfx & (RF_FIRST_PERSON | RF_DEPTHHACK))
+				continue;
+			if (rp_model_brush(e->hModel))
+				rp_world_bmodel((u32)rp_model_brush(e->hModel), e->origin, e->axis, blended);
+			else if ((rp_model_blended(e) != 0) == blended)
+				rp_model_draw(e, now - e->shaderTime);
+		}
+		if (!blended) {
+			u32 sky_strips = sky_shader ? rp_world_sky() : 0;
+			const struct rp_shader *sky = sky_strips ? rp_shader_get(sky_shader) : NULL;
+			if (sky)
+				rp_sky_draw(sky, now, sky_strips);
+			rp_world_add(1);
+		}
+	}
+	rp_poly_flush();
+	rp_zclear((float)fd->x, (float)fd->y * ys, (float)(fd->x + fd->width), (float)(fd->y + fd->height) * ys);
+	rp_view_mirror = 0;
+	rp_world_pvs(NULL);
+	st_mirrors++;
+	return 1;
+}
+
 static void RP_RenderScene(const refdef_t *fd) {
 	st.scenes++;
 	int world = !(fd->rdflags & RDF_NOWORLDMODEL);
@@ -689,7 +780,18 @@ static void RP_RenderScene(const refdef_t *fd) {
 		if (draw_world) {
 			rp_world_areas(fd->areamask);
 			rp_world_cull(&world_st);
-			rp_world_add(0);
+			float mpl[4];
+			if (r_ps2mirror->integer && mirror_view(fd, &cam, ys, now, mpl)) {
+				rp_view_rect(&cam, (float)fd->x, (float)fd->y * ys, (float)fd->width, (float)fd->height * ys);
+				rp_world_cull(&world_st);
+				/* r_ps2debug 33554432: the mirror's view alone */
+				if (rp_debug & 33554432)
+					draw_world = 0, skip |= 4 | 8;
+				else
+					rp_world_depth(mirror_is, mpl);
+			}
+			if (draw_world)
+				rp_world_add(0);
 			/* the dynamic lights on it: after its depth is there, before what stands in it */
 			if (r_ps2dlight->integer && rp_ndlight) {
 				static struct rp_dlight lit[RP_DLIGHTS];
@@ -716,6 +818,11 @@ static void RP_RenderScene(const refdef_t *fd) {
 		static u8 kind[MAX_MODEL]; /* 1: its shader blends; 2: the view weapon's depth */
 		for (u32 i = first_ment; i < nment; i++) {
 			const refEntity_t *e = &ments[i];
+			/* a body seen only in mirrors is not this view's */
+			if (e->renderfx & RF_THIRD_PERSON) {
+				kind[i] = 4;
+				continue;
+			}
 			/* the map's doors and platforms: drawn as the world is */
 			if (rp_model_brush(e->hModel)) {
 				kind[i] = 8;
@@ -771,6 +878,7 @@ static void RP_RenderScene(const refdef_t *fd) {
 		rp_tex_full = 0;
 	}
 	first_sprite = nsprite, first_poly = npoly, first_ment = nment;
+	nportal = 0;
 	rp_ndlight = 0;
 	if (!world)
 		return;
@@ -855,6 +963,9 @@ static void RP_BeginFrame(stereoFrame_t stereoFrame) {
 	mx_frame_begin_n();
 	ps2_ren_wait += mx_count() - t0;
 	in_frame = 1;
+	if (mark_rays > st_mark_rays_max)
+		st_mark_rays_max = mark_rays;
+	mark_rays = 0;
 	rp_tex_frame();
 	mx_hires_clear(0, 0, 0);
 	rp_list_begin();
@@ -1004,12 +1115,12 @@ static void RP_EndFrame(int *frontEndMsec, int *backEndMsec) {
 
 #include "../qcommon/surfaceflags.h"
 
-static int mark_point(const float *p, const float *dir, float *out) {
+static int mark_point_n(const float *p, const float *dir, float *out, float *nrm) {
 	vec3_t a, b, zero = {0, 0, 0};
 	trace_t tr;
 	VectorMA(p, -4.0f, dir, a);
 	VectorMA(p, 8.0f, dir, b);
-	st_mark_traces++;
+	st_mark_traces++, mark_rays++;
 	CM_BoxTrace(&tr, a, b, zero, zero, 0, CONTENTS_SOLID, qfalse);
 	if (tr.startsolid || tr.allsolid || tr.fraction >= 1.0f)
 		return 0;
@@ -1019,8 +1130,12 @@ static int mark_point(const float *p, const float *dir, float *out) {
 	if (DotProduct(tr.plane.normal, dir) > -0.5f)
 		return 0;
 	VectorCopy(tr.endpos, out);
+	if (nrm)
+		VectorCopy(tr.plane.normal, nrm);
 	return 1;
 }
+
+static int mark_point(const float *p, const float *dir, float *out) { return mark_point_n(p, dir, out, NULL); }
 
 /* the planes squares were asked on (a direction, how far along it, the
    lattice's step), and the lattice's points known: where along the
@@ -1134,14 +1249,45 @@ static int mark_fragments(int numPoints, const vec3_t *points, const vec3_t proj
 	}
 	struct mark_plane *pl = 0;
 	if (edge >= 24.0f * 24.0f)
-		pl = mark_plane_of(dir, DotProduct(mid, dir), edge >= 96.0f * 96.0f ? 32.0f : edge >= 44.0f * 44.0f ? 12.0f : 8.0f);
+		/* (a shadow, 48 across, is asked every frame and moves with its player:
+		   at a step of 12 a running one came to five new points every other
+		   frame, a ray each; at 24 to three every fourth) */
+		pl = mark_plane_of(dir, DotProduct(mid, dir), edge >= 96.0f * 96.0f ? 32.0f : edge >= 44.0f * 44.0f ? 24.0f : 12.0f);
 #define POINT(p, out) (pl ? mark_lattice(pl, p, mid, out) : mark_point(p, dir, out))
 	/* the corners: 0 1 2 3 round the square */
 	static const u8 corner[4][2] = {{0, 0}, {MARK_GRID, 0}, {MARK_GRID, MARK_GRID}, {0, MARK_GRID}};
-	int all = 1;
+	int all = 1, have = 0;
+	if (!pl) {
+		/* a small mark (a bullet's): no more once the frame's rays are spent */
+		if (r_ps2markrays->integer > 0 && mark_rays >= (unsigned)r_ps2markrays->integer) {
+			st_mark_over++;
+			return 0;
+		}
+		/* on a flat wall two rays are enough: a corner's gives the wall's plane,
+		   and when the opposite corner's ray ends on that plane the other two
+		   are where theirs meet it */
+		float n[3], dn;
+		ok[0][0] = (u8)mark_point_n(points[0], dir, g[0][0], n);
+		ok[MARK_GRID][MARK_GRID] = (u8)mark_point(points[2], dir, g[MARK_GRID][MARK_GRID]);
+		have = 5; /* corners 0 and 2 are asked */
+		if (ok[0][0] && ok[MARK_GRID][MARK_GRID] && (dn = DotProduct(n, dir)) < -0.5f) {
+			float q[4][3], d0 = DotProduct(n, g[0][0]);
+			for (int c = 0; c < 4; c++)
+				VectorMA(points[c], (d0 - DotProduct(n, points[c])) / dn, dir, q[c]);
+			float off = DotProduct(q[2], dir) - DotProduct(g[MARK_GRID][MARK_GRID], dir);
+			if (off > -0.5f && off < 0.5f) {
+				for (int c = 0; c < 4; c++)
+					VectorCopy(q[c], out[c]);
+				fragmentBuffer[0].firstPoint = 0, fragmentBuffer[0].numPoints = 4;
+				st_mark_frags++, st_mark_flat++;
+				return 1;
+			}
+		}
+	}
 	for (int c = 0; c < 4; c++) {
 		int i = corner[c][0], j = corner[c][1];
-		ok[j][i] = (u8)POINT(points[c], g[j][i]);
+		if (!(have >> c & 1))
+			ok[j][i] = (u8)POINT(points[c], g[j][i]);
 		all &= ok[j][i];
 	}
 	if (all) {
@@ -1270,10 +1416,10 @@ void ps2_ren_report(void) {
 	           rp_shader_count());
 	Com_Printf("ps2: renderer: models, a frame: %u drawn (%u surfaces, %u pieces, %u vertices), %u of them across a "
 	           "plane (cut on VU1), %u out of view; in all %u surfaces without a stage, %u later stages not drawn, %u "
-	           "times a surface's frame was not ready\n",
+	           "times a surface's frame was not ready; %u tags and %u frames' bounds read from the file while the game waited\n",
 	           (rp_model_stats.drawn + rp_model_stats.cut) / n, rp_model_stats.surfs / n, rp_model_stats.pieces / n, rp_model_stats.verts / n,
 	           rp_model_stats.cut / n, rp_model_stats.culled / n, rp_model_stats.nostage, rp_model_stats.stages,
-	           rp_model_stats.paged);
+	           rp_model_stats.paged, rp_model_stats.tag_waits, rp_model_stats.frame_waits);
 	rp_shader_report();
 	{
 		struct mx_vcache_stats vs;
@@ -1300,14 +1446,16 @@ void ps2_ren_report(void) {
 	Com_Printf("ps2: renderer: the hunk has %d KB left of %d MB\n", Hunk_MemoryRemaining() / 1024,
 	           Cvar_VariableIntegerValue("com_hunkMegs"));
 	Com_Printf("ps2: renderer: polygons: %u drawn (%u across a plane), %u out of view; %u pictures; %u stages without "
-	           "an image in GS memory\n", rp_poly_stats.polys, rp_poly_stats.cut, rp_poly_stats.culled,
-	           rp_poly_stats.pics, st_nostage);
+	           "an image in GS memory; %u views in a mirror\n", rp_poly_stats.polys, rp_poly_stats.cut, rp_poly_stats.culled,
+	           rp_poly_stats.pics, st_nostage, st_mirrors);
 	Com_Printf("ps2: renderer: the scene's quads fill %u thousand pixels a frame, %u thousand at most (the "
 	           "screen is 1037 thousand); %u frames with more than twice the screen; over r_ps2fill in %u frames, %u sprites left out; %u parts of marks by %u rays in %u ms (%u at places known); the quads' draws %u ms; %u lights on the world in %u runs of %u chunks (%u left out for the passes' time); %u of %u textures a frame with levels over 128 texels (%u sent to the pool, %u times not there yet)\n",
 	           (unsigned)(poly_px_sum / n / 1000), (unsigned)(poly_px_max / 1000), poly_px_over, st_fill_over, st_fill_out,
 	           st_mark_frags, st_mark_traces, (unsigned)(st_mark_cycles / (MX_EE_HZ / 1000)), st_mark_known,
 	           (unsigned)(st_quad_cycles / (MX_EE_HZ / 1000)), rp_dl_stats.lights, rp_dl_stats.runs, rp_dl_stats.chunks, st_dl_off, world_st_fine / n, world_st_cand / n, rp_tex_stats.fine_sent, rp_tex_stats.fine_wait);
 	unsigned v = st.views - st_at.views;
+	Com_Printf("ps2: renderer: marks: %u rays in a frame at most, %u small marks flat (two rays), %u left out for the "
+	           "frame's rays (r_ps2markrays)\n", st_mark_rays_max, st_mark_flat, st_mark_over);
 	if (v && world_sum.drawn)
 		Com_Printf("ps2: renderer: the world, a view: %u groups in view, %u chunks (%u across a plane, %u more facing "
 		           "away), %u vertices\n", world_sum.groups / v, world_sum.drawn / v, world_sum.clip / v,
@@ -1362,6 +1510,9 @@ static void RP_BeginRegistration(glconfig_t *config) {
 	r_ps2fill = ri.Cvar_Get("r_ps2fill", "1", CVAR_ARCHIVE);
 	r_ps2marks = ri.Cvar_Get("r_ps2marks", "1", CVAR_ARCHIVE);
 	r_ps2dlight = ri.Cvar_Get("r_ps2dlight", "4", CVAR_ARCHIVE);
+	r_ps2mirror = ri.Cvar_Get("r_ps2mirror", "1", CVAR_ARCHIVE);
+	r_ps2markrays = ri.Cvar_Get("r_ps2markrays", "64", CVAR_ARCHIVE);
+	r_ps2clean = ri.Cvar_Get("r_ps2clean", "1", CVAR_ARCHIVE);
 	rp_debug = (unsigned)ri.Cvar_Get("r_ps2debug", "0", 0)->integer;
 	screen_init();
 	/* no frame in flight draws what goes now: the map, the images */
@@ -1540,7 +1691,20 @@ static void RP_LoadWorld(const char *name) {
 	ri.Printf(PRINT_ALL, "ps2: renderer: world %s, %u KB\n", path, world_size / 1024);
 }
 static void RP_SetWorldVisData(const byte *vis) {}
-static void RP_EndRegistration(void) {}
+/* A level is loaded. What the load wrote and the game does not touch again
+   is still in memory, and each page the game then brings in (a texture's, a
+   model's frames) pushes one of those out: a write to the swap file of 6 ms
+   that costs the frame a field (the timedemo's late frames were these). The
+   written pages go to the swap file now, where a wait does not show, and
+   stay in memory: the VM's mx_vm_clean (kernel 43). r_ps2clean 0: not. */
+static void RP_EndRegistration(void) {
+	if (!r_ps2clean->integer || !mx_vm_active())
+		return;
+	int t0 = ri.Milliseconds();
+	int n = mx_vm_clean();
+	ri.Printf(PRINT_ALL, "ps2: renderer: the level's written pages to the swap file: %d pages in %d ms\n", n,
+	          ri.Milliseconds() - t0);
+}
 static int RP_LightForPoint(vec3_t point, vec3_t ambientLight, vec3_t directedLight, vec3_t lightDir) { return qfalse; }
 static void RP_DrawStretchRaw(int x, int y, int w, int h, int cols, int rows, const byte *data, int client,
                               qboolean dirty) {}

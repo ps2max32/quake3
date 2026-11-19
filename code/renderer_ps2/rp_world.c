@@ -427,6 +427,9 @@ unsigned world_st_fine, world_st_cand;
 
 int rp_world_fine(void) { return fine_on; }
 
+static const float *pvs_org;
+void rp_world_pvs(const float *org) { pvs_org = org; }
+
 static void want_levels(void) {
 	static u16 cand[MAX_TEX];
 	static float key[MAX_TEX];
@@ -477,7 +480,7 @@ void rp_world_cull(struct rp_world_stats *st) {
 			gb[p].n[k] = v->gb[p].n[k], gb[p].d = v->gb[p].d;
 			gb[p].near[k] = (u8)(gb[p].n[k] >= 0 ? k : 4 + k);
 		}
-	u32 cluster = cam_cluster(org);
+	u32 cluster = cam_cluster(pvs_org ? pvs_org : org);
 	st->cluster = cluster;
 	const u8 *row = cluster < h->ncluster ? pm.vis + cluster * h->vis_bytes : 0;
 	const u8 *crow = cluster < h->ncluster ? pm.cvis + cluster * h->cvis_bytes : 0;
@@ -1131,6 +1134,52 @@ void rp_world_fog(void) {
 			const struct pm_chunk *ch = &pm.chunk[it->chunk];
 			rp_draw(pm.base + ch->off_data, it->mask, it->clip, ch->nverts, ch->nbatch);
 		}
+	}
+}
+
+/* a flat chunk's plane; 0: it is not flat */
+static int chunk_plane(const struct pm_chunk *ch, float *plane) {
+	float l = sqrtf((float)(ch->cone[0] * ch->cone[0] + ch->cone[1] * ch->cone[1] + ch->cone[2] * ch->cone[2]));
+	if (ch->sine >= 64 || l < 1.0f)
+		return 0;
+	plane[3] = 0;
+	for (int a = 0; a < 3; a++) {
+		plane[a] = (float)ch->cone[a] / l;
+		plane[3] += plane[a] * (ch->mins[a] + ch->maxs[a]) * 0.5f;
+	}
+	return 1;
+}
+
+int rp_world_find(int (*is)(u32 mat), float *plane, u32 *from) {
+	for (u32 i = *from; i < nitem; i++)
+		if (is(pm.chunk[item[i].chunk].mat) && chunk_plane(&pm.chunk[item[i].chunk], plane)) {
+			*from = i + 1;
+			return 1;
+		}
+	return 0;
+}
+
+void rp_world_depth(int (*is)(u32 mat), const float *plane) {
+	int run = 0;
+	for (u32 i = 0; i < nitem; i++) {
+		const struct pm_chunk *ch = &pm.chunk[item[i].chunk];
+		float pl[4];
+		if (!is(ch->mat) || !chunk_plane(ch, pl))
+			continue;
+		float d = pl[3] - plane[3];
+		if (pl[0] * plane[0] + pl[1] * plane[1] + pl[2] * plane[2] < 0.99f || d < -8.0f || d > 8.0f)
+			continue;
+		if (!run) {
+			struct rp_state s;
+			memset(&s, 0, sizeof s);
+			s.prog = RP_PROG_WORLD, s.blend = RP_BLEND_NONE, s.z = RP_Z_WRITE, s.alpha = RP_ALPHA_DEPTH, s.texels = 1.0f;
+			if (!wmatrix)
+				wmatrix = rp_matrix(pm.h->pos_scale, 0, 0);
+			if (rp_run(wmatrix, &s) < 0)
+				return;
+			run = 1;
+		}
+		rp_draw(pm.base + ch->off_data, item[i].mask, item[i].clip, ch->nverts, ch->nbatch);
 	}
 }
 

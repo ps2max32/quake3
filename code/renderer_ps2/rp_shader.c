@@ -388,7 +388,9 @@ static void parse_shader(char *body, struct rp_shader *sh) {
 			       : !Q_stricmp(t, "nearest")    ? SORT_NEAREST
 			       : !Q_stricmp(t, "underwater") ? SORT_UNDERWATER
 			                                     : atoi(t);
-		} else if (!Q_stricmp(t, "polygonOffset"))
+		} else if (!Q_stricmp(t, "portal"))
+			sort = sort ? sort : SORT_PORTAL;
+		else if (!Q_stricmp(t, "polygonOffset"))
 			sh->polygon_offset = 1;
 		else if (!Q_stricmp(t, "nomipmaps") || !Q_stricmp(t, "nopicmip"))
 			sh->nomip |= !Q_stricmp(t, "nomipmaps");

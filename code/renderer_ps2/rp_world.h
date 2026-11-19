@@ -72,6 +72,17 @@ void rp_world_dlights(const struct rp_dlight *l, unsigned n, unsigned max);
 void rp_world_fog(void);
 /* the map loaded has textures with a level over 128 texels (the pool of fine levels) */
 int rp_world_fine(void);
+/* The next views' PVS from another place than the eye (a mirror's view: the
+   eye is behind the mirror's wall, in no room); 0: the eye's again. */
+void rp_world_pvs(const float *org);
+/* After rp_world_cull: the flat chunks in view whose material is(mat), from
+   chunk number *from on: the next one's plane (the normal, and its distance
+   along it) and 1, *from the number after it; 0: no more. */
+int rp_world_find(int (*is)(u32 mat), float *plane, u32 *from);
+/* The chunks in view on that plane whose material is(mat), as depth alone
+   (no colour): what is in the picture there stays, and nothing behind them
+   is drawn over it (a mirror's view, under the mirror's own stages). */
+void rp_world_depth(int (*is)(u32 mat), const float *plane);
 /* The fog at a place of the world, for what stands in it (a model is small
    against a fog's depth: one strength for all of it, where the engine's is
    each vertex's): its colour (0 .. 255) and strength (0 .. 1) as the

@@ -75,7 +75,8 @@ void rp_dyn_end(u64 *end);
 enum { RP_BLEND_NONE, RP_BLEND_ADD, RP_BLEND_ALPHA, RP_BLEND_FILTER, RP_BLEND_OTHER, RP_BLEND_ADD_ALPHA,
        RP_BLEND_INVFILTER, RP_BLEND_INVALPHA /* the picture where the alpha is 1 */,
        RP_BLEND_BRIGHTEN /* the picture times 1 + alpha: a light on what is there */ };
-enum { RP_ALPHA_NONE, RP_ALPHA_GT0, RP_ALPHA_LT128, RP_ALPHA_GE128 };
+enum { RP_ALPHA_NONE, RP_ALPHA_GT0, RP_ALPHA_LT128, RP_ALPHA_GE128,
+       RP_ALPHA_DEPTH /* no pixel passes, and one that fails writes its depth alone: depth without colour */ };
 /* the programs of a run: the world's (texture and lightmap from one vertex
    when the state has a lightmap); none: its draws are GIF packets (sprites
    of ST, RGBAQ, XYZ2 a vertex, PRIM from the state), no matrix; an MD3

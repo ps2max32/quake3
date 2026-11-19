@@ -478,6 +478,7 @@ static const void *setup_chain(const struct rp_state *s, int cut, int state) {
 		if (regs_on) {
 		c = mx_e_ad(c, ctx ? MX_GS_REG_TEST_2 : MX_GS_REG_TEST_1,
 		            rp_debug & 128 ? mx_gs_test(0, 0, 0, 0, 0, 0, 1, 1)
+		            : s->alpha == RP_ALPHA_DEPTH ? mx_gs_test(1, 0, 0, 2, 0, 0, 1, 2)
 		                           : mx_gs_test(s->alpha != RP_ALPHA_NONE, atst, s->alpha == RP_ALPHA_GT0 ? 0 : 0x40, 0, 0, 0, 1,
 		                                        s->z == RP_Z_NONE ? 1 : 2));
 		n++;

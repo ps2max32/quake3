@@ -474,6 +474,8 @@ static md3Tag_t *model_tag(md3Header_t *m, int frame, const char *name) {
 	if (frame < 0)
 		frame = 0;
 	md3Tag_t *t = (md3Tag_t *)((byte *)m + m->ofsTags) + frame * m->numTags;
+	if (m->numTags && !mx_mem_resident(t, (u32)m->numTags * sizeof *t))
+		rp_model_stats.tag_waits++;
 	for (int i = 0; i < m->numTags; i++, t++)
 		if (!strcmp(t->name, name))
 			return t;
@@ -632,6 +634,7 @@ int rp_model_rect(const refEntity_t *e, float *rect) {
 static inline float dot3(const float *a, const float *b) { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; }
 
 int rp_scene_world;
+int rp_view_mirror;
 struct rp_dlight rp_dlights[RP_DLIGHTS];
 unsigned rp_ndlight; /* the scene being drawn has the map's world (rp_main.c) */
 /* the surface on VU1: a chain of its pieces */
@@ -693,6 +696,8 @@ void rp_model_draw(const refEntity_t *e, float t) {
 	/* its sphere (the frames') against the frustum and the guard band */
 	const md3Frame_t *fr = (const md3Frame_t *)((const u8 *)h + h->ofsFrames);
 	const md3Frame_t *fn = &fr[frame], *fo = &fr[oldframe];
+	if (!mx_mem_resident(fn, sizeof *fn) || !mx_mem_resident(fo, sizeof *fo))
+		rp_model_stats.frame_waits++;
 	float r = fn->radius > fo->radius ? fn->radius : fo->radius, c[3], d[3];
 	float sc = e->nonNormalizedAxes ? VectorLength(e->axis[0]) : 1.0f;
 	for (int a = 0; a < 3; a++)
@@ -823,7 +828,7 @@ void rp_model_draw(const refEntity_t *e, float t) {
 			if (sh->cull_none)
 				s.cull = RP_CULL_NONE;
 			else
-				s.cull = (mirrored ^ sh->cull_back ^ RP_MODEL_FRONT_NEG) ? RP_CULL_POS : RP_CULL_NEG;
+				s.cull = (mirrored ^ rp_view_mirror ^ sh->cull_back ^ RP_MODEL_FRONT_NEG) ? RP_CULL_POS : RP_CULL_NEG;
 			float (*u)[4] = s.model;
 			memset(u, 0, sizeof s.model);
 			u[0][0] = e->backlerp;
@@ -874,7 +879,8 @@ void rp_model_draw(const refEntity_t *e, float t) {
 			struct rp_state s;
 			memset(&s, 0, sizeof s);
 			s.blend = RP_BLEND_ALPHA, s.z = RP_Z_TEST, s.prog = RP_PROG_MODEL, s.texels = 2.0f;
-			s.cull = sh->cull_none ? RP_CULL_NONE : (mirrored ^ sh->cull_back ^ RP_MODEL_FRONT_NEG) ? RP_CULL_POS : RP_CULL_NEG;
+			s.cull = sh->cull_none ? RP_CULL_NONE
+			         : (mirrored ^ rp_view_mirror ^ sh->cull_back ^ RP_MODEL_FRONT_NEG) ? RP_CULL_POS : RP_CULL_NEG;
 			float (*u)[4] = s.model;
 			u[0][0] = e->backlerp;
 			for (int a = 0; a < 3; a++)

@@ -39,6 +39,8 @@ int rp_model_blended(const refEntity_t *e);
 int rp_model_rect(const refEntity_t *e, float *rect);
 /* the scene being drawn has the map's world: the models stand in its light */
 extern int rp_scene_world;
+/* the view is a mirror's: the triangles' winding on the screen is the other way */
+extern int rp_view_mirror;
 /* the scene's dynamic lights (a rocket, a shot's flash): the models are lit
    by them as the engine's are (the world is not) */
 #define RP_DLIGHTS 32
@@ -56,6 +58,7 @@ struct rp_model_stats {
 	u32 made, evicted;        /* frames of surfaces made ready; of them given up for others */
 	u32 kb;                   /* memory of the models' vertices */
 	u32 fogged;               /* surfaces drawn once more for the fog they stand in */
+	u32 tag_waits, frame_waits; /* a frame's tags, its bounds, read from the file while the game waited */
 };
 extern struct rp_model_stats rp_model_stats;
 
