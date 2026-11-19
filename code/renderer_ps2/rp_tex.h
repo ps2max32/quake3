@@ -20,6 +20,7 @@ struct rp_image {
 	                           the lightmaps' brightness the alpha of 128 .. 255 */
 	u8 kind;                /* RP_IMAGE_*: what it is of, for the report */
 	u32 asked;              /* the frame a draw asked for it last, + 1 */
+	u8 kept;                /* in the list of the screen's pictures that keep their place */
 	const u8 *level[MX_TEX_LEVELS]; /* not split: where they lie (a locked file) */
 	const void *clut;       /* 256 or 16 words in the GS's order; 0: none of its own */
 	u64 clut_key;           /* wide: its CLUT's place of its own in GS memory */

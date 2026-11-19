@@ -537,7 +537,7 @@ static float wave(const struct rp_wave *w, float t) {
 }
 
 int rp_stage_state(const struct rp_stage *st, float t, struct rp_state *s) {
-	memset(s, 0, sizeof *s);
+	memset(s, 0, RP_STATE_HEAD); /* a model's draw fills its part itself */
 	if (!st->nimg)
 		return 0;
 	u32 k = st->nimg > 1 ? (u32)(t * st->fps) % st->nimg : 0;

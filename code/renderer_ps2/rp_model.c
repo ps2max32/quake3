@@ -790,6 +790,7 @@ void rp_model_draw(const refEntity_t *e, float t) {
 			else
 				s.cull = (mirrored ^ sh->cull_back ^ RP_MODEL_FRONT_NEG) ? RP_CULL_POS : RP_CULL_NEG;
 			float (*u)[4] = s.model;
+			memset(u, 0, sizeof s.model);
 			u[0][0] = e->backlerp;
 			for (int a = 0; a < 3; a++) {
 				u[1][a] = lit ? amb[a] : (float)col[a];

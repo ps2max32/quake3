@@ -291,7 +291,8 @@ int rp_run(const void *matrix, const struct rp_state *s) {
 		return -1;
 	}
 	struct run *r = &run[nrun];
-	r->matrix = matrix, r->s = *s;
+	r->matrix = matrix;
+	__builtin_memcpy(&r->s, s, s->prog == RP_PROG_MODEL ? sizeof *s : RP_STATE_HEAD);
 	r->setup[0][0] = r->setup[0][1] = r->setup[1][0] = r->setup[1][1] = 0;
 	r->ghost[0] = r->ghost[1] = 0;
 	r->first = (u16)ndraw, r->n = 0;

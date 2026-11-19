@@ -50,6 +50,9 @@ static u32 frame_blocks; /* GS memory (256-byte blocks) of the images the frame 
    every frame are sent again every frame. */
 static u32 want_blocks, tight, calm;
 static int keeping; /* rp_tex_frame asks for the screen's pictures: not a draw's asking */
+#define KEPT 128
+static struct rp_image *kept[KEPT]; /* the screen's pictures asked for lately */
+static u32 nkept;
 int rp_tex_full;
 
 static int starts(const char *s, const char *with) {
@@ -94,10 +97,13 @@ void rp_tex_frame(void) {
 	   it has one level (no coarser one to fall back on). */
 	u32 now = mx_frame_number();
 	keeping = 1;
-	for (u32 i = 0; i < image_hi; i++) {
-		struct rp_image *im = &images[i];
-		if (im->used && im->kind == RP_IMAGE_SCREEN && im->asked && now + 1 - im->asked <= 30)
+	for (u32 i = 0; i < nkept;) {
+		struct rp_image *im = kept[i];
+		if (im->used && im->kind == RP_IMAGE_SCREEN && im->asked && now + 1 - im->asked <= 30) {
 			rp_image_place(im);
+			i++;
+		} else
+			im->kept = 0, kept[i] = kept[--nkept];
 	}
 	keeping = 0;
 }
@@ -286,6 +292,9 @@ static void luma_free(struct rp_image *im) {
 void rp_image_free(struct rp_image *im) {
 	if (!im || !im->used)
 		return;
+	for (u32 i = 0; im->kept && i < nkept; i++)
+		if (kept[i] == im)
+			kept[i] = kept[--nkept], im->kept = 0;
 	luma_free(im);
 	for (u32 f = 0; f < im->levels; f++)
 		mx_vcache_drop(mx_vcache_tex_key(im->key, f));
@@ -297,6 +306,9 @@ void rp_image_free(struct rp_image *im) {
 }
 
 void rp_images_free(void) {
+	for (u32 i = 0; i < nkept; i++)
+		kept[i]->kept = 0;
+	nkept = 0;
 	for (u32 i = 0; i < image_hi; i++) {
 		if (!images[i].used)
 			continue;
@@ -373,8 +385,11 @@ static void texflush(void) {
 
 const struct mx_tex *rp_image_place(struct rp_image *im) {
 	u32 frame = mx_frame_number();
-	if (!keeping)
+	if (!keeping) {
 		im->asked = frame + 1;
+		if (im->kind == RP_IMAGE_SCREEN && !im->kept && nkept < KEPT)
+			im->kept = 1, kept[nkept++] = im;
+	}
 	/* placed this frame already; but without its finest level, and now for
 	   the view weapon (rp_tex_full): once more, whole if there is room */
 	int again = im->frame == frame + 1 && rp_tex_full && im->ok && im->from;

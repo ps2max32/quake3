@@ -108,7 +108,7 @@ static struct {
 /* ---- its textures and lightmap pages ------------------------------------------------ */
 
 #define MAX_TEX 512
-#define MAX_LM 256
+#define MAX_LM 512
 static struct rp_image *wtex[MAX_TEX], *wlm[MAX_LM];
 /* the lightmaps' CLUT for a surface without a texture (one with a texture
    has it in its texture's CLUT, tools/ps2bin.py): entry 128 + i's alpha is
@@ -260,6 +260,7 @@ static const void *wmatrix;
 static const u8 *areamask; /* rp_world_areas */
 void rp_world_areas(const u8 *mask) { areamask = mask; }
 static u32 sky_seen; /* the strips the view sees sky surfaces in */
+static u32 sky_full; /* those whose part is all of the strip */
 /* and where in each: the picture's pixels its sky surfaces' boxes cover */
 static struct {
 	float x0, x1, y0, y1;
@@ -352,6 +353,8 @@ static void sky_box(const struct rp_view *v, const float *b) {
 		if (y1 <= t || y0 >= e)
 			continue;
 		float a = y0 > t ? y0 : t, c = y1 < e ? y1 : e;
+		if (x0 <= 0 && x1 >= w0 && a <= t && c >= (e < h0 ? e : h0))
+			sky_full |= 1u << k;
 		if (!(sky_seen >> k & 1)) {
 			sky_seen |= 1u << k;
 			sky_rect[k].x0 = x0, sky_rect[k].x1 = x1, sky_rect[k].y0 = a, sky_rect[k].y1 = c;
@@ -384,7 +387,7 @@ void rp_world_cull(struct rp_world_stats *st) {
 	*st = (struct rp_world_stats){0};
 	nitem = nwrun = 0;
 	wmatrix = 0;
-	sky_seen = 0;
+	sky_seen = sky_full = 0;
 	if (!h || !h->nmodel)
 		return;
 	const float *org = v->org;
@@ -437,6 +440,9 @@ void rp_world_cull(struct rp_world_stats *st) {
 					continue;
 				/* the sky's surfaces are not drawn: where they are seen, the sky is */
 				if (sky) {
+					/* every strip's part is the whole of it already: nothing to add */
+					if (sky_full == v->all && v->all)
+						continue;
 					for (u32 j = gr->first_chunk; j < gr->first_chunk + gr->nchunk; j++) {
 						const struct pm_chunk *ch = &pm.chunk[j];
 						if (crow && !(crow[j >> 3] >> (j & 7) & 1))
@@ -518,8 +524,9 @@ static int run_draw(const void *matrix, const struct item *it, u32 n) {
 	{
 		const struct pm_chunk *c0 = &pm.chunk[it->chunk];
 		const struct pm_mat *m = &pm.mat[c0->mat];
-		struct rp_state s = {0};
+		struct rp_state s;
 		const struct mx_tex *t;
+		memset(&s, 0, RP_STATE_HEAD);
 		/* a script's material: its stages' passes, after the map's own or in its place */
 		static struct rp_state pass[RP_WORLD_PASSES + 1];
 		u32 np = 0;

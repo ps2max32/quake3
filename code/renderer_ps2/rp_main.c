@@ -890,7 +890,7 @@ static u32 world_passes(u32 mat, struct rp_state *pass, int *first) {
 	*first = !lit || late;
 	for (int k = lit && !late ? 1 : 0; k <= sh->nstage && n < RP_WORLD_PASSES; k++) {
 		if (late && k == sh->lm_at) {
-			memset(&pass[n], 0, sizeof pass[n]);
+			memset(&pass[n], 0, RP_STATE_HEAD);
 			pass[n].prog = RP_PROG_WORLD, pass[n].lm_only = 1, pass[n].z = RP_Z_TEST;
 			if (++n == RP_WORLD_PASSES)
 				break;

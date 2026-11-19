@@ -100,15 +100,18 @@ struct rp_state {
 	u8 cull;               /* RP_PROG_MODEL: RP_CULL_* */
 	u8 lm_only;            /* RP_PROG_WORLD: the lightmap pass alone (the texture's draws nothing) */
 	float texels;          /* of the texture's first level a unit of the surface (the MIPMAP level) */
-	/* RP_PROG_MODEL: the old frame's share (x); the colour without light;
-	   the directed light's colour times its direction's x, y, z (in the
-	   model's space, for normals of length 127); the colour's limit */
-	float model[6][4];
 	/* RP_PROG_STAGE: the texture coordinates' matrix (s' = tm[0] s + tm[1] t +
 	   tm[2], t' = tm[3] s + tm[4] t + tm[5]); the colour: the vertex's times
 	   cmul plus cadd (the GS's units, 0 .. 255) */
 	float tm[6], cmul[4], cadd[4];
+	/* RP_PROG_MODEL: the old frame's share (x); the colour without light;
+	   the directed light's colour times its direction's x, y, z (in the
+	   model's space, for normals of length 127); the colour's limit. The
+	   last: a state of another program is set and kept up to here
+	   (RP_STATE_HEAD). */
+	float model[6][4];
 };
+#define RP_STATE_HEAD __builtin_offsetof(struct rp_state, model)
 
 /* A matrix for positions in units of scale at origin, turned by axis (0:
    not turned): its chain, to give to rp_run. 0: no memory. */
