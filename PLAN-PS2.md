@@ -692,6 +692,17 @@ PS2 renderer follows. The same place by `+devmap`, `+setviewpos`,
   (`q3wd`): no new program. The share is the engine's t / (t - eye) made
   straight, since the program's coordinates are linear in the position.
   What stands in the fog (models, sprites) is not fogged yet.
+- **tcGen environment on the world** (q3dm0: 32 of its 113 shaders; the
+  shining walls, floors and pillars of the "base" maps; the usual script is
+  the shine, the texture blended over it, the lightmap). The shine was
+  drawn with the surface's own texture coordinates: blotches. The world's
+  vertices have no normals, but a chunk is of one direction: with the
+  chunk's direction for the surface and the eye's distance taken at the
+  chunk's middle, the engine's coordinates are linear in the vertex's
+  position, so the stage is drawn by the program that lays a texture on
+  the world by position (`q3wd`), a run a chunk. In PCSX2 as the PC's; not
+  yet run on the PS2.
+- Mirrors and portals (7 maps) are still black surfaces.
 - **The sky had no clouds**, one colour: its layers were drawn with the
   texture level chosen for a surface 16,000 units away, the smallest. They
   are drawn with the first level (a cloud's texel is pixels wide).

@@ -1413,13 +1413,8 @@ static u32 world_passes(u32 mat, struct rp_state *pass, int *first) {
 			break;
 		struct rp_state *s = &pass[n];
 		const struct rp_stage *stg = &sh->st[k];
-		/* an environment stage is not drawn (no tcGen environment yet), but
-		   as the first of a late lightmap's: it is what the others blend
-		   over, so it is drawn with the surface's coordinates (as the map's
-		   own pass does when the lightmap is not late) */
-		int env_skip = stg->env && !(late && k == 0);
-		if (env_skip || !rp_stage_state(stg, scene_time, s)) {
-			st_nostage += !stg->env;
+		if (!rp_stage_state(stg, scene_time, s)) {
+			st_nostage++;
 			continue;
 		}
 		s->prog = RP_PROG_STAGE;
@@ -1428,6 +1423,20 @@ static u32 world_passes(u32 mat, struct rp_state *pass, int *first) {
 		/* the colour: the vertex's as the map has it, or the stage's own */
 		u8 c[4];
 		rp_stage_colour(stg, scene_time, NULL, NULL, c);
+		if (stg->env) {
+			/* tcGen environment: the texture's coordinates are the reflection of
+			   the eye in the surface, which the world's draw makes of each
+			   chunk's direction and place (rp_world.c: the program that lays a
+			   texture on the world by position); the stage's colour as it is
+			   (half before a late lightmap, which doubles) */
+			float h = late && k < sh->lm_at ? 0.5f : 1.0f;
+			s->prog = RP_PROG_DLIGHT, s->menv = 1, s->nomip = 1;
+			for (int a = 0; a < 3; a++)
+				s->cmul[a] = 0, s->cadd[a] = (float)c[a] * h;
+			s->cmul[3] = 0, s->cadd[3] = (float)c[3];
+			n++;
+			continue;
+		}
 		int vrgb = stg->rgbgen == RGB_VERTEX || stg->rgbgen == RGB_EXACT_VERTEX, va = stg->alphagen == A_VERTEX;
 		/* before a late lightmap: half as bright (the lightmap pass doubles, as the
 		   engine's overbright does after its lightmap) */

@@ -612,6 +612,49 @@ void rp_world_cull(struct rp_world_stats *st) {
 		want_levels();
 }
 
+/* tcGen environment for a chunk: the engine's texture coordinates are 0.5 +
+   0.5 y and 0.5 - 0.5 z of the eye's direction from the vertex, reflected in
+   the surface. With the chunk's direction for the surface (its normals'
+   cone; none: towards the eye) and the eye's distance taken at the chunk's
+   middle, they are linear in the vertex's position: the uniforms of the
+   program that lays a texture on the world by position (q3wd), with the
+   stage's texture matrix (s->tm) and colour (s->cadd). */
+static void env_rows(struct rp_state *s, const struct pm_chunk *ch) {
+	const struct rp_view *v = &rp_view;
+	float ps = pm.h->pos_scale, n[3], d[3], len = 0;
+	for (int a = 0; a < 3; a++) {
+		d[a] = v->org[a] - (ch->mins[a] + ch->maxs[a]) * 0.5f;
+		len += d[a] * d[a];
+	}
+	len = sqrtf(len);
+	len = len < 16.0f ? 16.0f : len;
+	if (ch->sine < 200) {
+		float l = sqrtf((float)(ch->cone[0] * ch->cone[0] + ch->cone[1] * ch->cone[1] + ch->cone[2] * ch->cone[2]));
+		for (int a = 0; a < 3; a++)
+			n[a] = l > 0 ? (float)ch->cone[a] / l : 0;
+	} else
+		for (int a = 0; a < 3; a++)
+			n[a] = d[a] / len;
+	float k = 1.0f / len, ne = n[0] * v->org[0] + n[1] * v->org[1] + n[2] * v->org[2];
+	float sp[3], tp[3];
+	for (int a = 0; a < 3; a++) {
+		sp[a] = 0.5f * k * (-2.0f * n[1] * n[a] + (a == 1));
+		tp[a] = -0.5f * k * (-2.0f * n[2] * n[a] + (a == 2));
+	}
+	float s0 = 0.5f + 0.5f * k * (2.0f * n[1] * ne - v->org[1]), t0 = 0.5f - 0.5f * k * (2.0f * n[2] * ne - v->org[2]);
+	const float *tm = s->tm;
+	float (*m)[4] = s->model;
+	memset(m, 0, 5 * sizeof m[0]);
+	for (int a = 0; a < 3; a++) {
+		m[a][0] = ps * (tm[0] * sp[a] + tm[1] * tp[a]);
+		m[a][1] = ps * (tm[3] * sp[a] + tm[4] * tp[a]);
+	}
+	m[3][0] = tm[0] * s0 + tm[1] * t0 + tm[2];
+	m[3][1] = tm[3] * s0 + tm[4] * t0 + tm[5];
+	for (int a = 0; a < 4; a++)
+		m[4][a] = s->cadd[a];
+}
+
 /* The draws of a run of n items (chunks of one material and lightmap page)
    with the matrix given: the map's own pass and the script's; -1: the list
    is full. */
@@ -682,6 +725,18 @@ static int run_draw(const void *matrix, const struct item *it, u32 n) {
 				}
 				if (!l->lm_ok)
 					continue;
+			}
+			if (k && pass[k - 1].prog == RP_PROG_DLIGHT) {
+				/* a stage with tcGen environment: a run a chunk, with the chunk's
+				   reflection of the eye */
+				for (u32 i = 0; i < n; i++) {
+					const struct pm_chunk *ch = &pm.chunk[it[i].chunk];
+					env_rows(&pass[k - 1], ch);
+					if (rp_run(matrix, &pass[k - 1]) < 0)
+						return -1;
+					rp_draw(pm.base + ch->off_data, it[i].mask, it[i].clip, ch->nverts, ch->nbatch);
+				}
+				continue;
 			}
 			if (rp_run(matrix, k ? &pass[k - 1] : &s) < 0)
 				return -1;
