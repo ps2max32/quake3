@@ -817,10 +817,11 @@ void rp_world_dlights(const struct rp_dlight *lights, unsigned nl, unsigned max)
 			m[u][0] = ps * 0.5f / R, m[3][0] = 0.5f - l->org[u] * 0.5f / R;
 			m[v][1] = ps * 0.5f / R, m[3][1] = 0.5f - l->org[v] * 0.5f / R;
 			m[w][2] = ps / R, m[3][2] = -l->org[w] / R;
-			/* its strength: the brightest of its colour, as the vertices' alpha (0x80:
-			   the spot's own) */
-			float lum = l->col[0] > l->col[1] ? l->col[0] : l->col[1];
-			lum = lum > l->col[2] ? lum : l->col[2];
+			/* its strength: the mean of its colour (the engine's light is times each
+			   channel: a rocket's leaves the blue as it is, and the brightest alone
+			   lit everything twice as bright), as the vertices' alpha (0x80: the
+			   spot's own) */
+			float lum = (l->col[0] + l->col[1] + l->col[2]) * (1.0f / 3.0f);
 			m[4][0] = m[4][1] = m[4][2] = 128.0f;
 			m[4][3] = 128.0f * (lum > 1.0f ? 1.0f : lum);
 			if (rp_run(wmatrix, &s) < 0)
