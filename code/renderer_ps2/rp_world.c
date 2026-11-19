@@ -39,6 +39,7 @@ struct pm_head {
 	u32 batch;
 	u32 ngroup, off_group;
 	u32 off_cvis, cvis_bytes;
+	u32 off_lmdim;
 };
 struct pm_mat {
 	char name[64];
@@ -107,7 +108,7 @@ static struct {
 /* ---- its textures and lightmap pages ------------------------------------------------ */
 
 #define MAX_TEX 512
-#define MAX_LM 64
+#define MAX_LM 256
 static struct rp_image *wtex[MAX_TEX], *wlm[MAX_LM];
 /* the lightmaps' CLUT for a surface without a texture (one with a texture
    has it in its texture's CLUT, tools/ps2bin.py): entry 128 + i's alpha is
@@ -131,9 +132,14 @@ static void images_load(void) {
 		wtex[i] = rp_image_bin(pm.tex[i].name, &bytes);
 		none += !wtex[i];
 	}
+	/* the lightmap pages: 64 x 64 mostly (a view takes the ones it draws with) */
+	const struct {
+		u16 w, h;
+		u32 off;
+	} *dim = (const void *)(pm.base + h->off_lmdim);
 	for (u32 i = 0; i < h->nlightmap && i < MAX_LM; i++) {
-		const u8 *level = pm.base + h->off_lightmap + i * 16384;
-		wlm[i] = rp_image_static("*lightmap", MX_GS_PSM_T8, 128, 128, 1, 0, &level, 0);
+		const u8 *level = pm.base + h->off_lightmap + dim[i].off;
+		wlm[i] = rp_image_static("*lightmap", MX_GS_PSM_T8, dim[i].w, dim[i].h, 1, 0, &level, 0);
 	}
 	for (u32 i = 0; i < 256; i++) {
 		u32 a = i < 128 ? 0x80 : i == 255 ? 255 : (i - 128) * 2;
@@ -150,7 +156,7 @@ static void images_load(void) {
 /* The world's groups in runs of one material and lightmap page, as they lie
    in the file: a view walks these and looks at a group only when the
    camera's cluster sees it. */
-#define MAX_GRUN 1024
+#define MAX_GRUN 4096
 static struct {
 	u16 first, n; /* groups */
 	u8 blended, sky;
@@ -176,6 +182,9 @@ static void runs_make(void) {
 		grun[ngrun].sky = (pm.mat[c0->mat].flags & MAT_SKY) != 0;
 		ngrun++;
 	}
+	/* a limit reached is named: what is left out is not drawn anywhere */
+	if (g < end)
+		mx_printf("rp: the map has more runs of groups than %d: %u groups of the world are not drawn\n", MAX_GRUN, end - g);
 }
 
 void rp_world_free(void) {
@@ -188,7 +197,7 @@ void rp_world_free(void) {
 int rp_world_load(const void *p, u32 size) {
 	const struct pm_head *h = p;
 	rp_world_free();
-	if (size < sizeof *h || h->magic != PM_MAGIC || h->version != 8 || h->size > size || h->batch != Q3VU_BATCH)
+	if (size < sizeof *h || h->magic != PM_MAGIC || h->version != 9 || h->size > size || h->batch != Q3VU_BATCH)
 		return -1;
 	/* the chunks stay in memory: the DMAC reads them every frame. The textures
 	   are locked when they are sent to GS memory (rp_tex.c); the rest only
@@ -240,7 +249,7 @@ struct item {
 	u8 clip; /* across a plane: the programs that cut */
 };
 #define MAX_ITEM 4096
-#define MAX_WRUN 512
+#define MAX_WRUN 1024
 static struct item item[MAX_ITEM];
 static struct {
 	u16 first, n;
@@ -492,6 +501,8 @@ void rp_world_cull(struct rp_world_stats *st) {
 					nitem++;
 				}
 			}
+			if (nitem > first && nwrun == MAX_WRUN)
+				rp_list_stats.lost++; /* counted with the draws left out */
 			if (nitem > first && nwrun < MAX_WRUN) {
 				wrun[nwrun].first = (u16)first, wrun[nwrun].n = (u16)(nitem - first), wrun[nwrun].blended = (u8)pass;
 				nwrun++;

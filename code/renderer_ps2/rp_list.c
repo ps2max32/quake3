@@ -268,7 +268,7 @@ const void *rp_matrix(float scale, const float *origin, const float (*axis)[3]) 
 
 /* ---- runs and draws ---------------------------------------------------------------------- */
 
-#define MAX_RUN 1024
+#define MAX_RUN 2048
 #define MAX_DRAW 6144
 #define LIST_MAX 256
 static struct run {

@@ -32,7 +32,8 @@ What is made of the BSP:
 File layout (little-endian; "off" are bytes from the file's start):
 
   head (128 bytes):
-    u32 magic "PMAP", version 8 (5: a texture with alpha of its own had no lightmap; 6: no cvis; 7: no areas)
+    u32 magic "PMAP", version 9 (5: a texture with alpha of its own had no lightmap; 6: no cvis; 7: no areas;
+      8: lightmap pages of 128 x 128 all)
     u32 nmat, ntex, nchunk, nmodel, nlightmap, ncluster, vis_bytes
     u32 nplane, nnode, nleaf
     u32 off_mat, off_tex, off_chunk, off_model, off_lightmap, off_vis,
@@ -41,6 +42,7 @@ File layout (little-endian; "off" are bytes from the file's start):
     u32 batch              BATCH
     u32 ngroup, off_group
     u32 off_cvis, cvis_bytes
+    u32 off_lmdim
   material (96 bytes): char name[64]; s16 tex (-1: none); u16 flags (MAT_*);
     u8 blend (BLEND_*), alpha (ALPHA_*), cull (CULL_*), pad; u32 surf, cont
     (the BSP's flags); f32 texels (of its texture's first level a world
@@ -58,7 +60,9 @@ File layout (little-endian; "off" are bytes from the file's start):
     chunks are of one material and lightmap page)
   model (32 bytes): f32 mins[3], maxs[3]; u32 first_group, ngroup (model 0 is
     the world; the others the map's doors and platforms)
-  lightmap: 128 x 128 bytes a page, T8: 128 + b, b the brightness (the
+  lmdim: nlightmap pages: u16 w, h (64 x 64, or 128 x 128 for a surface whose
+    lightmap is larger than 64); u32 off (its texels in lightmap)
+  lightmap: w x h bytes a page, T8: 128 + b, b the brightness (the
     largest of R, G, B; 127 and more: 127, twice the texture's colour, the
     map's overbright range). It is drawn with the CLUT of the surface's
     texture, whose entries 128 .. 255 have that brightness as their alpha
@@ -528,14 +532,15 @@ def stripify(tris):
 
 
 def sample_lightmap(page, s, t):
-    """bilinear RGB of a 128 x 128 page at s, t in 0..1"""
-    x, y = s * 128.0 - 0.5, t * 128.0 - 0.5
+    """bilinear RGB of a page (square) at s, t in 0..1"""
+    side = page.shape[0]
+    x, y = s * side - 0.5, t * side - 0.5
     x0, y0 = int(math.floor(x)), int(math.floor(y))
     fx, fy = x - x0, y - y0
     c = np.zeros(3)
     for dy, wy in ((0, 1 - fy), (1, fy)):
         for dx, wx in ((0, 1 - fx), (1, fx)):
-            xx, yy = min(max(x0 + dx, 0), 127), min(max(y0 + dy, 0), 127)
+            xx, yy = min(max(x0 + dx, 0), side - 1), min(max(y0 + dy, 0), side - 1)
             c += page[yy, xx].astype(np.float64) * (wx * wy)
     return c
 
@@ -571,53 +576,61 @@ def repack_lightmaps(bsp):
 
     order = sorted(rects, key=key)
     pages, place = [], {}
-    i, carry = 0, []
-    while i < len(order) or carry:
-        batch, area = carry, sum(r[3] * r[4] for r in carry)
-        carry = []
-        while i < len(order) and area + order[i][3] * order[i][4] <= 0.97 * 128 * 128:
-            batch.append(order[i])
-            area += order[i][3] * order[i][4]
-            i += 1
-        if not batch:
-            batch.append(order[i])
-            i += 1
-        used = np.zeros((128, 128), bool)
-        page = np.zeros((128, 128, 3), np.uint8)
-        x = y = shelf = 0
-        for r in sorted(batch, key=lambda r: -r[4]):
-            w, h = r[3], r[4]
-            if x + w > 128:
-                x, y, shelf = 0, y + shelf, 0
-            if y + h > 128:
-                carry.append(r)
-                continue
-            page[y:y + h, x:x + w] = old[r[0], r[2]:r[2] + h, r[1]:r[1] + w]
-            used[y:y + h, x:x + w] = True
-            place[r] = (len(pages), x, y)
-            x, shelf = x + w, max(shelf, h)
-        # the texels no surface has take a neighbour's: the filter reads a rectangle's
-        # neighbours at its edge, as it read another surface's before
-        for _ in range(2):
-            for dy, dx in ((0, 1), (0, -1), (1, 0), (-1, 0)):
-                src_used = np.roll(used, (dy, dx), (0, 1))
-                src = np.roll(page, (dy, dx), (0, 1))
-                take = ~used & src_used
-                page[take] = src[take]
-                used = used | take
-        pages.append(page)
+
+    def pack(order, side):
+        i, carry = 0, []
+        while i < len(order) or carry:
+            batch, area = carry, sum(r[3] * r[4] for r in carry)
+            carry = []
+            while i < len(order) and area + order[i][3] * order[i][4] <= 0.97 * side * side:
+                batch.append(order[i])
+                area += order[i][3] * order[i][4]
+                i += 1
+            if not batch:
+                batch.append(order[i])
+                i += 1
+            used = np.zeros((side, side), bool)
+            page = np.zeros((side, side, 3), np.uint8)
+            x = y = shelf = 0
+            for r in sorted(batch, key=lambda r: -r[4]):
+                w, h = r[3], r[4]
+                if x + w > side:
+                    x, y, shelf = 0, y + shelf, 0
+                if y + h > side:
+                    carry.append(r)
+                    continue
+                page[y:y + h, x:x + w] = old[r[0], r[2]:r[2] + h, r[1]:r[1] + w]
+                used[y:y + h, x:x + w] = True
+                place[r] = (len(pages), x, y, side)
+                x, shelf = x + w, max(shelf, h)
+            # the texels no surface has take a neighbour's: the filter reads a rectangle's
+            # neighbours at its edge, as it read another surface's before
+            for _ in range(2):
+                for dy, dx in ((0, 1), (0, -1), (1, 0), (-1, 0)):
+                    src_used = np.roll(used, (dy, dx), (0, 1))
+                    src = np.roll(page, (dy, dx), (0, 1))
+                    take = ~used & src_used
+                    page[take] = src[take]
+                    used = used | take
+            pages.append(page)
+
+    # pages of 64 x 64 (4 KB of GS memory each: a view takes what it draws with, in
+    # small pieces); a rectangle larger than that in a page of 128 x 128
+    pack([r for r in order if r[3] <= 64 and r[4] <= 64], 64)
+    pack([r for r in order if r[3] > 64 or r[4] > 64], 128)
     done = set()
     surfaces = list(bsp.surfaces)
     for r, ss in rects.items():
-        p, x, y = place[r]
+        p, x, y, side = place[r]
         for si in ss:
             s = surfaces[si]
             if s[3] not in done:
                 done.add(s[3])
-                verts["lm"][s[3]:s[3] + s[4]] += np.array([(x - r[1]) / 128.0, (y - r[2]) / 128.0], np.float32)
+                lm = verts["lm"][s[3]:s[3] + s[4]]
+                verts["lm"][s[3]:s[3] + s[4]] = (lm * 128.0 + np.array([x - r[1], y - r[2]], np.float32)) / side
             surfaces[si] = s[:7] + (p, x, y, r[3], r[4]) + s[12:]
     was = len(old)
-    bsp.verts, bsp.surfaces, bsp.lightmaps = verts, surfaces, np.array(pages)
+    bsp.verts, bsp.surfaces, bsp.lightmaps = verts, surfaces, pages
     return was, len(pages)
 
 
@@ -960,15 +973,17 @@ def build(args):
                                       m["alpha"], m["cull"], 0, m["surf"] & 0xFFFFFFFF, m["cont"] & 0xFFFFFFFF,
                                       math.sqrt(m["texels"] / m["area"]) if m.get("area") else 1.0)
                           for m in mats)
-    lmdata = ((128 + np.minimum(bsp.lightmaps.max(axis=3), 127)).astype(np.uint8).tobytes()
-              if len(bsp.lightmaps) else b"")
+    lmdata, lmdim = b"", b""
+    for pg in bsp.lightmaps:
+        lmdim += struct.pack("<HHI", pg.shape[1], pg.shape[0], len(lmdata))
+        lmdata += pad16((128 + np.minimum(pg.max(axis=2), 127)).astype(np.uint8).tobytes())
     planes = bsp.planes.astype("<f4").tobytes()
     nodes = np.ascontiguousarray(bsp.nodes[:, 0:3]).astype("<i4").tobytes()
     leafs = np.ascontiguousarray(bsp.leafs[:, 0:2]).astype("<i2").tobytes()
-    order = ["mat", "tex", "chunk", "group", "model", "lightmap", "vis", "plane", "node", "leaf", "cvis", "data"]
+    order = ["mat", "tex", "chunk", "group", "model", "lightmap", "lmdim", "vis", "plane", "node", "leaf", "cvis", "data"]
     size = {"mat": len(sec["mat"]), "tex": 72 * len(textures), "chunk": 48 * len(recs), "group": 32 * len(grecs),
             "model": 32 * len(models),
-            "lightmap": len(lmdata), "vis": vis.size, "plane": len(planes), "node": len(nodes), "leaf": len(leafs),
+            "lightmap": len(lmdata), "lmdim": len(lmdim), "vis": vis.size, "plane": len(planes), "node": len(nodes), "leaf": len(leafs),
             "cvis": cvis.size, "data": len(blob)}
     off, o = {}, 128
     for k in order:
@@ -986,11 +1001,12 @@ def build(args):
     sec["lightmap"], sec["vis"], sec["plane"], sec["node"], sec["leaf"] = lmdata, vis.tobytes(), planes, nodes, leafs
     sec["data"] = bytes(blob)
     sec["cvis"] = cvis.tobytes()
-    head = struct.pack("<4sI7I3I11IfIIIII", b"PMAP", 8, len(mats), len(textures), len(recs), len(models),
+    sec["lmdim"] = lmdim
+    head = struct.pack("<4sI7I3I11IfIIIIII", b"PMAP", 9, len(mats), len(textures), len(recs), len(models),
                        len(bsp.lightmaps), ncl, vis_bytes, len(bsp.planes), len(bsp.nodes), len(bsp.leafs),
                        off["mat"], off["tex"], off["chunk"], off["model"], off["lightmap"], off["vis"], off["plane"],
                        off["node"], off["leaf"], off["data"], total, 1.0 / q, BATCH, len(grecs), off["group"],
-                       off["cvis"], cvis_bytes)
+                       off["cvis"], cvis_bytes, off["lmdim"])
     with open(args.out, "wb") as f:
         f.write(head + b"\0" * (128 - len(head)))
         for k in order:
