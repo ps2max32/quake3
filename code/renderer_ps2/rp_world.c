@@ -65,7 +65,8 @@ struct pm_chunk {
 	u16 qwc, nbatch;
 	s8 cone[3]; /* the axis of its normals, length 127 */
 	u8 sine;    /* of the cone's half angle, in 1/255; 255: no cone */
-	u32 pad;
+	u8 area;    /* the area it lies in (255: several, or none) */
+	u8 pad[3];
 };
 struct pm_group {
 	float mins[3];
@@ -187,7 +188,7 @@ void rp_world_free(void) {
 int rp_world_load(const void *p, u32 size) {
 	const struct pm_head *h = p;
 	rp_world_free();
-	if (size < sizeof *h || h->magic != PM_MAGIC || h->version != 7 || h->size > size || h->batch != Q3VU_BATCH)
+	if (size < sizeof *h || h->magic != PM_MAGIC || h->version != 8 || h->size > size || h->batch != Q3VU_BATCH)
 		return -1;
 	/* the chunks stay in memory: the DMAC reads them every frame. The textures
 	   are locked when they are sent to GS memory (rp_tex.c); the rest only
@@ -247,6 +248,8 @@ static struct {
 } wrun[MAX_WRUN];
 static u32 nitem, nwrun;
 static const void *wmatrix;
+static const u8 *areamask; /* rp_world_areas */
+void rp_world_areas(const u8 *mask) { areamask = mask; }
 static u32 sky_seen; /* the strips the view sees sky surfaces in */
 /* and where in each: the picture's pixels its sky surfaces' boxes cover */
 static struct {
@@ -443,6 +446,9 @@ void rp_world_cull(struct rp_world_stats *st) {
 					const struct pm_chunk *ch = &pm.chunk[j];
 					/* the group is seen from here, this chunk of it is not */
 					if (crow && !(crow[j >> 3] >> (j & 7) & 1))
+						continue;
+					/* behind a closed door: the game says which areas are shut off */
+					if (ch->area != 255 && areamask && (areamask[ch->area >> 3] >> (ch->area & 7) & 1))
 						continue;
 					/* all of it facing away: N . (eye - P) <= -sin |eye - P|
 					   for every P of its box (the widest normal still faces

@@ -451,6 +451,7 @@ static void RP_RenderScene(const refdef_t *fd) {
 		int skip = r_ps2draw->integer;
 		int draw_world = world && world_ok && !(skip & 2);
 		if (draw_world) {
+			rp_world_areas(fd->areamask);
 			rp_world_cull(&world_st);
 			rp_world_add(0);
 #define ACC(f) world_sum.f += world_st.f

@@ -32,7 +32,7 @@ What is made of the BSP:
 File layout (little-endian; "off" are bytes from the file's start):
 
   head (128 bytes):
-    u32 magic "PMAP", version 7 (5: a texture with alpha of its own had no lightmap; 6: no cvis)
+    u32 magic "PMAP", version 8 (5: a texture with alpha of its own had no lightmap; 6: no cvis; 7: no areas)
     u32 nmat, ntex, nchunk, nmodel, nlightmap, ncluster, vis_bytes
     u32 nplane, nnode, nleaf
     u32 off_mat, off_tex, off_chunk, off_model, off_lightmap, off_vis,
@@ -51,7 +51,9 @@ File layout (little-endian; "off" are bytes from the file's start):
     f32 maxs[3]; u16 nverts; u8 flags (CH_*), fog; u32 off_data; u16 qwc
     (quadwords the DMAC sends for it, tags included), nbatch; s8 cone[3] (the
     axis of its triangles' normals, length 127); u8 sine (of the widest
-    angle between a normal and the axis, in 1/255; 255: no cone); u32 pad
+    angle between a normal and the axis, in 1/255; 255: no cone); u8 area
+    (of the world's chunks: the area of the leafs it lies in, the room between
+    doors; 255: in more than one, or none), pad[3]
   group (32 bytes): f32 mins[3]; u32 first_chunk; f32 maxs[3]; u32 nchunk (its
     chunks are of one material and lightmap page)
   model (32 bytes): f32 mins[3], maxs[3]; u32 first_group, ngroup (model 0 is
@@ -557,12 +559,14 @@ def build(args):
             surf_model[si] = mi
     # the clusters a surface is seen in
     surf_clusters = {}
+    surf_areas = {}  # the areas (the rooms between doors) of the leafs a surface is in
     for lf in bsp.leafs:
         cl = int(lf[0])
         if cl < 0:
             continue
         for k in range(int(lf[8]), int(lf[8]) + int(lf[9])):
             surf_clusters.setdefault(int(bsp.leafsurfaces[k]), set()).add(cl)
+            surf_areas.setdefault(int(bsp.leafsurfaces[k]), set()).add(int(lf[1]))
 
     # materials: a shader of the BSP with or without a lightmap
     mats, mat_index, textures, tex_index = [], {}, [], {}
@@ -654,6 +658,7 @@ def build(args):
                 m["texels"] = m.get("texels", 0.0) + ast
         gkey = (surf_model[si], mi, lm if m["flags"] & MAT_LIGHTMAP else -1, fog)
         clusters = surf_clusters.get(si, set())
+        areas = frozenset(surf_areas.get(si, set()))
         page = bsp.lightmaps[lm] if lm >= 0 and m["flags"] & MAT_LIGHTMAP else None
         for t in tris:
             tv = [verts[i] for i in t]
@@ -694,7 +699,7 @@ def build(args):
                 ax = int(np.argmax(np.abs(nrm)))
                 okey = (100 + ax * 2 + (nrm[ax] < 0),)
             groups.setdefault(gkey, []).append(
-                (out, clusters, tuple(sum(v[k] for v in tv) / 3 for k in range(3)), nrm, okey))
+                (out, clusters, tuple(sum(v[k] for v in tv) / 3 for k in range(3)), nrm, okey, areas))
 
     # groups: the triangles of a material and lightmap page cut by place; chunks: a group's
     # triangles of one direction
@@ -731,9 +736,11 @@ def build(args):
         vid, vlist, itris = {}, [], []
         clusters = set()
         nsum = np.zeros(3)
-        for out, cl, _, nrm, _okey in tris:
+        chunk_areas = set()
+        for out, cl, _, nrm, _okey, ar in tris:
             nsum += nrm
             clusters |= cl
+            chunk_areas |= ar
             ids = []
             for v in out:
                 i = vid.get(v)
@@ -802,6 +809,9 @@ def build(args):
                 cone = (int(axis[0]), int(axis[1]), int(axis[2]), min(254, int(math.ceil(sinw * 255))))
         recs.append(dict(mins=p.min(0), maxs=p.max(0), mat=mat, lm=lm, nverts=nv, flags=CH_LIGHTMAP if lit else 0,
                          fog=fog & 255, off=off, qwc=qwc + 2, nbatch=len(batches), model=model, cone=cone,
+                         # in one area, of the world: left out while a closed door shuts that area off
+                         area=next(iter(chunk_areas)) if model == 0 and len(chunk_areas) == 1
+                         and 0 <= next(iter(chunk_areas)) < 255 else 255,
                          group=group))
         world_vis.append(clusters)
         stats["tris"] += len(itris)
@@ -883,16 +893,16 @@ def build(args):
     total = o
     sec["tex"] = b"".join(struct.pack("<64sHHB3x", n.encode()[:63], t["w"], t["h"], int(t["alpha"]))
                           for n, t in textures)
-    sec["chunk"] = b"".join(struct.pack("<3fHh3fHBBIHH3bB4x", *r["mins"], r["mat"], r["lm"], *r["maxs"], r["nverts"],
+    sec["chunk"] = b"".join(struct.pack("<3fHh3fHBBIHH3bBB3x", *r["mins"], r["mat"], r["lm"], *r["maxs"], r["nverts"],
                                         r["flags"], r["fog"], off["data"] + r["off"], r["qwc"], r["nbatch"],
-                                        *r["cone"])
+                                        *r["cone"], r["area"])
                             for r in recs)
     sec["group"] = b"".join(struct.pack("<3fI3fI", *g["mins"], g["first"], *g["maxs"], g["n"]) for g in grecs)
     sec["model"] = b"".join(struct.pack("<6fII", *mn, *mx, f, n) for mn, mx, f, n in models)
     sec["lightmap"], sec["vis"], sec["plane"], sec["node"], sec["leaf"] = lmdata, vis.tobytes(), planes, nodes, leafs
     sec["data"] = bytes(blob)
     sec["cvis"] = cvis.tobytes()
-    head = struct.pack("<4sI7I3I11IfIIIII", b"PMAP", 7, len(mats), len(textures), len(recs), len(models),
+    head = struct.pack("<4sI7I3I11IfIIIII", b"PMAP", 8, len(mats), len(textures), len(recs), len(models),
                        len(bsp.lightmaps), ncl, vis_bytes, len(bsp.planes), len(bsp.nodes), len(bsp.leafs),
                        off["mat"], off["tex"], off["chunk"], off["model"], off["lightmap"], off["vis"], off["plane"],
                        off["node"], off["leaf"], off["data"], total, 1.0 / q, BATCH, len(grecs), off["group"],

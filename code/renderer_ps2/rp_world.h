@@ -48,6 +48,9 @@ int rp_world_sky_rect(u32 strip, float *r);
 /* In a frame, after rp_view_set: what of the world the view sees. Then its
    draws into the frame's list: those that write depth (blended 0), and the
    blended ones. */
+/* Before rp_world_cull: the game's mask of areas (a bit set: shut off by a
+   closed door, its chunks are not drawn); 0: none. */
+void rp_world_areas(const u8 *mask);
 void rp_world_cull(struct rp_world_stats *st);
 void rp_world_add(int blended);
 /* The map's brush model n ("*n": a door, a platform) at origin, turned by
