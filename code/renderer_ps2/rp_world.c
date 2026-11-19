@@ -3,7 +3,7 @@
 
    A view: the camera's PVS cluster gives the groups it can see; each one's
    bounds go against the frustum and the guard band; of a group in view the
-   chunks that do not face away become draws of the frame's list (rp_list.c),
+   chunks that the cluster sees and that do not face away become draws of the frame's list (rp_list.c),
    a run a material and lightmap page, each with the strips of beam racing
    its bounds touch on the screen. No vertex is touched and nothing is
    sorted: the groups lie in the file by material.
@@ -16,6 +16,7 @@
 #include <mx/frame.h>
 #include <mx/gif.h>
 #include <mx/hires.h>
+#include <mx/mem.h>
 #include <mx/mx.h>
 #include <mx/tex.h>
 #include <mx/vif.h>
@@ -37,6 +38,7 @@ struct pm_head {
 	float pos_scale;
 	u32 batch;
 	u32 ngroup, off_group;
+	u32 off_cvis, cvis_bytes;
 };
 struct pm_mat {
 	char name[64];
@@ -95,7 +97,7 @@ static struct {
 	const struct pm_chunk *chunk;
 	const struct pm_group *group;
 	const struct pm_model *model;
-	const u8 *vis;
+	const u8 *vis, *cvis; /* a cluster's row: the groups it sees, the chunks */
 	const float (*plane)[4];
 	const struct pm_node *node;
 	const struct pm_leaf *leaf;
@@ -185,7 +187,7 @@ void rp_world_free(void) {
 int rp_world_load(const void *p, u32 size) {
 	const struct pm_head *h = p;
 	rp_world_free();
-	if (size < sizeof *h || h->magic != PM_MAGIC || h->version != 6 || h->size > size || h->batch != Q3VU_BATCH)
+	if (size < sizeof *h || h->magic != PM_MAGIC || h->version != 7 || h->size > size || h->batch != Q3VU_BATCH)
 		return -1;
 	/* the chunks stay in memory: the DMAC reads them every frame. The textures
 	   are locked when they are sent to GS memory (rp_tex.c); the rest only
@@ -199,11 +201,12 @@ int rp_world_load(const void *p, u32 size) {
 	pm.group = (const void *)(pm.base + h->off_group);
 	pm.model = (const void *)(pm.base + h->off_model);
 	pm.vis = pm.base + h->off_vis;
+	pm.cvis = pm.base + h->off_cvis;
 	pm.plane = (const void *)(pm.base + h->off_plane);
 	pm.node = (const void *)(pm.base + h->off_node);
 	pm.leaf = (const void *)(pm.base + h->off_leaf);
 	/* its tables and textures in memory now, not at the first frame's draws */
-	rp_bin_touch(pm.base, h->off_data);
+	rp_bin_touch(pm.base, h->off_cvis);
 	images_load();
 	runs_make();
 	return 0;
@@ -384,6 +387,13 @@ void rp_world_cull(struct rp_world_stats *st) {
 	u32 cluster = cam_cluster(org);
 	st->cluster = cluster;
 	const u8 *row = cluster < h->ncluster ? pm.vis + cluster * h->vis_bytes : 0;
+	const u8 *crow = cluster < h->ncluster ? pm.cvis + cluster * h->cvis_bytes : 0;
+	/* the chunks' rows are read from the file as the camera comes to them: a
+	   row that is not in memory is asked for, and the view goes by the groups */
+	if (crow && !mx_mem_resident(crow, h->cvis_bytes)) {
+		mx_mem_prefetch(crow, h->cvis_bytes);
+		crow = 0;
+	}
 	for (int pass = 0; pass < 2; pass++) {
 		for (u32 r = 0; r < ngrun; r++) {
 			if (grun[r].blended != pass)
@@ -417,6 +427,8 @@ void rp_world_cull(struct rp_world_stats *st) {
 				if (sky) {
 					for (u32 j = gr->first_chunk; j < gr->first_chunk + gr->nchunk; j++) {
 						const struct pm_chunk *ch = &pm.chunk[j];
+						if (crow && !(crow[j >> 3] >> (j & 7) & 1))
+							continue;
 						int gone = 0;
 						for (int p = 0; p < 5 && !gone; p++)
 							gone = sel_far(&fr[p], ch->mins) < 0;
@@ -429,6 +441,9 @@ void rp_world_cull(struct rp_world_stats *st) {
 				st->groups++;
 				for (u32 j = gr->first_chunk; j < gr->first_chunk + gr->nchunk; j++) {
 					const struct pm_chunk *ch = &pm.chunk[j];
+					/* the group is seen from here, this chunk of it is not */
+					if (crow && !(crow[j >> 3] >> (j & 7) & 1))
+						continue;
 					/* all of it facing away: N . (eye - P) <= -sin |eye - P|
 					   for every P of its box (the widest normal still faces
 					   away) */

@@ -32,7 +32,7 @@ What is made of the BSP:
 File layout (little-endian; "off" are bytes from the file's start):
 
   head (128 bytes):
-    u32 magic "PMAP", version 6 (5: a texture with alpha of its own had no lightmap)
+    u32 magic "PMAP", version 7 (5: a texture with alpha of its own had no lightmap; 6: no cvis)
     u32 nmat, ntex, nchunk, nmodel, nlightmap, ncluster, vis_bytes
     u32 nplane, nnode, nleaf
     u32 off_mat, off_tex, off_chunk, off_model, off_lightmap, off_vis,
@@ -40,6 +40,7 @@ File layout (little-endian; "off" are bytes from the file's start):
     f32 pos_scale          world units a position unit
     u32 batch              BATCH
     u32 ngroup, off_group
+    u32 off_cvis, cvis_bytes
   material (96 bytes): char name[64]; s16 tex (-1: none); u16 flags (MAT_*);
     u8 blend (BLEND_*), alpha (ALPHA_*), cull (CULL_*), pad; u32 surf, cont
     (the BSP's flags); f32 texels (of its texture's first level a world
@@ -63,6 +64,9 @@ File layout (little-endian; "off" are bytes from the file's start):
     would be loaded at every batch
   vis: ncluster rows of vis_bytes: bit g of row k set: the world's group g is
     seen from cluster k
+  cvis: ncluster rows of cvis_bytes: bit c of row k set: chunk c is seen from
+    cluster k (a group is seen when one of its chunks is: a view tests the
+    group first, then its chunks)
   plane (16 bytes): f32 normal[3], dist;  node (12 bytes): s32 plane,
     child[2] (negative: -(leaf + 1));  leaf (4 bytes): s16 cluster, area
 
@@ -838,6 +842,20 @@ def build(args):
             vis[rows, gi >> 3] |= 1 << (gi & 7)
     else:
         vis[:] = 0xFF
+    # and the chunks: a group lies in several clusters' sight, its chunks each in fewer
+    cvis_bytes = (len(recs) + 7) // 8
+    cvis_bytes += -cvis_bytes % 4
+    cvis = np.full((max(ncl, 1), max(cvis_bytes, 4)), 0xFF, np.uint8)
+    cvis_bytes = cvis.shape[1]
+    if ncl:
+        cmat = np.zeros((len(recs), ncl), np.float32)
+        for i in range(len(recs)):
+            cmat[i, list(world_vis[i])] = 1
+        by_chunk = (seen.astype(np.float32) @ cmat.T) > 0  # [k][chunk]
+        by_chunk[:, [i for i, r in enumerate(recs) if r["model"] != 0]] = True
+        bits = np.zeros((ncl, cvis_bytes * 8), bool)
+        bits[:, :len(recs)] = by_chunk
+        cvis = np.packbits(bits, axis=1, bitorder="little")
 
     # ---- the file ---------------------------------------------------------------------
     def pad16(b):
@@ -853,11 +871,11 @@ def build(args):
     planes = bsp.planes.astype("<f4").tobytes()
     nodes = np.ascontiguousarray(bsp.nodes[:, 0:3]).astype("<i4").tobytes()
     leafs = np.ascontiguousarray(bsp.leafs[:, 0:2]).astype("<i2").tobytes()
-    order = ["mat", "tex", "chunk", "group", "model", "lightmap", "vis", "plane", "node", "leaf", "data"]
+    order = ["mat", "tex", "chunk", "group", "model", "lightmap", "vis", "plane", "node", "leaf", "cvis", "data"]
     size = {"mat": len(sec["mat"]), "tex": 72 * len(textures), "chunk": 48 * len(recs), "group": 32 * len(grecs),
             "model": 32 * len(models),
             "lightmap": len(lmdata), "vis": vis.size, "plane": len(planes), "node": len(nodes), "leaf": len(leafs),
-            "data": len(blob)}
+            "cvis": cvis.size, "data": len(blob)}
     off, o = {}, 128
     for k in order:
         off[k] = o
@@ -873,10 +891,12 @@ def build(args):
     sec["model"] = b"".join(struct.pack("<6fII", *mn, *mx, f, n) for mn, mx, f, n in models)
     sec["lightmap"], sec["vis"], sec["plane"], sec["node"], sec["leaf"] = lmdata, vis.tobytes(), planes, nodes, leafs
     sec["data"] = bytes(blob)
-    head = struct.pack("<4sI7I3I11IfIII", b"PMAP", 6, len(mats), len(textures), len(recs), len(models),
+    sec["cvis"] = cvis.tobytes()
+    head = struct.pack("<4sI7I3I11IfIIIII", b"PMAP", 7, len(mats), len(textures), len(recs), len(models),
                        len(bsp.lightmaps), ncl, vis_bytes, len(bsp.planes), len(bsp.nodes), len(bsp.leafs),
                        off["mat"], off["tex"], off["chunk"], off["model"], off["lightmap"], off["vis"], off["plane"],
-                       off["node"], off["leaf"], off["data"], total, 1.0 / q, BATCH, len(grecs), off["group"])
+                       off["node"], off["leaf"], off["data"], total, 1.0 / q, BATCH, len(grecs), off["group"],
+                       off["cvis"], cvis_bytes)
     with open(args.out, "wb") as f:
         f.write(head + b"\0" * (128 - len(head)))
         for k in order:
@@ -903,6 +923,17 @@ def build(args):
             per = np.unpackbits(vis, axis=1).sum(1)
             per = per[per > 0]
             print(f"  groups seen from a cluster: {per.mean():.0f} on average, {per.max()} at most")
+            # what a view sends for the chunks' own visibility, against the groups'
+            wchunks = [i for i, r in enumerate(recs) if r["model"] == 0]
+            by_chunk = by_chunk[:, wchunks]
+            gbit = np.unpackbits(vis, axis=1, bitorder="little")[:, :nworld].astype(bool)
+            gof = np.array([next(k for k, g in enumerate(grecs) if g["first"] <= i < g["first"] + g["n"]) for i in wchunks])
+            by_group = gbit[:, gof]
+            wv = nv[wchunks].astype(np.float64)
+            a, b = by_group @ wv, by_chunk @ wv
+            use = a > 0
+            print(f"  vertices seen from a cluster: {a[use].mean():.0f} by groups, {b[use].mean():.0f} by chunks "
+                  f"({100 * b[use].sum() / a[use].sum():.0f} %)")
 
 
 def main():
