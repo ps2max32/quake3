@@ -660,6 +660,10 @@ static void RP_RenderScene(const refdef_t *fd) {
 		memcpy(cam.axis, fd->viewaxis, sizeof cam.axis);
 		cam.fov_x = fd->fov_x, cam.fov_y = fd->fov_y;
 		/* the game's 1080 lines are a field's 540 */
+		/* a small scene (the head on the HUD, an item's icon) is as large on the
+		   screen as it ever gets: its images whole, also while the frame's
+		   images are more than GS memory holds */
+		rp_tex_full = !world;
 		float ys = (float)mx_gs.h / 1080.0f;
 		rp_view_rect(&cam, (float)fd->x, (float)fd->y * ys, (float)fd->width, (float)fd->height * ys);
 		float now = fd->time * 0.001f;
@@ -747,6 +751,7 @@ static void RP_RenderScene(const refdef_t *fd) {
 						rp_model_draw(&ments[i], now - ments[i].shaderTime);
 			rp_tex_full = 0;
 		}
+		rp_tex_full = 0;
 	}
 	first_sprite = nsprite, first_poly = npoly, first_ment = nment;
 	rp_ndlight = 0;
