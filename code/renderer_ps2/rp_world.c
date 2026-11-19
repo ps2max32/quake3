@@ -1027,11 +1027,14 @@ void rp_world_dlights(const struct rp_dlight *lights, unsigned nl, unsigned max)
    its coordinates from the vertex), by the program that lays a texture on
    the world by position (q3wd, the dynamic lights'). The strength is the
    root of depth / the fog's opaque depth, times the share; the share is the
-   engine's t / (t - eye) made straight (the program's coordinates are
-   linear in the position): t / (128 - eye) from above the fog, 1 within. ---- */
+   engine's t / (t - eye) (t the vertex's depth under the fog's top, eye the
+   eye's height over it): the coordinate, linear in the position as the
+   program's are, is t in eye's heights, and the texture has u / (1 + u)
+   down it; from within the fog its last row, all of the ray. ---- */
 
 #define FOG_W 64
-#define FOG_H 32
+#define FOG_H 64
+#define FOG_U 8.0f /* eye's heights over the fog's top down the texture */
 static u8 fog_tex[FOG_W * FOG_H] MX_FAST_BSS MX_ALIGNED(64);
 static u32 fog_clut[256] MX_FAST_BSS MX_ALIGNED(64);
 static struct rp_image *fog_img;
@@ -1041,8 +1044,13 @@ static struct rp_image *fog_image(void) {
 		return fog_img;
 	for (int y = 0; y < FOG_H; y++)
 		for (int x = 0; x < FOG_W; x++) {
-			/* the first column and row: none (the coordinates are clamped there) */
-			float d = x ? ((float)x + 0.5f) / FOG_W : 0, share = y ? ((float)y + 0.5f) / FOG_H : 0;
+			/* the first column and row: none (the coordinates are clamped there).
+			   Down the texture: how far the vertex is under the fog's top, in
+			   eye's heights over it (u, to FOG_U): the share of the eye's ray that
+			   is in the fog is u / (1 + u), which no straight coordinate is; the
+			   last row is all of the ray (the eye in the fog itself) */
+			float d = x ? ((float)x + 0.5f) / FOG_W : 0, u = ((float)y + 0.5f) * (FOG_U / FOG_H);
+			float share = !y ? 0 : y == FOG_H - 1 ? 1.0f : u / (1.0f + u);
 			float a = sqrtf(d * share);
 			fog_tex[y * FOG_W + x] = (u8)(a >= 1.0f ? 255 : a * 255.0f);
 		}
@@ -1101,7 +1109,10 @@ void rp_world_fog(void) {
 			m[3][1] = 1.0f;
 		else {
 			float eye = v->org[0] * fg->plane[0] + v->org[1] * fg->plane[1] + v->org[2] * fg->plane[2] - fg->plane[3];
-			float k = eye < 0 ? 1.0f / (128.0f - eye) : 1.0f / (eye + 16.0f), t0 = eye < 0 ? 0.0f : 1.0f;
+			/* the eye over the fog: the vertex's depth under the top by the eye's
+			   height, FOG_U of them down the texture; in it: the last row for all
+			   that is in the fog */
+			float k = eye < 0 ? 1.0f / (FOG_U * (eye > -4.0f ? 4.0f : -eye)) : 1.0f / 32.0f, t0 = eye < 0 ? 0.0f : 1.0f;
 			for (int a = 0; a < 3; a++)
 				m[a][1] = ps * fg->plane[a] * k;
 			m[3][1] = t0 - fg->plane[3] * k;
@@ -1141,8 +1152,8 @@ int rp_world_fog_at(const float *p, float *colour, float *strength) {
 		float share = 1.0f;
 		if (fg->surface) {
 			float eye = v->org[0] * fg->plane[0] + v->org[1] * fg->plane[1] + v->org[2] * fg->plane[2] - fg->plane[3];
-			float k = eye < 0 ? 1.0f / (128.0f - eye) : 1.0f / (eye + 16.0f), t0 = eye < 0 ? 0.0f : 1.0f;
-			share = t0 + k * (p[0] * fg->plane[0] + p[1] * fg->plane[1] + p[2] * fg->plane[2] - fg->plane[3]);
+			float dp = p[0] * fg->plane[0] + p[1] * fg->plane[1] + p[2] * fg->plane[2] - fg->plane[3];
+			share = dp <= 0 ? 0 : eye < 0 ? dp / (dp - eye) : 1.0f;
 		}
 		d = d < 0 ? 0 : d > 1.0f ? 1.0f : d, share = share < 0 ? 0 : share > 1.0f ? 1.0f : share;
 		float a = sqrtf(d * share);

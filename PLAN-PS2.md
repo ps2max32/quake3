@@ -776,6 +776,13 @@ PS2 renderer follows. The same place by `+devmap`, `+setviewpos`,
   over the face is what it was (seen from inside, the haze over what lies
   outside the fog; from outside nothing). q3dm4's view against the PC: 65
   59 52 for 67 61 55 (was 88 83 76).
+- **The fog seen from above was too thin** (q3ctf1's ground fog 53 50 50
+  for the PC's 74 71 74). Its strength goes by the share of the eye's ray
+  that is in the fog, t / (t - eye): made straight as t / (128 - eye) it
+  was right only for a vertex 128 units under the fog's top. The
+  coordinate is now t in eye's heights over the fog, which is linear in
+  the position, and the fog's texture has u / (1 + u) down it (its last
+  row is all of the ray, for an eye in the fog). q3ctf1: 70 67 71.
 - **Fog on what stands in it**: a model whose middle is in a fog volume is
   drawn once more in the fog's colour, as strong as the world's surfaces
   have it there (one strength for the model: it is small against a fog's
