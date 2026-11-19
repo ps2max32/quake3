@@ -443,6 +443,10 @@ static int image_xfer(u32 dbp, u32 dbw, u32 psm, u32 w, u32 h, u32 bytes, const 
 	u32 qwc = (bytes + 15) / 16;
 	const u8 *d = data;
 	if (file && mx_is_vm(d)) {
+		u32 t0 = 0;
+		int away = !mx_mem_resident(d, qwc * 16);
+		if (away)
+			t0 = mx_count();
 		for (u32 at = 0; at < qwc * 16;) {
 			u32 n = MX_VM_PAGE - (u32)((uintptr_t)(d + at) & (MX_VM_PAGE - 1));
 			n = n > qwc * 16 - at ? qwc * 16 - at : n;
@@ -458,6 +462,9 @@ static int image_xfer(u32 dbp, u32 dbw, u32 psm, u32 w, u32 h, u32 bytes, const 
 			mx_frame_unlock(d + at, n);
 			at += n;
 		}
+		if (away)
+			rp_tex_stats.file_waits++, rp_tex_stats.file_wait_kb += qwc / 64,
+			    rp_tex_stats.file_wait_us += (mx_count() - t0) / (MX_EE_HZ / 1000000);
 	} else
 		file = 0;
 	u64 *c = mx_frame_reserve(6 + 3 * (qwc / 0x7FFF + 1) + (file ? 2 * (qwc * 16 / MX_VM_PAGE + 2) : 0));

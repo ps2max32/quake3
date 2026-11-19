@@ -1454,6 +1454,8 @@ void ps2_ren_report(void) {
 	           st_mark_frags, st_mark_traces, (unsigned)(st_mark_cycles / (MX_EE_HZ / 1000)), st_mark_known,
 	           (unsigned)(st_quad_cycles / (MX_EE_HZ / 1000)), rp_dl_stats.lights, rp_dl_stats.runs, rp_dl_stats.chunks, st_dl_off, world_st_fine / n, world_st_cand / n, rp_tex_stats.fine_sent, rp_tex_stats.fine_wait);
 	unsigned v = st.views - st_at.views;
+	Com_Printf("ps2: renderer: textures: %u levels sent while not in memory (%u KB; the game waited %u ms)\n",
+	           rp_tex_stats.file_waits, rp_tex_stats.file_wait_kb, rp_tex_stats.file_wait_us / 1000);
 	Com_Printf("ps2: renderer: marks: %u rays in a frame at most, %u small marks flat (two rays), %u left out for the "
 	           "frame's rays (r_ps2markrays)\n", st_mark_rays_max, st_mark_flat, st_mark_over);
 	if (v && world_sum.drawn)

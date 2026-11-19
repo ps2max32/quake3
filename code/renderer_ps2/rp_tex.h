@@ -52,6 +52,7 @@ struct rp_tex_stats {
 	u32 full;               /* not placed: no room in GS memory */
 	u32 coarse;             /* placed without their finest levels: no room for all of them */
 	u32 far;                /* placed from the level its distance needs (tight), not from its first */
+	u32 file_waits, file_wait_kb, file_wait_us; /* levels sent from the file while not in memory: the game waited */
 	float far_bias_max;     /* the most levels sooner than the distance asks (tight, images without room) */
 	float far_bias_sum;     /* its sum over the tight frames */
 	u32 far_floors;         /* times going lower was too much (an image without room for a frame) */
