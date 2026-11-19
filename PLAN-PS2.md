@@ -860,6 +860,20 @@ PS2 renderer follows. The same place by `+devmap`, `+setviewpos`,
   lock waits 407 -> 215 ms, 18.67 -> 18.47 ms a frame. The late frames left
   are mostly the 104 pages read from the mapped files. (On a kernel before
   43 the call does nothing.)
+- **Textures under memory pressure: measured, left as it is.** The file of
+  images is mapped (32 KiB pages); an image's CLUT and levels lie together,
+  the images by name; a map reads its images at its load and the pages stay
+  (clean: given up without a write when memory is short, read again on the
+  next use, then the game waits). In the timedemo no level was sent while
+  its pages were away. A layout with the first levels apart (packed on
+  pages of their own, the small levels together; an image drawn from its
+  second level while its first is away, the first levels not used for ten
+  seconds told cold) was tried on the PS2: the map's images then take about
+  twice the pages (an image's small levels and first level each share a
+  page with other images'), and the timedemo swapped ten times as much (99
+  to 110 swap ins for 9; 18.9-19.0 ms a frame for 18.6). Not kept. For the
+  file of 256 levels the first level is apart already in effect (the cache
+  holds images from the 128 level; the pool reads the 256 level ahead).
 - Portals to another place (7 maps) still show their script only.
 - **The sky had no clouds**, one colour: its layers were drawn with the
   texture level chosen for a surface 16,000 units away, the smallest. They
