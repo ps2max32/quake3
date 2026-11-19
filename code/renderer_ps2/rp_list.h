@@ -101,7 +101,7 @@ struct rp_state {
 	u8 nomip;              /* the first level only, bilinear */
 	u8 clamp;              /* the texture is not repeated */
 	u8 cull;               /* RP_PROG_MODEL: RP_CULL_* */
-	u8 lm_only;            /* RP_PROG_WORLD: the lightmap pass alone (the texture's draws nothing) */
+	u8 lm_only;            /* RP_PROG_WORLD: the lightmap pass alone (the texture's draws nothing); 2: at half */
 	u8 menv;               /* RP_PROG_MODEL: tcGen environment (model[6 .. 9]) */
 	float texels;          /* of the texture's first level a unit of the surface (the MIPMAP level) */
 	/* RP_PROG_STAGE: the texture coordinates' matrix (s' = tm[0] s + tm[1] t +

@@ -1409,10 +1409,20 @@ static u32 world_passes(u32 mat, struct rp_state *pass, int *first) {
 	   lightmap in either order) */
 	int late = lit && sh->lm_at >= 2 && sh->lm_at < RP_STAGES + 1 && !(rp_debug & 262144);
 	*first = !lit || late;
+	/* every stage before the lightmap's changes the picture that is there by
+	   a factor (water: the picture times 1 + the texture, three times): the
+	   lightmap's pass is then the picture times the lightmap's value itself,
+	   not twice it. The engine's frame is half the picture (its overbright
+	   doubles it at the end), so a lightmap stage that is a product of what is
+	   in the frame halves, where one over a stage drawn at half does not. */
+	int product = late;
+	for (int k = 0; late && k < sh->lm_at && k < sh->nstage; k++)
+		product &= sh->st[k].blend == RP_BLEND_BRIGHTEN || sh->st[k].blend == RP_BLEND_FILTER ||
+		           sh->st[k].blend == RP_BLEND_INVFILTER;
 	for (int k = lit && !late ? 1 : 0; k <= sh->nstage && n < RP_WORLD_PASSES; k++) {
 		if (late && k == sh->lm_at) {
 			memset(&pass[n], 0, RP_STATE_HEAD);
-			pass[n].prog = RP_PROG_WORLD, pass[n].lm_only = 1, pass[n].z = RP_Z_TEST;
+			pass[n].prog = RP_PROG_WORLD, pass[n].lm_only = product ? 2 : 1, pass[n].z = RP_Z_TEST;
 			if (++n == RP_WORLD_PASSES)
 				break;
 		}

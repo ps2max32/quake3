@@ -234,8 +234,13 @@ static void blend_set(struct rp_stage *st, int s, int d) {
 		st->blend = RP_BLEND_INVFILTER;
 	else if (d == F_ONE_MINUS_SRC_ALPHA || d == F_SRC_ALPHA)
 		st->blend = RP_BLEND_ALPHA;
+	else if (s == F_DST_COLOR && d == F_ONE)
+		/* the picture times 1 + the texture (water, glass): by the texture's
+		   brightness, as the GS has no product of two colours. Added to the
+		   picture it was far too bright on a dark floor, and hid it. */
+		st->blend = RP_BLEND_BRIGHTEN, st->luma = 1;
 	else
-		st->blend = RP_BLEND_ADD; /* ONE ONE, DST_COLOR ONE, ONE ONE_MINUS_SRC_COLOR: about additive */
+		st->blend = RP_BLEND_ADD; /* ONE ONE, ONE ONE_MINUS_SRC_COLOR: about additive */
 }
 
 static void parse_stage(char **p, struct rp_shader *sh, struct rp_stage *st) {

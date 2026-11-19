@@ -130,6 +130,9 @@ static int fine_on;       /* a texture of the map has */
    lightmap's value, the map's overbright range; in CSM1's order */
 static u32 lm_clut[256] MX_FAST_BSS MX_ALIGNED(64);
 static u64 lm_clut_key;
+/* the same at half: the lightmap's value itself (a pass with lm_only 2) */
+static u32 lm_clut_half[256] MX_FAST_BSS MX_ALIGNED(64);
+static u64 lm_clut_half_key;
 
 static void images_free(void) {
 	/* the textures are the file of images' (the shaders' too): not freed here */
@@ -162,10 +165,12 @@ static void images_load(void) {
 		u32 a = i < 128 ? 0x80 : i == 255 ? 255 : (i - 128) * 2;
 		u32 k = (i & 0x18) == 0x08 ? i + 8 : (i & 0x18) == 0x10 ? i - 8 : i;
 		lm_clut[k] = a << 24 | 0x808080;
+		lm_clut_half[k] = (i < 128 ? 0x40 : i - 128) << 24 | 0x808080;
 	}
 	mx_dcache_writeback(lm_clut, sizeof lm_clut);
+	mx_dcache_writeback(lm_clut_half, sizeof lm_clut_half);
 	if (!lm_clut_key)
-		lm_clut_key = rp_tex_key();
+		lm_clut_key = rp_tex_key(), lm_clut_half_key = rp_tex_key();
 	mx_printf("rp: %u textures (%u KB; %u not in the file of images) and %u lightmap pages\n", h->ntex, bytes / 1024,
 	          none, h->nlightmap);
 }
@@ -725,7 +730,8 @@ static int run_draw(const void *matrix, const struct item *it, u32 n) {
 				if ((c0->flags & CH_LIGHTMAP) && c0->lightmap >= 0 && c0->lightmap < MAX_LM && wlm[c0->lightmap] &&
 				    (t = rp_image_place(wlm[c0->lightmap]))) {
 					l->lm = *t;
-					l->lm.cbp = rp_clut_place(lm_clut_key, lm_clut, 0);
+					l->lm.cbp = l->lm_only == 2 ? rp_clut_place(lm_clut_half_key, lm_clut_half, 0)
+					                            : rp_clut_place(lm_clut_key, lm_clut, 0);
 					l->lm.cpsm = MX_GS_PSM_CT32, l->lm.csm = 0;
 					l->lm_ok = l->lm.cbp != 0;
 				}
