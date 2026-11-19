@@ -554,6 +554,27 @@ def sample_lightmap(page, s, t):
     return c
 
 
+def vertex_hues(page, verts):
+    """The lightmap's colour for each vertex of a surface: of the page's texels in the
+    surface's rectangle, those nearer to this vertex than to any other, summed. The page
+    the PS2 draws is the lightmap's brightness alone and its colour is the vertices': the
+    colour at the vertex itself misses a light that falls between the vertices (an orange
+    pool on a large wall came out grey)."""
+    h, w = page.shape[0], page.shape[1]
+    lx, ly = verts[:, 5] * w - 0.5, verts[:, 6] * h - 0.5
+    x0, x1 = int(max(math.floor(lx.min()), 0)), int(min(math.ceil(lx.max()), w - 1))
+    y0, y1 = int(max(math.floor(ly.min()), 0)), int(min(math.ceil(ly.max()), h - 1))
+    out = np.zeros((len(verts), 3))
+    if x1 < x0 or y1 < y0 or (x1 - x0 + 1) * (y1 - y0 + 1) * len(verts) > 4_000_000:
+        return None
+    gx, gy = np.meshgrid(np.arange(x0, x1 + 1), np.arange(y0, y1 + 1))
+    px, py = gx.ravel().astype(np.float64), gy.ravel().astype(np.float64)
+    d = (px[:, None] - lx[None, :]) ** 2 + (py[:, None] - ly[None, :]) ** 2
+    near = d.argmin(1)
+    np.add.at(out, near, page[gy.ravel(), gx.ravel()].astype(np.float64))
+    return out
+
+
 def repack_lightmaps(bsp):
     """The surfaces' rectangles of lightmap packed again, in the order of their place in the
     map. q3map fills its pages in the BSP's order of surfaces, so the surfaces of one room
@@ -805,8 +826,10 @@ def build(args):
         areas = frozenset(surf_areas.get(si, set()))
         page = bsp.lightmaps[lm] if lm >= 0 and m["flags"] & MAT_LIGHTMAP else None
         vlm = bool(m["flags"] & MAT_VLM)
+        hues = vertex_hues(page, np.asarray(verts)) if page is not None and len(verts) else None
         for t in tris:
             tv = [verts[i] for i in t]
+            th = [hues[i] if hues is not None else None for i in t]
             # degenerate after quantisation: left out
             qp = [tuple(int(round(v[k] * q)) for k in range(3)) for v in tv]
             if qp[0] == qp[1] or qp[1] == qp[2] or qp[0] == qp[2]:
@@ -814,12 +837,12 @@ def build(args):
             cs, ct = sum(v[3] for v in tv) / 3, sum(v[4] for v in tv) / 3
             cell = (math.floor(cs / 4) * 4, math.floor(ct / 4) * 4)
             out = []
-            for v, p in zip(tv, qp):
+            for v, p, vh in zip(tv, qp, th):
                 st = (int(round((v[3] - cell[0]) * 4096)), int(round((v[4] - cell[1]) * 4096)))
                 st = tuple(min(max(x, -32768), 32767) for x in st)
                 if page is not None:
                     lmst = (min(max(int(round(v[5] * 4096)), -32768), 32767), min(max(int(round(v[6] * 4096)), -32768), 32767))
-                    rgb = sample_lightmap(page, v[5], v[6])
+                    rgb = vh if vh is not None and vh.max() > 0 else sample_lightmap(page, v[5], v[6])
                     top = rgb.max()
                     hue = rgb / top if top > 0 else np.ones(3)
                     if vlm:

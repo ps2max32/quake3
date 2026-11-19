@@ -702,6 +702,12 @@ PS2 renderer follows. The same place by `+devmap`, `+setviewpos`,
   position, so the stage is drawn by the program that lays a texture on
   the world by position (`q3wd`), a run a chunk. In PCSX2 as the PC's; not
   yet run on the PS2.
+- **Coloured light** (q3dm9: an orange pool on a large wall was grey).
+  The lightmap the PS2 draws is brightness alone and its colour is the
+  vertices': the colour was the lightmap's at the vertex itself, which
+  misses a light that falls between the vertices of a large surface. It
+  is now the sum of the lightmap's texels nearer to that vertex than to
+  the surface's others (the map tool; the maps are to be made again).
 - Mirrors and portals (7 maps) are still black surfaces.
 - **The sky had no clouds**, one colour: its layers were drawn with the
   texture level chosen for a surface 16,000 units away, the smallest. They
