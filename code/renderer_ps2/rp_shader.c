@@ -334,7 +334,7 @@ static void parse_stage(char **p, struct rp_shader *sh, struct rp_stage *st) {
 					for (int i = 0; i < np; i++)
 						st->tcmod[k].p[i] = tokf(p);
 				}
-				if (st->ntcmod < RP_TCMODS && type != TCM_TURB)
+				if (st->ntcmod < RP_TCMODS)
 					st->ntcmod++;
 			}
 		} else if (!Q_stricmp(t, "depthWrite"))
@@ -615,6 +615,15 @@ int rp_stage_tcmod(const struct rp_stage *st, float t, float *m) {
 			break;
 		}
 		case TCM_TRANSFORM: a[0] = p[0], a[1] = p[2], a[2] = p[4], a[3] = p[1], a[4] = p[3], a[5] = p[5]; break;
+		case TCM_TURB: {
+			/* base, amplitude, phase, frequency. The engine moves each vertex's
+			   coordinates by a sine of its place and the time; here the whole
+			   texture goes round by the amplitude, at the frequency: it moves
+			   as a liquid does, without the ripple from vertex to vertex */
+			float ph = p[2] + t * p[3];
+			a[2] = p[1] * sin1(ph), a[5] = p[1] * sin1(ph + 0.25f);
+			break;
+		}
 		default: break;
 		}
 		/* after what came before: a * m */

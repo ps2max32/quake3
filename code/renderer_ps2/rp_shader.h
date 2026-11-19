@@ -29,7 +29,7 @@ struct rp_wave {
 };
 
 #define RP_ANIM 8
-#define RP_TCMODS 3
+#define RP_TCMODS 4
 struct rp_stage {
 	struct rp_image *img[RP_ANIM];
 	u8 nimg;
