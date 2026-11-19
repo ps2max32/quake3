@@ -558,6 +558,25 @@ corridor 9.2 and court 11.2 (14.5 and 15.6 the evening before), q3dm12 13.6
   runs: no strip still drawn, no pass left out (14 to 27 and 4 to 5
   without), 264 to 508 sprites left out in 56 frames; light scenes keep up
   to 4.6 times the screen.
+- **Marks** (bullet holes, burns, blood on the walls, the players'
+  shadows) were not drawn: the renderer answered the game's question for
+  the parts of a square on the world with none. The map's surfaces are not
+  on the EE, so the answer comes from the collision world: short rays along
+  the projection at the square's corners, or at a grid of 5 x 5 points when
+  a corner is off the world, of which the cells on the world are kept (as
+  rectangles where it is flat). A ray is 25 us on the PS2 and the shadows
+  ask every frame (4.5 squares a frame in the timedemo): 1.1 ms a frame.
+  For squares of a shadow's size and larger the rays are those of a lattice
+  on the square's plane, each asked once: 0.57 ms a frame in the timedemo's
+  first pass over the map, none where a shadow was before. A level's marks
+  are 190 polygons a frame, two thirds of them not in view: those are left
+  out before their stages are worked out. With marks the timedemo's frame
+  is 0.6 ms longer (18.0 for 17.4 ms with the wait for the field, 48 more
+  fields repeated of 2240); `r_ps2marks 0` for none. A mark on a wall that
+  is drawn behind a clip brush (ornate pillars) is not found.
+- A shader of the game without a script (`icons/noammo`) is the screen's,
+  blended, as in the engine: it was a model's, opaque (a white square over
+  the weapon without ammunition).
 
 ## 3. Why the earlier attempts stalled
 

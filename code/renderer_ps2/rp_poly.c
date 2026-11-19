@@ -114,32 +114,46 @@ float rp_poly_area(const struct rp_vert *v, u32 n) {
 	const struct rp_view *vw = &rp_view;
 	float left = vw->cx - 2048.0f + (float)mx_gs.w * 0.5f, top = vw->cy - 2048.0f + (float)mx_gs.h * 0.5f;
 	float W = (float)mx_gs.w, H = (float)mx_gs.h;
-	float x0 = 1e9f, x1 = -1e9f, y0 = 1e9f, y1 = -1e9f, px[16], py[16];
-	u32 behind = 0;
+	float x0 = 1e9f, x1 = -1e9f, y0 = 1e9f, y1 = -1e9f, px[17], py[17], cam[16][3];
+	u32 m = 0, out = 31;
 	if (n < 3 || n > 16)
 		return 0;
+	/* all of it outside one side of the view: none (most of a level's marks) */
+	float txl = left / vw->fx, txr = (W - left) / vw->fx, tyt = top / vw->fy, tyb = (H - top) / vw->fy;
 	for (u32 i = 0; i < n; i++) {
 		float d[3] = {v[i].xyz[0] - vw->org[0], v[i].xyz[1] - vw->org[1], v[i].xyz[2] - vw->org[2]};
-		float w = dot3(vw->F, d);
-		if (w < 4.5f) {
-			behind++;
-			continue;
+		float x = dot3(vw->L, d), y = dot3(vw->U, d), w = dot3(vw->F, d);
+		cam[i][0] = x, cam[i][1] = y, cam[i][2] = w;
+		out &= (u32)(w < 4.5f) | (u32)(x > txl * w) << 1 | (u32)(-x > txr * w) << 2 | (u32)(y > tyt * w) << 3 |
+		       (u32)(-y > tyb * w) << 4;
+	}
+	if (out)
+		return 0;
+	/* the part of it before the eye's plane, on the screen */
+	for (u32 i = 0, j = n - 1; i < n; j = i++) {
+		const float *a = cam[j], *b = cam[i];
+		int ain = a[2] >= 4.5f, bin = b[2] >= 4.5f;
+		if (ain != bin) {
+			float t = (4.5f - a[2]) / (b[2] - a[2]), iw = 1.0f / 4.5f;
+			px[m] = left - vw->fx * (a[0] + t * (b[0] - a[0])) * iw, py[m] = top - vw->fy * (a[1] + t * (b[1] - a[1])) * iw;
+			m++;
 		}
-		float iw = 1.0f / w;
-		px[i] = left - vw->fx * dot3(vw->L, d) * iw, py[i] = top - vw->fy * dot3(vw->U, d) * iw;
+		if (bin) {
+			float iw = 1.0f / b[2];
+			px[m] = left - vw->fx * b[0] * iw, py[m] = top - vw->fy * b[1] * iw;
+			m++;
+		}
+	}
+	float a = 0;
+	for (u32 i = 0, j = m - 1; i < m; j = i++) {
+		a += px[j] * py[i] - px[i] * py[j];
 		x0 = px[i] < x0 ? px[i] : x0, x1 = px[i] > x1 ? px[i] : x1;
 		y0 = py[i] < y0 ? py[i] : y0, y1 = py[i] > y1 ? py[i] : y1;
 	}
-	if (behind == n)
-		return 0;
-	if (behind)
-		return W * H; /* across the eye's plane: no telling, the screen */
 	float bx0 = x0 < 0 ? 0 : x0, bx1 = x1 > W ? W : x1, by0 = y0 < 0 ? 0 : y0, by1 = y1 > H ? H : y1;
 	if (bx1 <= bx0 || by1 <= by0)
 		return 0;
-	float box = (bx1 - bx0) * (by1 - by0), full = (x1 - x0) * (y1 - y0), a = 0;
-	for (u32 i = 0, j = n - 1; i < n; j = i++)
-		a += px[j] * py[i] - px[i] * py[j];
+	float box = (bx1 - bx0) * (by1 - by0), full = (x1 - x0) * (y1 - y0);
 	a = (a < 0 ? -a : a) * 0.5f;
 	/* the part of it on the screen: as its box's part */
 	if (full > box && full > 0)

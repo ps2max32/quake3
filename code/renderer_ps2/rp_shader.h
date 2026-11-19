@@ -57,6 +57,7 @@ struct rp_shader {
 	u8 nstage;
 	u8 sort, cull_none, polygon_offset, sky, deform, nodraw, defaulted, nomip;
 	u8 cull_back; /* the faces that face the eye are the ones left out */
+	u8 scripted;  /* from a script (not an image alone) */
 	u8 lm_at;     /* the stages before the script's $lightmap stage (nstage: none or last) */
 	/* skyparms: the far box's six images (rt bk lf ft up dn; none: 0) and the
 	   clouds' height */

@@ -11,7 +11,7 @@
    The game's shaders are rp_shader.c's, its models rp_model.c's (MD3, on
    VU1).
 
-   Not yet: lights, marks. They are counted. Each main view's camera goes into quake3.cam
+   Not yet: lights. They are counted. Each main view's camera goes into quake3.cam
    (ps2_ren_report), for the viewer (tools/q3view) to fly the same path.
    r_ps2draw 0: nothing is drawn, a timedemo then costs what the game side
    costs (game, cgame, client, sound, collision); 1 and a sum of: 2 no world,
@@ -19,7 +19,8 @@
    (what each costs a pass). r_ps2debug: rp_list.h's rp_debug. r_ps2shot n: the picture
    of the timedemo's frame n is saved as quake3.tga and the game quits.
    r_ps2passes 1: the timedemo's passes of beam racing as quake3.pass.
-   r_ps2beamat n: beam racing's counts start at the n-th view of the world. */
+   r_ps2beamat n: beam racing's counts start at the n-th view of the world.
+   r_ps2fill: the limit of the sprites' fill (fill_budget). r_ps2marks 0: no marks. */
 
 #include "../qcommon/q_shared.h"
 #include "../qcommon/qfiles.h"
@@ -43,7 +44,7 @@
 
 refimport_t ri;
 static float scene_time; /* the scene's being drawn, for its shaders */
-static cvar_t *r_ps2draw, *r_ps2shot, *r_ps2passes, *r_ps2beamat, *r_ps2fill;
+static cvar_t *r_ps2draw, *r_ps2shot, *r_ps2passes, *r_ps2beamat, *r_ps2fill, *r_ps2marks;
 
 /* ---- the screen ------------------------------------------------------------------- */
 
@@ -168,7 +169,8 @@ static u32 first_sprite, first_poly;           /* of the scene */
 static unsigned st_nostage, st_quads;
 static unsigned long long poly_px_sum, poly_px_max;
 static float quad_px; /* the frame's quads: the pixels they fill, every stage */
-static unsigned poly_px_over, st_fill_over, st_fill_out;
+static unsigned poly_px_over, st_fill_over, st_fill_out, st_mark_frags, st_mark_traces, st_mark_known;
+static unsigned long long st_mark_cycles, st_quad_cycles;
 
 static void RP_ClearScene(void) {
 	cur_ents = cur_polys = cur_polyverts = cur_lights = 0;
@@ -502,6 +504,9 @@ static u32 scene_quads(const refdef_t *fd, int world) {
 			st_fill_out++;
 			continue;
 		}
+		/* not on the screen: no stage of it is worked out */
+		if (quad[i].px <= 0)
+			continue;
 		u32 j = m++;
 		for (; j > 0 && quad[quad_order[j - 1]].sort > quad[i].sort; j--)
 			quad_order[j] = quad_order[j - 1];
@@ -513,6 +518,7 @@ static u32 scene_quads(const refdef_t *fd, int world) {
 /* the quads from..to of the order: the ones of one shader after each other
    are drawn a stage at a time */
 static void quads_draw(u32 from, u32 to) {
+	u32 t0 = mx_count();
 	for (u32 i = from; i < to;) {
 		const struct quad *q0 = &quad[quad_order[i]];
 		struct rp_shader *sh = rp_shader_get(q0->shader);
@@ -534,7 +540,23 @@ static void quads_draw(u32 from, u32 to) {
 				int moved = rp_stage_tcmod(stg, q->time, m);
 				for (u32 a = 0; a < q->n; a++) {
 					v[a] = q->v[a];
-					rp_stage_colour(stg, q->time, q->v[a].rgba, q->ent, v[a].rgba);
+					if (a && !memcmp(q->v[a].rgba, q->v[0].rgba, 4))
+						memcpy(v[a].rgba, v[0].rgba, 4);
+					else
+						rp_stage_colour(stg, q->time, q->v[a].rgba, q->ent, v[a].rgba);
+					if (sh->polygon_offset) {
+						/* on a surface (a mark): towards the eye along its ray by two steps
+						   of the depth buffer there (16 bits, 262140 / w), so it is in
+						   front of its wall wherever both are rounded */
+						const struct rp_view *vw = &rp_view;
+						float d[3] = {v[a].xyz[0] - vw->org[0], v[a].xyz[1] - vw->org[1], v[a].xyz[2] - vw->org[2]};
+						float w = d[0] * vw->F[0] + d[1] * vw->F[1] + d[2] * vw->F[2];
+						if (w > 8.0f) {
+							float f = 1.0f - (w * (2.0f / 262140.0f) + 0.25f / w);
+							for (int x = 0; x < 3; x++)
+								v[a].xyz[x] = vw->org[x] + d[x] * f;
+						}
+					}
 					if (moved) {
 						float ss = v[a].st[0], tt = v[a].st[1];
 						v[a].st[0] = m[0] * ss + m[1] * tt + m[2], v[a].st[1] = m[3] * ss + m[4] * tt + m[5];
@@ -550,6 +572,7 @@ static void quads_draw(u32 from, u32 to) {
 		i = end;
 	}
 	rp_poly_flush();
+	st_quad_cycles += mx_count() - t0;
 }
 
 static struct {
@@ -873,10 +896,253 @@ static void RP_EndFrame(int *frontEndMsec, int *backEndMsec) {
 	quad_px = 0;
 }
 
+/* ---- marks: a bullet's hole, a rocket's burn, blood on a wall, a player's
+   shadow. The game gives a square on the plane it hit and asks for the parts
+   of it that lie on the world. The map's surfaces are not on the EE (they
+   are VU1 batches in the map's file), so the answer comes from the collision
+   world: a point of the square is on the world when a short ray along the
+   projection hits there (25 us a ray on the PS2).
+   - All four corners on the world: the square, laid on it.
+   - Else (over an edge, at a wall, on steps): a grid of 4 x 4 cells; the
+     cells with all corners on the world, as rectangles where the world is
+     flat under them and as rows of cells where it is not.
+   - The players' shadows ask every frame, each with its own square. For
+     squares of their size and larger the rays are not the square's points
+     but those of a lattice on its plane, each asked once (the world does
+     not change) and a point of a square takes the lattice's nearest: a
+     shadow that moves asks for the few points it comes to, one that comes
+     where another was for none. ---- */
+
+#include "../qcommon/surfaceflags.h"
+
+static int mark_point(const float *p, const float *dir, float *out) {
+	vec3_t a, b, zero = {0, 0, 0};
+	trace_t tr;
+	VectorMA(p, -4.0f, dir, a);
+	VectorMA(p, 8.0f, dir, b);
+	st_mark_traces++;
+	CM_BoxTrace(&tr, a, b, zero, zero, 0, CONTENTS_SOLID, qfalse);
+	if (tr.startsolid || tr.allsolid || tr.fraction >= 1.0f)
+		return 0;
+	if (tr.surfaceFlags & (SURF_NOMARKS | SURF_NODRAW | SURF_SKY))
+		return 0;
+	/* a surface that faces the projection, as the engine's (not a wall seen along it) */
+	if (DotProduct(tr.plane.normal, dir) > -0.5f)
+		return 0;
+	VectorCopy(tr.endpos, out);
+	return 1;
+}
+
+/* the planes squares were asked on (a direction, how far along it, the
+   lattice's step), and the lattice's points known: where along the
+   direction the world is there, in eighths from the plane (MARK_MISS: not) */
+#define MARK_PLANES 64
+#define MARK_SAMPLES 4096
+#define MARK_MISS (-128)
+static struct mark_plane {
+	float dir[3], dc, ax[3], ay[3], step;
+	u16 id; /* 0: none */
+} mark_plane[MARK_PLANES];
+static struct mark_sample {
+	u16 plane;
+	s16 u, v;
+	s8 off;
+} mark_sample[MARK_SAMPLES];
+static u32 mark_planes; /* made since the map was loaded */
+static struct mark_plane *mark_last;
+
+static void marks_forget(void) {
+	memset(mark_plane, 0, sizeof mark_plane);
+	memset(mark_sample, 0, sizeof mark_sample);
+	mark_planes = 0, mark_last = 0;
+}
+
+static struct mark_plane *mark_plane_of(const float *dir, float dc, float step) {
+	struct mark_plane *pl = mark_last;
+	for (int k = -1; k < MARK_PLANES; k++, pl = &mark_plane[k]) {
+		if (!pl || !pl->id || pl->step != step)
+			continue;
+		float d0 = pl->dir[0] - dir[0], d1 = pl->dir[1] - dir[1], d2 = pl->dir[2] - dir[2], dd = pl->dc - dc;
+		if (d0 * d0 + d1 * d1 + d2 * d2 < 1e-6f && dd > -0.5f && dd < 0.5f)
+			return mark_last = pl;
+	}
+	if ((mark_planes + 1 & 0xffff) == 0)
+		marks_forget();
+	pl = &mark_plane[mark_planes % MARK_PLANES];
+	pl->id = (u16)(++mark_planes);
+	VectorCopy(dir, pl->dir);
+	pl->dc = dc, pl->step = step;
+	PerpendicularVector(pl->ax, dir);
+	CrossProduct(dir, pl->ax, pl->ay);
+	return mark_last = pl;
+}
+
+/* p of a square on pl, on the world: by the lattice's point nearest to p */
+static int mark_at(struct mark_plane *pl, const float *p, float *out) {
+	float fu = DotProduct(p, pl->ax) / pl->step, fv = DotProduct(p, pl->ay) / pl->step;
+	if (fu > 32000.0f || fu < -32000.0f || fv > 32000.0f || fv < -32000.0f)
+		return mark_point(p, pl->dir, out);
+	s16 u = (s16)(fu < 0 ? fu - 0.5f : fu + 0.5f), v = (s16)(fv < 0 ? fv - 0.5f : fv + 0.5f);
+	u32 hsh = (u32)pl->id * 0x9E3779B1u ^ (u32)(u16)u * 0x85EBCA6Bu ^ (u32)(u16)v * 0xC2B2AE35u;
+	struct mark_sample *sm = &mark_sample[(hsh ^ hsh >> 15) % MARK_SAMPLES];
+	if (sm->plane == pl->id && sm->u == u && sm->v == v)
+		st_mark_known++;
+	else {
+		float q[3], hit[3];
+		for (int a = 0; a < 3; a++)
+			q[a] = (float)u * pl->step * pl->ax[a] + (float)v * pl->step * pl->ay[a] + pl->dc * pl->dir[a];
+		sm->plane = pl->id, sm->u = u, sm->v = v, sm->off = MARK_MISS;
+		if (mark_point(q, pl->dir, hit)) {
+			float o = (DotProduct(hit, pl->dir) - pl->dc) * 8.0f;
+			sm->off = (s8)(o < 0 ? o - 0.5f : o + 0.5f);
+		}
+	}
+	if (sm->off == MARK_MISS)
+		return 0;
+	float along = pl->dc + (float)sm->off * 0.125f - DotProduct(p, pl->dir);
+	VectorMA(p, along, pl->dir, out);
+	return 1;
+}
+
+/* the same for the point of a square with its middle at mid */
+static int mark_lattice(struct mark_plane *pl, const float *p, const float *mid, float *out) {
+	float q[3], d[3], len;
+	VectorSubtract(mid, p, d);
+	len = VectorLength(d);
+	if (len > 0.01f) {
+		float pull = pl->step * 0.5f < len ? pl->step * 0.5f / len : 1.0f;
+		VectorMA(p, pull, d, q);
+		if (!mark_at(pl, q, q))
+			return 0;
+		/* q is on the world: p as far along the direction as it */
+		float along = DotProduct(q, pl->dir) - DotProduct(p, pl->dir);
+		VectorMA(p, along, pl->dir, out);
+		return 1;
+	}
+	return mark_at(pl, p, out);
+}
+
+#define MARK_GRID 4
+static int mark_fragments(int numPoints, const vec3_t *points, const vec3_t projection, int maxPoints,
+                          vec3_t pointBuffer, int maxFragments, markFragment_t *fragmentBuffer) {
+	vec3_t dir, g[MARK_GRID + 1][MARK_GRID + 1];
+	u8 ok[MARK_GRID + 1][MARK_GRID + 1], used[MARK_GRID][MARK_GRID];
+	float t[MARK_GRID + 1][MARK_GRID + 1];
+	float (*out)[3] = (float (*)[3])pointBuffer;
+	if (numPoints != 4 || maxFragments < 1 || maxPoints < 4)
+		return 0;
+	VectorCopy(projection, dir);
+	if (VectorNormalize(dir) == 0)
+		return 0;
+	/* a square of a shadow's size or larger: by the lattice of its plane, a
+	   point by the lattice's nearest to it, taken half a step towards the
+	   square's middle (so the nearest is not outside the square) */
+	float mid[3], edge = 0;
+	for (int a = 0; a < 3; a++) {
+		mid[a] = (points[0][a] + points[1][a] + points[2][a] + points[3][a]) * 0.25f;
+		float e = points[1][a] - points[0][a];
+		edge += e * e;
+	}
+	struct mark_plane *pl = 0;
+	if (edge >= 24.0f * 24.0f)
+		pl = mark_plane_of(dir, DotProduct(mid, dir), edge >= 96.0f * 96.0f ? 32.0f : edge >= 44.0f * 44.0f ? 12.0f : 8.0f);
+#define POINT(p, out) (pl ? mark_lattice(pl, p, mid, out) : mark_point(p, dir, out))
+	/* the corners: 0 1 2 3 round the square */
+	static const u8 corner[4][2] = {{0, 0}, {MARK_GRID, 0}, {MARK_GRID, MARK_GRID}, {0, MARK_GRID}};
+	int all = 1;
+	for (int c = 0; c < 4; c++) {
+		int i = corner[c][0], j = corner[c][1];
+		ok[j][i] = (u8)POINT(points[c], g[j][i]);
+		all &= ok[j][i];
+	}
+	if (all) {
+		for (int c = 0; c < 4; c++)
+			VectorCopy(g[corner[c][1]][corner[c][0]], out[c]);
+		fragmentBuffer[0].firstPoint = 0, fragmentBuffer[0].numPoints = 4;
+		st_mark_frags++;
+		return 1;
+	}
+	for (int j = 0; j <= MARK_GRID; j++)
+		for (int i = 0; i <= MARK_GRID; i++) {
+			if (!((i == 0 || i == MARK_GRID) && (j == 0 || j == MARK_GRID))) {
+				float u = (float)i / MARK_GRID, v = (float)j / MARK_GRID;
+				vec3_t p;
+				for (int a = 0; a < 3; a++)
+					p[a] = (1 - v) * ((1 - u) * points[0][a] + u * points[1][a]) + v * ((1 - u) * points[3][a] + u * points[2][a]);
+				ok[j][i] = (u8)POINT(p, g[j][i]);
+			}
+			t[j][i] = ok[j][i] ? DotProduct(g[j][i], dir) : 0;
+		}
+#define CELL(j, i) (ok[j][i] && ok[j][(i) + 1] && ok[(j) + 1][i] && ok[(j) + 1][(i) + 1] && !used[j][i])
+	int nf = 0, np = 0;
+	memset(used, 0, sizeof used);
+	for (int j = 0; j < MARK_GRID; j++)
+		for (int i = 0; i < MARK_GRID; i++) {
+			if (!CELL(j, i))
+				continue;
+			/* the largest rectangle of cells from here: along the row, then rows down */
+			int e = i + 1, j2 = j + 1;
+			while (e < MARK_GRID && CELL(j, e))
+				e++;
+			for (; j2 < MARK_GRID; j2++) {
+				int k = i;
+				while (k < e && CELL(j2, k))
+					k++;
+				if (k < e)
+					break;
+			}
+			for (int y = j; y < j2; y++)
+				for (int x = i; x < e; x++)
+					used[y][x] = 1;
+			/* flat: its points lie where its corners say */
+			int flat = 1;
+			for (int y = j; y <= j2 && flat; y++)
+				for (int x = i; x <= e; x++) {
+					float u = (float)(x - i) / (float)(e - i), v = (float)(y - j) / (float)(j2 - j);
+					float want = (1 - v) * ((1 - u) * t[j][i] + u * t[j][e]) + v * ((1 - u) * t[j2][i] + u * t[j2][e]);
+					float off = t[y][x] - want;
+					if (off < -0.3f || off > 0.3f) {
+						flat = 0;
+						break;
+					}
+				}
+			if (flat) {
+				if (nf == maxFragments || np + 4 > maxPoints)
+					return nf;
+				fragmentBuffer[nf].firstPoint = np, fragmentBuffer[nf].numPoints = 4, nf++;
+				VectorCopy(g[j][i], out[np]), np++;
+				VectorCopy(g[j][e], out[np]), np++;
+				VectorCopy(g[j2][e], out[np]), np++;
+				VectorCopy(g[j2][i], out[np]), np++;
+				continue;
+			}
+			/* each row of it: its near edge, then its far edge back */
+			for (int y = j; y < j2; y++) {
+				int n = 2 * (e - i + 1);
+				if (nf == maxFragments || np + n > maxPoints)
+					return nf;
+				fragmentBuffer[nf].firstPoint = np, fragmentBuffer[nf].numPoints = n, nf++;
+				for (int k = i; k <= e; k++, np++)
+					VectorCopy(g[y][k], out[np]);
+				for (int k = e; k >= i; k--, np++)
+					VectorCopy(g[y + 1][k], out[np]);
+			}
+		}
+#undef CELL
+#undef POINT
+	st_mark_frags += (unsigned)nf;
+	return nf;
+}
+
 static int RP_MarkFragments(int numPoints, const vec3_t *points, const vec3_t projection, int maxPoints,
                             vec3_t pointBuffer, int maxFragments, markFragment_t *fragmentBuffer) {
 	st.marks++;
-	return 0;
+	if (!r_ps2marks->integer)
+		return 0;
+	u32 t0 = mx_count();
+	int n = mark_fragments(numPoints, points, projection, maxPoints, pointBuffer, maxFragments, fragmentBuffer);
+	st_mark_cycles += mx_count() - t0;
+	return n;
 }
 
 /* where the renderer's mapped files lie, for a report by address (sys_ps2.c) */
@@ -941,8 +1207,10 @@ void ps2_ren_report(void) {
 	           "an image in GS memory\n", rp_poly_stats.polys, rp_poly_stats.cut, rp_poly_stats.culled,
 	           rp_poly_stats.pics, st_nostage);
 	Com_Printf("ps2: renderer: the scene's quads fill %u thousand pixels a frame, %u thousand at most (the "
-	           "screen is 1037 thousand); %u frames with more than twice the screen; over r_ps2fill in %u frames, %u sprites left out\n",
-	           (unsigned)(poly_px_sum / n / 1000), (unsigned)(poly_px_max / 1000), poly_px_over, st_fill_over, st_fill_out);
+	           "screen is 1037 thousand); %u frames with more than twice the screen; over r_ps2fill in %u frames, %u sprites left out; %u parts of marks by %u rays in %u ms (%u at places known); the quads' draws %u ms\n",
+	           (unsigned)(poly_px_sum / n / 1000), (unsigned)(poly_px_max / 1000), poly_px_over, st_fill_over, st_fill_out,
+	           st_mark_frags, st_mark_traces, (unsigned)(st_mark_cycles / (MX_EE_HZ / 1000)), st_mark_known,
+	           (unsigned)(st_quad_cycles / (MX_EE_HZ / 1000)));
 	unsigned v = st.views - st_at.views;
 	if (v && world_sum.drawn)
 		Com_Printf("ps2: renderer: the world, a view: %u groups in view, %u chunks (%u across a plane, %u more facing "
@@ -996,6 +1264,7 @@ static void RP_BeginRegistration(glconfig_t *config) {
 	r_ps2passes = ri.Cvar_Get("r_ps2passes", "0", 0);
 	r_ps2beamat = ri.Cvar_Get("r_ps2beamat", "0", 0);
 	r_ps2fill = ri.Cvar_Get("r_ps2fill", "1", CVAR_ARCHIVE);
+	r_ps2marks = ri.Cvar_Get("r_ps2marks", "1", CVAR_ARCHIVE);
 	rp_debug = (unsigned)ri.Cvar_Get("r_ps2debug", "0", 0)->integer;
 	screen_init();
 	/* no frame in flight draws what goes now: the map, the images */
@@ -1021,7 +1290,8 @@ static int RP_LerpTag(orientation_t *tag, qhandle_t h, int startFrame, int endFr
 	return rp_model_tag(tag, h, startFrame, endFrame, frac, tagName);
 }
 static void RP_ModelBounds(qhandle_t h, vec3_t mins, vec3_t maxs) { rp_model_bounds(h, mins, maxs); }
-static qhandle_t RP_RegisterShader(const char *name) { return rp_shader_register(name, -1, 1); }
+/* as the engine: the game's shaders without a script are the screen's (LIGHTMAP_2D) */
+static qhandle_t RP_RegisterShader(const char *name) { return rp_shader_register(name, -4, 1); }
 /* the screen's pictures (LIGHTMAP_2D) */
 static qhandle_t RP_RegisterShaderNoMip(const char *name) { return rp_shader_register(name, -4, 0); }
 /* maps/<name>.bsp: its world is maps/<name>.pmap, a file beside the paks, mapped
@@ -1092,6 +1362,7 @@ static u32 world_passes(u32 mat, struct rp_state *pass, int *first) {
 static void RP_LoadWorld(const char *name) {
 	char path[MAX_OSPATH], base[MAX_QPATH];
 	world_free();
+	marks_forget();
 	COM_StripExtension(name, base, sizeof base);
 	Com_sprintf(path, sizeof path, "%s/%s/%s.pmap", ri.Cvar_Get("fs_basepath", "", 0)->string, BASEGAME, base);
 	world_map = mx_vm_map_file(path[0] == '.' && path[1] == '/' ? path + 2 : path, &world_size);

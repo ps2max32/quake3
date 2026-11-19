@@ -41,8 +41,7 @@ struct rp_poly_stats {
 };
 extern struct rp_poly_stats rp_poly_stats;
 
-/* The pixels of the screen a polygon covers in the view, about (one across
-   the eye's plane: the screen's). */
+/* The pixels of the screen a polygon covers in the view, about. */
 float rp_poly_area(const struct rp_vert *v, u32 n);
 
 #endif

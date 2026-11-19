@@ -445,8 +445,11 @@ qhandle_t rp_shader_register(const char *name, int lightmap, int mip) {
 	if (!name || !name[0] || strlen(name) >= MAX_QPATH || !shaders)
 		return 0;
 	COM_StripExtension(name, base, sizeof base);
+	/* an image alone is two shaders, as in the engine: the screen's (blended,
+	   every RegisterShader of the game) and a model's (lit, opaque) */
 	for (int i = 1; i < nshader; i++)
-		if (!Q_stricmp(shaders[i]->name, base))
+		if (!Q_stricmp(shaders[i]->name, base) &&
+		    (shaders[i]->scripted || shaders[i]->defaulted || (shaders[i]->lightmap == LIGHTMAP_2D) == (lightmap == LIGHTMAP_2D)))
 			return shaders[i]->defaulted ? 0 : i;
 	if (nshader >= MAX_SHADER)
 		return 0;
@@ -457,6 +460,7 @@ qhandle_t rp_shader_register(const char *name, int lightmap, int mip) {
 	char *body = script_find(base);
 	if (body) {
 		parse_shader(body, sh);
+		sh->scripted = 1;
 		sh_script++;
 	} else {
 		/* an image alone: on the screen blended with the vertex colours and
