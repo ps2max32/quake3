@@ -266,6 +266,9 @@ static void beam_quad(u32 *n, const refEntity_t *e, const struct rp_shader *sh, 
 	q->shader = e->customShader, q->sort = sh->sort, q->time = now - e->shaderTime;
 	memcpy(q->ent, e->shaderRGBA, 4);
 	q->v = v, q->n = 4;
+	/* a beam is never left out for its fill, nor as off the screen by this
+	   count (a band from beside the eye into the distance) */
+	q->px = rp_poly_area(v, 4) * (float)sh->nstage + 1.0f, q->score = 0;
 }
 
 /* a band from start to end, span each way along up; its texture repeats
