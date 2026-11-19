@@ -52,6 +52,11 @@ import zipfile
 GL_PALETTE4_RGB8_OES, GL_PALETTE4_RGBA8_OES = 0x8B90, 0x8B91
 GL_PALETTE8_RGB8_OES, GL_PALETTE8_RGBA8_OES = 0x8B95, 0x8B96
 LEVELS = 7
+# The PS2's frame has 5 bits a colour: what is drawn is cut off to them (the
+# GS adds its dither's -4 .. 3 first), 4 of 255 darker on average. Every
+# colour of a palette is that much brighter here (black stays black: 4 + 3
+# is cut off to 0).
+BRIGHTER = 4
 ONE_LEVEL = ("gfx/2d/", "menu/", "ui/", "icons/")
 
 
@@ -80,7 +85,8 @@ def image(blob, levels=LEVELS):
     for i in range(ncol):
         c = pal[i * chans:(i + 1) * chans]
         a = (c[3] + 1) >> 1 if alpha else 0x80
-        clut[place(i)] = c[0] | c[1] << 8 | c[2] << 16 | a << 24
+        r, g, b = (min(255, x + BRIGHTER) for x in c[:3])
+        clut[place(i)] = r | g << 8 | b << 16 | a << 24
     if not alpha:
         for i in range(128):
             k = place(128 + i)

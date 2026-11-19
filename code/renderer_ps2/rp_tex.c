@@ -294,6 +294,7 @@ static void luma_free(struct rp_image *im) {
 			mx_heap_free(heap_pin, im->luma[k]), im->luma[k] = 0;
 	if (im->opaque)
 		mx_heap_free(heap_pin, im->opaque), im->opaque = 0;
+
 }
 
 void rp_image_free(struct rp_image *im) {

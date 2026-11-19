@@ -102,6 +102,7 @@ u32 rp_clut_place(u64 key, const void *clut, int small);
    alpha of 128 .. 255 (16 x 16, CT32), its block in GS memory for this frame;
    0: none (no room, or the image has no alpha). */
 u32 rp_image_opaque(struct rp_image *im);
+
 u32 rp_image_luma(struct rp_image *im, int twice);
 /* Free an image; all of them (nothing in flight may read them: after a
    frame without them is the one shown). */

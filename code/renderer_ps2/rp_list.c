@@ -376,13 +376,22 @@ static int ghost; /* the set-up being made draws nothing (rp_debug 131072) */
 static const void *setup_chain(const struct rp_state *s, int cut, int state) {
 	if (s->prog == RP_PROG_GS)
 		return setup_gs(s);
-	u64 *c0 = rp_dyn(44), *c = c0;
+	u64 *c0 = rp_dyn(48), *c = c0;
 	if (!c)
 		return 0;
 	int lit = s->lm_ok && s->prog == RP_PROG_WORLD && !(rp_debug & (2 | 128)), tex = s->tex_ok && !(rp_debug & (32 | 128));
 	_Static_assert(Q3VU_T_TM0 + 1 == Q3VU_T_TM1 && Q3VU_T_TM0 + 4 == Q3VU_T_CADD, "q3w1t's uniforms in a row");
 	u64 regs = (rp_debug & 16) || ghost ? 0xD12 : 0x512; /* ST, RGBAQ, XYZ2 (XYZ3: no drawing) */
 	int blend = s->blend != RP_BLEND_NONE || (rp_debug & 128);
+	/* The lightmap's pass is the picture times the lightmap, cut off to the
+	   frame's 5 bits a colour a second time: 4 of 255 darker each time, on
+	   average (the dither's matrix is -4 .. 3), and the product's own
+	   rounding down is 1 or 2 more (measured against the PC's picture). The
+	   second time is made up for: the pass adds 6, as its own colour (the
+	   fog's, with the fog's share at 0: the lightmap's texels have no colour
+	   of their own). The first time: the images' palettes are 4 brighter
+	   (tools/ps2bin.py). */
+	int lmadd = lit && s->blend == RP_BLEND_NONE && !(rp_debug & 2097152);
 	int menv = s->prog == RP_PROG_MODEL && s->menv;
 	u32 entry = menv                       ? (cut ? Q3MEC_SETUP : Q3ME_SETUP)
 	            : s->prog == RP_PROG_MODEL ? (cut ? Q3MC_SETUP : Q3M_SETUP)
@@ -402,7 +411,7 @@ static const void *setup_chain(const struct rp_state *s, int cut, int state) {
 			/* the lightmap alone: the first pass's vertices as XYZ3, drawing nothing */
 			c = mx_e_qw(c, mx_giftag(n, tri, (s32)mx_gs_prim(prim, 1, tex, 0, blend, 0, 0, ctx, 0), MX_GIF_FLG_PACKED, 3),
 			            s->lm_only && lit ? 0xD12 : regs);
-			c = mx_e_qw(c, mx_giftag(n, tri, (s32)mx_gs_prim(prim, 0, 1, 0, 1, 0, 0, 1, 0), MX_GIF_FLG_PACKED, 3), regs);
+			c = mx_e_qw(c, mx_giftag(n, tri, (s32)mx_gs_prim(prim, 0, 1, lmadd, 1, 0, 0, 1, 0), MX_GIF_FLG_PACKED, 3), regs);
 		}
 		if (s->prog == RP_PROG_MODEL) {
 			_Static_assert(Q3VU_M_LERP + 6 == Q3VU_M_EX && Q3VU_M_EX + 3 == Q3VU_M_E0, "q3me's uniforms after q3m's");
@@ -459,6 +468,11 @@ static const void *setup_chain(const struct rp_state *s, int cut, int state) {
 			c = mx_e_ad(c, MX_GS_REG_CLAMP_2, 0);
 			c = mx_e_ad(c, MX_GS_REG_TEST_2, mx_gs_test(0, 0, 0, 0, 0, 0, 1, 2));
 			n += 4;
+			if (lmadd) {
+				c = mx_e_ad(c, MX_GS_REG_FOG, 0);
+				c = mx_e_ad(c, MX_GS_REG_FOGCOL, 0x060606);
+				n += 2;
+			}
 		}
 		u32 atst = s->alpha == RP_ALPHA_GT0 ? 6 : s->alpha == RP_ALPHA_LT128 ? 1 : 5;
 		if (regs_on) {
@@ -469,7 +483,7 @@ static const void *setup_chain(const struct rp_state *s, int cut, int state) {
 		n++;
 		if (blend || lit) {
 			/* context 2's blend: the lightmap's product, or the run's */
-			u64 a = blend_reg(s);
+			u64 a = lmadd ? mx_gs_alpha(1, 2, 0, 0, 0) : blend_reg(s);
 			if (rp_debug & 128)
 				a = mx_gs_alpha(0, 2, 2, 1, 8); /* Cs * 8 / 128 + Cd */
 			c = mx_e_ad(c, MX_GS_REG_ALPHA_2, a);

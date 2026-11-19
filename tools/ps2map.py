@@ -120,6 +120,9 @@ W_REV = 0x4000   # its triangle is wound the other way
 
 MAT_LIGHTMAP, MAT_SKY, MAT_NODRAW, MAT_DEFORM, MAT_TCMOD, MAT_SCRIPT, MAT_VERTEX, MAT_ENV = (
     1, 2, 4, 8, 16, 32, 64, 128)
+# the script's first stage has rgbGen vertex and a $lightmap stage follows: the texture times
+# the vertex's colour times the lightmap (banners, grates, wires)
+MAT_VLM = 256
 BLEND_NONE, BLEND_ADD, BLEND_ALPHA, BLEND_FILTER, BLEND_OTHER = range(5)
 ALPHA_NONE, ALPHA_GT0, ALPHA_LT128, ALPHA_GE128 = range(4)
 CULL_FRONT, CULL_BACK, CULL_NONE = range(3)
@@ -292,6 +295,8 @@ def material_of(name, script, lightmapped):
         alpha = base["alpha"]
         if base.get("env"):
             flags |= MAT_ENV
+        if base["vertex"] and flags & MAT_LIGHTMAP:
+            flags |= MAT_VLM
         if base["vertex"] or not flags & MAT_LIGHTMAP:
             flags |= MAT_VERTEX
         if base["blend"] is not None and not flags & MAT_LIGHTMAP:
@@ -796,6 +801,7 @@ def build(args):
         clusters = surf_clusters.get(si, set())
         areas = frozenset(surf_areas.get(si, set()))
         page = bsp.lightmaps[lm] if lm >= 0 and m["flags"] & MAT_LIGHTMAP else None
+        vlm = bool(m["flags"] & MAT_VLM)
         for t in tris:
             tv = [verts[i] for i in t]
             # degenerate after quantisation: left out
@@ -813,6 +819,10 @@ def build(args):
                     rgb = sample_lightmap(page, v[5], v[6])
                     top = rgb.max()
                     hue = rgb / top if top > 0 else np.ones(3)
+                    if vlm:
+                        # times the vertex's colour as rgbGen vertex shows it: half of
+                        # what the engine loads (twice the file's, not over 255)
+                        hue = hue * np.minimum(v[10:13] * 2, 255.0) / 510.0
                     col = tuple(int(round(h * 128)) for h in hue) + (128,)
                 else:
                     lmst = (0, 0)
@@ -820,6 +830,17 @@ def build(args):
                     top = c.max()
                     if top > 255:
                         c = c * 255 / top
+                    if vlm:
+                        # lit by its vertices in place of its lightmap (its alpha is
+                        # tested): the vertex's colour halved, times the lightmap there
+                        # (the engine's twice the file's, twice as bright on the screen)
+                        l2 = c
+                        if lm >= 0:
+                            l2 = sample_lightmap(bsp.lightmaps[lm], v[5], v[6]) * 2.0
+                            top = l2.max()
+                            if top > 255:
+                                l2 = l2 * 255 / top
+                        c = c * l2 / 508.0
                     col = tuple(int(round(x)) for x in c) + (int(round(v[13] * 128 / 255)),)
                 out.append((p, st, lmst, col))
             # the triangle's normal (the BSP's faces are wound clockwise seen from the front)

@@ -602,10 +602,44 @@ corridor 9.2 and court 11.2 (14.5 and 15.6 the evening before), q3dm12 13.6
   sphere on the screen and shares the sprites' room (`r_ps2fill`): 80 % of
   the lights are drawn, 0.38 ms a field, no strip late. `r_ps2dlight n`:
   n lights at most (4), 0 none.
-- **The view is too narrow.** The game takes its 90 degrees across the
-  1920 x 1080 picture, which leaves 59 up and down for the 74 of a 4:3
-  screen: the weapons are mostly below the picture's edge (the lightning
-  gun nearly all of it). Next: the 4:3 view's height, wider.
+- **The view's width.** The game takes its 90 degrees across the 1920 x
+  1080 picture, which leaves 59 up and down for the 74 of a 4:3 screen:
+  the weapons are mostly below the picture's edge (the lightning gun
+  nearly all of it). The PC's ioquake3 at 1920 x 1080 has the same view:
+  it is the game's, not the renderer's (`cg_fov 106` is the 4:3 view's
+  height).
+
+**Against the PC** (the same day). The reference for the picture is the
+PC's ioquake3 with its OpenGL 1 renderer, built from this tree (CMake, the
+client alone, SDL2's headers from `code/thirdparty`) and run off screen
+(Xvfb, Mesa) at 1920 x 1080, full screen: only then the engine has its
+overbright bit and a screenshot the gamma's doubling, which is the look the
+PS2 renderer follows. The same place by `+devmap`, `+setviewpos`,
+`+screenshot`; the paks are the retail ones. libgl's renderer on the PS2
+(gl1) is no reference: it has its own limits.
+
+- **Brightness.** The PS2's picture was 6 to 10 of 255 darker everywhere,
+  the shadows a third: the frame has 5 bits a colour and the GS cuts what
+  it draws off to them (after its dither's -4 .. 3): 4 darker on average,
+  and a lit surface is drawn twice (the texture, then times the lightmap).
+  Now every palette of the file of images is 4 brighter (black stays
+  black), and the lightmap's pass adds 6 (as the fog's colour with the
+  fog's share at 0: the pass has no colour of its own; 4 for the 5 bits, 2
+  for the product's rounding down, measured). World, models, weapon and
+  HUD are within 1 to 3 of the PC's now; the picture read from the PS2's
+  GS memory is PCSX2's.
+- **A shader's vertex colour times its lightmap** (`rgbGen vertex` on the
+  texture and a `$lightmap` stage: banners, grates, wires; 11 shaders) was
+  drawn by the vertex colour alone, 2.5 times too bright: the map tool
+  multiplies the two.
+- **Textures are half as sharp**: the images are at most 128 texels a side
+  (256 on the PC: `tools/ps2pak.py --max`), for the 1.2 MB of GS memory
+  that beam racing's frame and Z strip leave. A frame draws with 690 KB of
+  them; at 256 it would be four times that. What could be done: the finest
+  level only for the few textures near the eye, by the distance of the
+  chunks that use them (the file of images grows fourfold and its pages
+  are read from the USB stick as they are needed).
+- The sky's second layer of clouds is fainter than the PC's.
 
 ## 3. Why the earlier attempts stalled
 
