@@ -190,6 +190,7 @@ void rp_sky_draw(const struct rp_shader *sh, float t, u32 strips) {
 			continue;
 		memset(&s, 0, sizeof s);
 		s.tex = *x, s.tex_ok = 1, s.clamp = 1, s.z = RP_Z_TEST, s.blend = RP_BLEND_NONE, s.texels = 1.0f;
+		s.nomip = 1;
 		layer(&s, strips, 0, i, NULL, white);
 	}
 	/* the cloud layers, in the shader's order, on all sides but the bottom */
@@ -198,6 +199,10 @@ void rp_sky_draw(const struct rp_shader *sh, float t, u32 strips) {
 		if (!rp_stage_state(stg, t, &s))
 			continue;
 		s.z = RP_Z_TEST;
+		/* the first level: a cloud's texel is pixels wide, but the box is far
+		   away and a level chosen by its distance is the smallest (a sky of one
+		   colour) */
+		s.nomip = 1;
 		float m[6];
 		rp_stage_tcmod(stg, t, m);
 		u8 col[4];

@@ -639,7 +639,9 @@ PS2 renderer follows. The same place by `+devmap`, `+setviewpos`,
   level only for the few textures near the eye, by the distance of the
   chunks that use them (the file of images grows fourfold and its pages
   are read from the USB stick as they are needed).
-- The sky's second layer of clouds is fainter than the PC's.
+- **The sky had no clouds**, one colour: its layers were drawn with the
+  texture level chosen for a surface 16,000 units away, the smallest. They
+  are drawn with the first level (a cloud's texel is pixels wide).
 
 ## 3. Why the earlier attempts stalled
 
