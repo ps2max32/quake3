@@ -812,6 +812,18 @@ PS2 renderer follows. The same place by `+devmap`, `+setviewpos`,
   engine adds the shine by the texture's alpha: about the same for these
   grey textures. Chunks without shine at their middle have no pass. q3dm12:
   81 and 94 for the PC's 83 and 102. `r_ps2debug 16777216` leaves it out.
+- **Where the EE's time goes now** (a profile of the timedemo on the PS2,
+  kernel 42, 18.9 ms a frame with the profiler): a fifth of it the EE
+  waits (the kernel's semaphore wait: for the field, and 1.15 s of the
+  run's 23 for pages: 104 read from the mapped files at 5.8 ms each, 77
+  written to the swap file); the renderer 35 % (6.6 ms a frame: the world's
+  cull 0.9 ms, a model's draw 0.55, the quads' areas for the fill limit
+  0.53, the list's end 0.43, placing images 0.4), the rest of the kernel
+  6 % (the TLB refills), collision 6.6 %, memcpy and memset 5.6 %, sound
+  2.5 %. The median frame is one field; the mean is 1.9 ms more by the
+  frames that take two (one in nine) and the waits for pages. Nothing in
+  it is large: the next gain is in the frames that take two fields, not in
+  a function.
 - Mirrors and portals (7 maps) are still black surfaces.
 - **The sky had no clouds**, one colour: its layers were drawn with the
   texture level chosen for a surface 16,000 units away, the smallest. They
