@@ -171,7 +171,8 @@ static u32 nment, first_ment;
    where its camera is (the same place: a mirror) */
 #define MAX_PORTAL 8
 static struct {
-	vec3_t org, cam;
+	vec3_t org, cam, axis[3];
+	int frame, oldframe, skin;
 } portals[MAX_PORTAL];
 static u32 nportal;
 static unsigned st_mirrors;
@@ -215,6 +216,8 @@ static void RP_AddRefEntityToScene(const refEntity_t *e) {
 	if (e->reType == RT_PORTALSURFACE && nportal < MAX_PORTAL) {
 		VectorCopy(e->origin, portals[nportal].org);
 		VectorCopy(e->oldorigin, portals[nportal].cam);
+		memcpy(portals[nportal].axis, e->axis, sizeof portals[nportal].axis);
+		portals[nportal].frame = e->frame, portals[nportal].oldframe = e->oldframe, portals[nportal].skin = e->skinNum;
 		nportal++;
 	}
 }
@@ -686,70 +689,150 @@ static int mirror_is(u32 mat) {
 	return sh && sh->sort == SORT_PORTAL;
 }
 
+/* the engine's portal transform (R_GetPortalOrientations, R_MirrorPoint):
+   a point of the view's world as seen through the surface from the camera */
+struct portal_or {
+	vec3_t sorg, saxis[3], corg, caxis[3];
+};
+static void portal_point(const struct portal_or *o, const float *v, float *out) {
+	vec3_t l;
+	VectorSubtract(v, o->sorg, l);
+	VectorCopy(o->corg, out);
+	for (int i = 0; i < 3; i++)
+		VectorMA(out, DotProduct(l, o->saxis[i]), o->caxis[i], out);
+}
+static void portal_vector(const struct portal_or *o, const float *v, float *out) {
+	VectorClear(out);
+	for (int i = 0; i < 3; i++)
+		VectorMA(out, DotProduct(v, o->saxis[i]), o->caxis[i], out);
+}
+
+/* the eye's distance to the nearest portal surface (alphaGen portal); far
+   (the haze opaque) when no view through a portal was drawn this scene */
+static int portal_drawn;
+float rp_portal_dist(const float *eye) {
+	float best = 1e9f;
+	if (!portal_drawn)
+		return best;
+	for (u32 i = 0; i < nportal; i++) {
+		float d = Distance(eye, portals[i].org);
+		best = d < best ? d : best;
+	}
+	return best;
+}
+
 static int mirror_view(const refdef_t *fd, const struct rp_cam *cam, float ys, float now, float *pl) {
-	const float *at = NULL;
+	int pick = -1;
 	float eye = 0;
 	u32 from = 0;
 	/* the first surface of a portal in view that the eye is before and that
-	   has a mirror's entity on it */
-	while (!at && nportal && rp_world_find(mirror_is, pl, &from)) {
+	   has a portal's entity on it (a mirror: its camera at its own place) */
+	while (pick < 0 && nportal && rp_world_find(mirror_is, pl, &from)) {
 		eye = DotProduct(pl, cam->org) - pl[3];
-		for (u32 i = 0; i < nportal && eye >= 1.0f; i++) {
+		for (u32 i = 0; i < nportal && eye >= 1.0f && pick < 0; i++) {
 			float d = DotProduct(pl, portals[i].org) - pl[3];
-			if (d > -64.0f && d < 64.0f && VectorCompare(portals[i].org, portals[i].cam))
-				at = portals[i].org;
+			if (d > -64.0f && d < 64.0f)
+				pick = (int)i;
 		}
 	}
-	if (!at)
+	if (pick < 0)
 		return 0;
-	struct rp_cam m = *cam;
-	for (int a = 0; a < 3; a++)
-		m.org[a] = cam->org[a] - 2.0f * eye * pl[a];
-	for (int i = 0; i < 3; i++) {
-		float s = DotProduct(pl, cam->axis[i]);
+	int mirror = VectorCompare(portals[pick].org, portals[pick].cam);
+	if (mirror ? !(r_ps2mirror->integer & 1) : !(r_ps2mirror->integer & 4))
+		return 0;
+	/* the opening: the surface's chunks' box on its plane, its corners */
+	float lo[3], hi[3], cn[4][3], mid[3] = {0, 0, 0};
+	rp_world_bounds(mirror_is, pl, lo, hi);
+	if (lo[0] > hi[0])
+		return 0;
+	int k = fabsf(pl[0]) > fabsf(pl[1]) ? (fabsf(pl[0]) > fabsf(pl[2]) ? 0 : 2) : (fabsf(pl[1]) > fabsf(pl[2]) ? 1 : 2);
+	int u = (k + 1) % 3, v = (k + 2) % 3;
+	for (int c = 0; c < 4; c++) {
+		cn[c][u] = (c == 1 || c == 2) ? hi[u] : lo[u];
+		cn[c][v] = c >= 2 ? hi[v] : lo[v];
+		cn[c][k] = (pl[3] - pl[u] * cn[c][u] - pl[v] * cn[c][v]) / pl[k];
 		for (int a = 0; a < 3; a++)
-			m.axis[i][a] = cam->axis[i][a] - 2.0f * s * pl[a];
+			mid[a] += cn[c][a] * 0.25f;
 	}
-	rp_view_rect(&m, (float)fd->x, (float)fd->y * ys, (float)fd->width, (float)fd->height * ys);
-	for (int a = 0; a < 3; a++)
-		rp_view.fr[0].n[a] = pl[a];
-	rp_view.fr[0].d = pl[3], rp_view.fr_len[0] = 1.0f;
-	/* what is seen through the mirror's opening only: the view's sides as
-	   planes from the mirrored eye through the edges of the mirror (its
-	   chunks' box, on its plane), so a small mirror costs as little */
-	{
-		float lo[3], hi[3];
-		rp_world_bounds(mirror_is, pl, lo, hi);
-		if (lo[0] <= hi[0]) {
-			/* the plane's two directions: the axes the box is wide along */
-			int k = fabsf(pl[0]) > fabsf(pl[1]) ? (fabsf(pl[0]) > fabsf(pl[2]) ? 0 : 2) : (fabsf(pl[1]) > fabsf(pl[2]) ? 1 : 2);
-			int u = (k + 1) % 3, v = (k + 2) % 3;
-			float cn[4][3], mid[3] = {0, 0, 0};
-			for (int c = 0; c < 4; c++) {
-				cn[c][u] = (c == 1 || c == 2) ? hi[u] : lo[u];
-				cn[c][v] = c >= 2 ? hi[v] : lo[v];
-				/* on the plane along its normal's main axis */
-				cn[c][k] = (pl[3] - pl[u] * cn[c][u] - pl[v] * cn[c][v]) / pl[k];
-				for (int a = 0; a < 3; a++)
-					mid[a] += cn[c][a] * 0.25f;
-			}
-			for (int c = 0; c < 4; c++) {
-				float e0[3], e1[3], n[3];
-				VectorSubtract(cn[c], m.org, e0);
-				VectorSubtract(cn[(c + 1) & 3], m.org, e1);
-				CrossProduct(e0, e1, n);
-				float d = DotProduct(n, m.org), len = VectorLength(n);
-				if (len <= 0)
-					continue;
-				if (DotProduct(n, mid) - d < 0)
-					VectorNegate(n, n), d = -d;
-				VectorCopy(n, rp_view.fr[1 + c].n);
-				rp_view.fr[1 + c].d = d, rp_view.fr_len[1 + c] = len;
-			}
+	/* a second scene is as much as the first where it covers the picture:
+	   only while the opening covers a quarter of the picture or less
+	   (r_ps2mirror 2: always) */
+	if (!(r_ps2mirror->integer & 2)) {
+		struct rp_vert q[4];
+		memset(q, 0, sizeof q);
+		for (int c = 0; c < 4; c++)
+			VectorCopy(cn[c], q[c].xyz);
+		if (rp_poly_area(q, 4) > 0.25f * (float)mx_gs.w * (float)mx_gs.h)
+			return 0;
+	}
+	struct portal_or o;
+	VectorCopy(pl, o.saxis[0]);
+	PerpendicularVector(o.saxis[1], o.saxis[0]);
+	CrossProduct(o.saxis[0], o.saxis[1], o.saxis[2]);
+	if (mirror) {
+		VectorScale(pl, pl[3], o.sorg);
+		VectorCopy(o.sorg, o.corg);
+		VectorNegate(o.saxis[0], o.caxis[0]);
+		VectorCopy(o.saxis[1], o.caxis[1]);
+		VectorCopy(o.saxis[2], o.caxis[2]);
+	} else {
+		float d = DotProduct(portals[pick].org, pl) - pl[3];
+		VectorMA(portals[pick].org, -d, o.saxis[0], o.sorg);
+		VectorCopy(portals[pick].cam, o.corg);
+		memcpy(o.caxis, portals[pick].axis, sizeof o.caxis);
+		VectorNegate(o.caxis[0], o.caxis[0]);
+		VectorNegate(o.caxis[1], o.caxis[1]);
+		float rot = 0;
+		int turn = 1;
+		if (portals[pick].oldframe)
+			rot = portals[pick].frame ? now * (float)portals[pick].frame
+			                          : (float)portals[pick].skin + sinf(now * 3.0f) * 4.0f;
+		else if (portals[pick].skin)
+			rot = (float)portals[pick].skin;
+		else
+			turn = 0;
+		if (turn) {
+			vec3_t t;
+			VectorCopy(o.caxis[1], t);
+			RotatePointAroundVector(o.caxis[1], o.caxis[0], t, rot);
+			CrossProduct(o.caxis[0], o.caxis[1], o.caxis[2]);
 		}
 	}
-	rp_view_mirror = 1;
-	float room[3] = {at[0] + pl[0] * 8.0f, at[1] + pl[1] * 8.0f, at[2] + pl[2] * 8.0f};
+	struct rp_cam m = *cam;
+	portal_point(&o, cam->org, m.org);
+	for (int i = 0; i < 3; i++)
+		portal_vector(&o, cam->axis[i], m.axis[i]);
+	rp_view_rect(&m, (float)fd->x, (float)fd->y * ys, (float)fd->width, (float)fd->height * ys);
+	/* what is before the camera's plane only (the engine's portalPlane) */
+	VectorNegate(o.caxis[0], rp_view.fr[0].n);
+	rp_view.fr[0].d = DotProduct(o.corg, rp_view.fr[0].n), rp_view.fr_len[0] = 1.0f;
+	/* what is seen through the opening only: planes from the camera's eye
+	   through the opening's edges, as the camera sees them */
+	{
+		float tc[4][3], tm[3];
+		for (int c = 0; c < 4; c++)
+			portal_point(&o, cn[c], tc[c]);
+		portal_point(&o, mid, tm);
+		for (int c = 0; c < 4; c++) {
+			float e0[3], e1[3], n[3];
+			VectorSubtract(tc[c], m.org, e0);
+			VectorSubtract(tc[(c + 1) & 3], m.org, e1);
+			CrossProduct(e0, e1, n);
+			float d = DotProduct(n, m.org), len = VectorLength(n);
+			if (len <= 0)
+				continue;
+			if (DotProduct(n, tm) - d < 0)
+				VectorNegate(n, n), d = -d;
+			VectorCopy(n, rp_view.fr[1 + c].n);
+			rp_view.fr[1 + c].d = d, rp_view.fr_len[1 + c] = len;
+		}
+	}
+	rp_view_mirror = mirror;
+	float room[3];
+	if (mirror)
+		VectorMA(portals[pick].org, 8.0f, pl, room);
+	else
+		VectorCopy(o.corg, room);
 	rp_world_pvs(room);
 	struct rp_world_stats ws;
 	memset(&ws, 0, sizeof ws);
@@ -778,6 +861,7 @@ static int mirror_view(const refdef_t *fd, const struct rp_cam *cam, float ys, f
 	rp_view_mirror = 0;
 	rp_world_pvs(NULL);
 	st_mirrors++;
+	portal_drawn = !mirror;
 	return 1;
 }
 
@@ -815,7 +899,8 @@ static void RP_RenderScene(const refdef_t *fd) {
 			rp_world_areas(fd->areamask);
 			rp_world_cull(&world_st);
 			float mpl[4];
-			if (r_ps2mirror->integer && mirror_view(fd, &cam, ys, now, mpl)) {
+			portal_drawn = 0;
+			if ((r_ps2mirror->integer & 5) && mirror_view(fd, &cam, ys, now, mpl)) {
 				rp_view_rect(&cam, (float)fd->x, (float)fd->y * ys, (float)fd->width, (float)fd->height * ys);
 				rp_world_cull(&world_st);
 				/* r_ps2debug 33554432: the mirror's view alone */
@@ -1546,9 +1631,13 @@ static void RP_BeginRegistration(glconfig_t *config) {
 	r_ps2fill = ri.Cvar_Get("r_ps2fill", "1", CVAR_ARCHIVE);
 	r_ps2marks = ri.Cvar_Get("r_ps2marks", "1", CVAR_ARCHIVE);
 	r_ps2dlight = ri.Cvar_Get("r_ps2dlight", "4", CVAR_ARCHIVE);
-	/* off: a mirror that fills much of the picture is two scenes a field, more
-	   than beam racing's passes have at 1080i (q3dm0's: half the passes left
-	   out, the game at a few frames a second) */
+	/* mirrors and portals: the scene once more through them, while their
+	   opening covers a quarter of the picture or less (a second scene is as
+	   much as the first where it covers the picture: a mirror filling it was
+	   half the passes left out at 1080i). Bits: 1 mirrors, 2 at any size, 4
+	   portals to a camera elsewhere. OFF: on the PS2 both hung the console
+	   (a reset needed) and beam racing's strips flickered heavily, also at a
+	   quarter of the picture; correct in PCSX2 only. */
 	r_ps2mirror = ri.Cvar_Get("r_ps2mirror", "0", CVAR_ARCHIVE);
 	r_ps2markrays = ri.Cvar_Get("r_ps2markrays", "64", CVAR_ARCHIVE);
 	r_ps2clean = ri.Cvar_Get("r_ps2clean", "1", CVAR_ARCHIVE);
@@ -1642,6 +1731,12 @@ static u32 world_passes(u32 mat, struct rp_state *pass, int *first) {
 		/* the colour: the vertex's as the map has it, or the stage's own */
 		u8 c[4];
 		rp_stage_colour(stg, scene_time, NULL, NULL, c);
+		/* alphaGen portal: the portal's haze by the eye's distance to it
+		   (none near by, opaque from its range on) */
+		if (stg->alphagen == A_PORTAL) {
+			float r = stg->awave.base > 0 ? stg->awave.base : 256.0f, d = rp_portal_dist(rp_view.org) / r;
+			c[3] = (u8)((d > 1.0f ? 1.0f : d) * 128.0f);
+		}
 		if (stg->env) {
 			/* tcGen environment: the texture's coordinates are the reflection of
 			   the eye in the surface, which the world's draw makes of each

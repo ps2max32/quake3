@@ -887,7 +887,16 @@ PS2 renderer follows. The same place by `+devmap`, `+setviewpos`,
   shorter, but the sounds copied to SPU RAM during play (23 that SPU RAM
   had let go) are then read from the file: 132 file pages for 105, 18.69 to
   18.73 ms for 18.58.
-- Portals to another place (7 maps) still show their script only.
+- **Portals to another place and mirrors: correct in PCSX2, NOT on the
+  PS2.** The view through a portal uses the engine's transform (surface to
+  camera, the camera's roll), the camera's PVS, the camera's plane as the
+  near plane, the opening's planes, and alphaGen portal (the haze by the
+  eye's distance; opaque when no view was drawn); a view only while the
+  opening covers a quarter of the picture. In PCSX2 q3dm0's teleporter
+  shows the room with the machine as on the PC. On the PS2 (the .11)
+  standing at q3dm0's portal and mirror hung the console three times (a
+  reset by hand) and the picture flickered heavily (beam racing's strips
+  late). `r_ps2mirror` is 0 by default; the cause is not found.
 - **The sky had no clouds**, one colour: its layers were drawn with the
   texture level chosen for a surface 16,000 units away, the smallest. They
   are drawn with the first level (a cloud's texel is pixels wide).

@@ -16,7 +16,8 @@ extern refimport_t ri;
 enum { RGB_IDENTITY, RGB_VERTEX, RGB_ENTITY, RGB_ONE_MINUS_ENTITY, RGB_WAVE, RGB_CONST, RGB_LIGHTING,
        RGB_IDENTITY_LIGHTING, RGB_EXACT_VERTEX };
 enum { A_IDENTITY, A_VERTEX, A_ENTITY, A_ONE_MINUS_ENTITY, A_WAVE, A_CONST,
-       A_SPECULAR /* lightingSpecular: the world draws its shine as a pass of its own (rp_world.c) */ };
+       A_SPECULAR /* lightingSpecular: the world draws its shine as a pass of its own (rp_world.c) */,
+       A_PORTAL /* portal [range]: by the eye's distance to the portal (the range in awave.base) */ };
 enum { WAVE_SIN, WAVE_TRIANGLE, WAVE_SQUARE, WAVE_SAWTOOTH, WAVE_INVSAWTOOTH, WAVE_NOISE };
 enum { TCM_SCROLL, TCM_SCALE, TCM_ROTATE, TCM_STRETCH, TCM_TRANSFORM, TCM_TURB };
 enum { DEFORM_NONE, DEFORM_AUTOSPRITE, DEFORM_AUTOSPRITE2, DEFORM_OTHER };

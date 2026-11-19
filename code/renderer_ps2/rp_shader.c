@@ -312,6 +312,9 @@ static void parse_stage(char **p, struct rp_shader *sh, struct rp_stage *st) {
 				float v = tokf(p) * 255.0f;
 				st->rgba[3] = (u8)(v < 0 ? 0 : v > 255 ? 255 : v);
 				st->alphagen = A_CONST;
+			} else if (!Q_stricmp(t, "portal")) {
+				st->alphagen = A_PORTAL;
+				st->awave.base = tokf(p);
 			} else
 				st->alphagen = !Q_stricmp(t, "vertex")           ? A_VERTEX
 				               : !Q_stricmp(t, "entity")         ? A_ENTITY
