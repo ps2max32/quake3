@@ -540,6 +540,87 @@ def sample_lightmap(page, s, t):
     return c
 
 
+def repack_lightmaps(bsp):
+    """The surfaces' rectangles of lightmap packed again, in the order of their place in the
+    map. q3map fills its pages in the BSP's order of surfaces, so the surfaces of one room
+    lie on most of the map's pages and a view draws with most of them: 16 KB of GS memory
+    each. Packed by place, a view's surfaces are on few pages."""
+    verts = bsp.verts.copy()
+    old = bsp.lightmaps
+    rects = {}  # (page, x, y, w, h) -> [surfaces]
+    for si, s in enumerate(bsp.surfaces):
+        if s[7] < 0 or s[4] <= 0 or s[2] not in (MST_PLANAR, MST_PATCH):
+            continue
+        lm = verts["lm"][s[3]:s[3] + s[4]] * 128.0 - 0.5
+        # the texels the bilinear filter reads for these coordinates
+        x0, y0 = (int(v) for v in np.clip(np.floor(lm.min(0)), 0, 127))
+        x1, y1 = (int(v) for v in np.clip(np.floor(lm.max(0)) + 1, 0, 127))
+        rects.setdefault((s[7], x0, y0, x1 - x0 + 1, y1 - y0 + 1), []).append(si)
+    if not rects:
+        return 0, 0
+
+    def key(r):  # the place of its first surface: a Z-order of cells of 256 units
+        s = bsp.surfaces[rects[r][0]]
+        c = verts["xyz"][s[3]:s[3] + s[4]].mean(0)
+        q = [int((v + 65536) // 256) for v in c]
+        z = 0
+        for b in range(10):
+            for a in range(3):
+                z |= (q[a] >> b & 1) << (3 * b + a)
+        return z
+
+    order = sorted(rects, key=key)
+    pages, place = [], {}
+    i, carry = 0, []
+    while i < len(order) or carry:
+        batch, area = carry, sum(r[3] * r[4] for r in carry)
+        carry = []
+        while i < len(order) and area + order[i][3] * order[i][4] <= 0.97 * 128 * 128:
+            batch.append(order[i])
+            area += order[i][3] * order[i][4]
+            i += 1
+        if not batch:
+            batch.append(order[i])
+            i += 1
+        used = np.zeros((128, 128), bool)
+        page = np.zeros((128, 128, 3), np.uint8)
+        x = y = shelf = 0
+        for r in sorted(batch, key=lambda r: -r[4]):
+            w, h = r[3], r[4]
+            if x + w > 128:
+                x, y, shelf = 0, y + shelf, 0
+            if y + h > 128:
+                carry.append(r)
+                continue
+            page[y:y + h, x:x + w] = old[r[0], r[2]:r[2] + h, r[1]:r[1] + w]
+            used[y:y + h, x:x + w] = True
+            place[r] = (len(pages), x, y)
+            x, shelf = x + w, max(shelf, h)
+        # the texels no surface has take a neighbour's: the filter reads a rectangle's
+        # neighbours at its edge, as it read another surface's before
+        for _ in range(2):
+            for dy, dx in ((0, 1), (0, -1), (1, 0), (-1, 0)):
+                src_used = np.roll(used, (dy, dx), (0, 1))
+                src = np.roll(page, (dy, dx), (0, 1))
+                take = ~used & src_used
+                page[take] = src[take]
+                used = used | take
+        pages.append(page)
+    done = set()
+    surfaces = list(bsp.surfaces)
+    for r, ss in rects.items():
+        p, x, y = place[r]
+        for si in ss:
+            s = surfaces[si]
+            if s[3] not in done:
+                done.add(s[3])
+                verts["lm"][s[3]:s[3] + s[4]] += np.array([(x - r[1]) / 128.0, (y - r[2]) / 128.0], np.float32)
+            surfaces[si] = s[:7] + (p, x, y, r[3], r[4]) + s[12:]
+    was = len(old)
+    bsp.verts, bsp.surfaces, bsp.lightmaps = verts, surfaces, np.array(pages)
+    return was, len(pages)
+
+
 # ---- the map -----------------------------------------------------------------------------------
 
 def build(args):
@@ -548,6 +629,9 @@ def build(args):
     if data is None:
         raise SystemExit(f"maps/{args.map}.bsp is in no pak of {args.basedir}")
     bsp = Bsp(data)
+    lm_was = len(bsp.lightmaps)
+    if not args.keep_lightmaps and lm_was:
+        repack_lightmaps(bsp)
     scripts = parse_scripts(paks)
     texpak = zipfile.ZipFile(args.tex) if args.tex and os.path.exists(args.tex) else None
     texnames = {i.filename.lower(): i for i in texpak.infolist()} if texpak else {}
@@ -939,6 +1023,14 @@ def build(args):
             gbit = np.unpackbits(vis, axis=1, bitorder="little")[:, :nworld].astype(bool)
             gof = np.array([next(k for k, g in enumerate(grecs) if g["first"] <= i < g["first"] + g["n"]) for i in wchunks])
             by_group = gbit[:, gof]
+            lmof = np.array([recs[i]["lm"] for i in wchunks])
+            if len(bsp.lightmaps):
+                onehot = np.zeros((len(wchunks), len(bsp.lightmaps)), np.float32)
+                onehot[np.arange(len(wchunks))[lmof >= 0], lmof[lmof >= 0]] = 1
+                pg = ((by_chunk.astype(np.float32) @ onehot) > 0).sum(1)
+                pg = pg[pg > 0]
+                print(f"  lightmap pages: {len(bsp.lightmaps)} (the BSP's {lm_was}); seen from a cluster: "
+                      f"{pg.mean():.1f} on average, {pg.max()} at most")
             wv = nv[wchunks].astype(np.float64)
             a, b = by_group @ wv, by_chunk @ wv
             use = a > 0
@@ -958,6 +1050,7 @@ def main():
     ap.add_argument("--extent", type=float, default=768.0, help="a chunk's triangles lie within this, unless few")
     ap.add_argument("--least", type=int, default=6, help="a chunk of this many triangles is not cut for its extent")
     ap.add_argument("--stats", action="store_true")
+    ap.add_argument("--keep-lightmaps", action="store_true", help="the BSP's lightmap pages as they are, not packed by place")
     a = ap.parse_args()
     if a.tex is None:
         a.tex = os.path.join(a.basedir, "ps2tex.pk3")
