@@ -64,6 +64,10 @@ static void screen_init(void) {
 	/* r_ps2ownz 1 (the default): a Z strip of the passes' own (720 KB of GS memory less for
 	   the textures): a pass has the time the beam is outside its strip */
 	mx_hires_own_z(ri.Cvar_Get("r_ps2ownz", "1", CVAR_LATCH)->integer);
+	/* r_ps2ahead: the frames that may wait to be shown. 1: what the game draws
+	   is on the screen at the next field (2: two fields later at 60 frames a
+	   second, and a frame that takes long is covered by one that waited) */
+	mx_hires_ahead((u32)ri.Cvar_Get("r_ps2ahead", "1", CVAR_ARCHIVE)->integer);
 	if (mx_hires_init(&mx_video_1080i, 1920, 540, MX_GS_PSM_CT16S, rec, sizeof rec, (void *)0x70002000, 0x2000) < 0)
 		ri.Error(ERR_FATAL, "ps2: no 1080i, or its buffer does not fit");
 	u32 sbytes = mx_hires_strip_records(srec, sizeof srec);
