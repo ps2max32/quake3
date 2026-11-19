@@ -47,6 +47,7 @@ struct rp_tex_stats {
 	u32 full;               /* not placed: no room in GS memory */
 	u32 coarse;             /* placed without their finest levels: no room for all of them */
 	u32 tight;              /* frames whose images did not fit GS memory at their full size */
+	u32 want_max, want_sum; /* a frame's images at their full size: the most (blocks), the sum (KB) */
 	u32 later;              /* not placed in a frame that had sent its share of images */
 	u32 frames, used_kb;    /* frames counted; GS memory of the images they drew with, summed (KB) */
 	u32 used_max_kb;        /* the most a frame drew with */

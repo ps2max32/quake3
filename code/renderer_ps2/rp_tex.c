@@ -82,16 +82,17 @@ void rp_tex_frame(void) {
 		struct mx_vcache_stats vs;
 		mx_vcache_stats(&vs);
 		u32 cap = vs.pages * 32;
-		/* tight: the frame's images at full size are nearly all there is, or
-		   one found no room; until the frames have fitted well for two seconds */
-		static u32 full_was;
-		if (want_blocks * 100 > cap * 97 || rp_tex_stats.full != full_was)
+		/* tight: the frame's images at full size are 90 % of what there is;
+		   until the frames have been under 80 % for a second */
+		if (want_blocks * 100 > cap * 90)
 			tight = 1, calm = 0;
-		else if (want_blocks * 100 > cap * 88)
+		else if (want_blocks * 100 > cap * 80)
 			calm = 0;
-		else if (tight && ++calm > 120)
+		else if (tight && ++calm > 60)
 			tight = 0;
-		full_was = rp_tex_stats.full;
+		if (want_blocks > rp_tex_stats.want_max)
+			rp_tex_stats.want_max = want_blocks;
+		rp_tex_stats.want_sum += want_blocks / 4;
 		rp_tex_stats.tight += tight;
 		want_blocks = 0;
 	}

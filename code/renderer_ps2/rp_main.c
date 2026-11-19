@@ -799,10 +799,10 @@ void ps2_ren_report(void) {
 	if (st_frames)
 		Com_Printf("ps2: renderer: a frame: %u runs, %u draws; over the strips %u vertices in %u batches, %u set-ups, %u "
 		           "quadwords of records, %u of chains; %u draws left out (no memory); textures sent %u (%u KB), %u "
-		           "found no room (%u placed without their finest levels; %u frames with more images than fit), %u waited a frame\n", rp_list_stats.runs / st_frames, rp_list_stats.draws / st_frames,
+		           "found no room (%u placed without their finest levels; %u frames with more images than fit: at full size %u KB a frame, %u at most), %u waited a frame\n", rp_list_stats.runs / st_frames, rp_list_stats.draws / st_frames,
 		           rp_list_stats.sent / st_frames, rp_list_stats.batches / st_frames, rp_list_stats.setups / st_frames,
 		           rp_list_stats.qw / st_frames, rp_list_stats.dyn_qw / st_frames, rp_list_stats.lost,
-		           rp_tex_stats.uploads, rp_tex_stats.upload_kb, rp_tex_stats.full, rp_tex_stats.coarse, rp_tex_stats.tight, rp_tex_stats.later);
+		           rp_tex_stats.uploads, rp_tex_stats.upload_kb, rp_tex_stats.full, rp_tex_stats.coarse, rp_tex_stats.tight, rp_tex_stats.frames ? rp_tex_stats.want_sum / rp_tex_stats.frames : 0, rp_tex_stats.want_max / 4, rp_tex_stats.later);
 	if (st_frames) {
 		static const char *const prog[4] = {"the world's", "GS packets", "the models'", "the stages'"};
 		for (int k = 0; k < 4; k++)
