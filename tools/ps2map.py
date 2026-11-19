@@ -43,6 +43,9 @@ File layout (little-endian; "off" are bytes from the file's start):
     u32 ngroup, off_group
     u32 off_cvis, cvis_bytes
     u32 off_lmdim
+    u32 nfog, off_fog (version 11: the fog volumes, 64 bytes each: f32 colour[3], depth at
+        which it is opaque; f32 plane[4] of its top (n . p - d > 0 inside), u32 1 when it has
+        one; f32 mins[3], maxs[3]; a chunk's fog is its number here, 255: none)
   material (96 bytes): char name[64]; s16 tex (-1: none); u16 flags (MAT_*);
     u8 blend (BLEND_*), alpha (ALPHA_*), cull (CULL_*), pad; u32 surf, cont
     (the BSP's flags); f32 texels (of its texture's first level a world
@@ -1051,14 +1054,44 @@ def build(args):
     for pg in bsp.lightmaps:
         lmdim += struct.pack("<HHI", pg.shape[1], pg.shape[0], len(lmdata))
         lmdata += pad16((128 + np.minimum(pg.max(axis=2), 127)).astype(np.uint8).tobytes())
+    # the fog volumes, in the BSP's order (a chunk's fog is its number here): the colour and
+    # the depth at which it is opaque (the shader's fogparms), its top as a plane (a point is
+    # in the fog where n . p - d > 0; none: the whole volume), its box
+    fogs = b""
+    fl, bbr, bsd = bsp.l["fogs"], np.frombuffer(bsp.l["brushes"], "<i4").reshape(-1, 3), \
+        np.frombuffer(bsp.l["brushsides"], "<i4").reshape(-1, 2)
+    for i in range(0, len(fl), 72):
+        fname = fl[i:i + 64].split(b"\0")[0].decode("latin-1").lower().replace("\\", "/")
+        brush, vis_side = struct.unpack_from("<ii", fl, i + 64)
+        first = int(bbr[brush][0])
+        pl = [bsp.planes[int(bsd[first + k][0])] for k in range(6)]
+        mins, maxs = (-pl[0][3], -pl[2][3], -pl[4][3]), (pl[1][3], pl[3][3], pl[5][3])
+        colour, depth = [1.0, 1.0, 1.0], 300.0
+        for l in (scripts.get(fname) or {"lines": []})["lines"]:
+            if l and l[0].lower() == "fogparms":
+                nums = []
+                for t in l[1:]:
+                    for u in t.replace("(", " ").replace(")", " ").split():
+                        try:
+                            nums.append(float(u))
+                        except ValueError:
+                            pass
+                if len(nums) >= 4:
+                    colour, depth = nums[:3], max(nums[3], 1.0)
+        if vis_side < 0:
+            plane, surface = (0.0, 0.0, 0.0, 0.0), 0
+        else:
+            sp = bsp.planes[int(bsd[first + vis_side][0])]
+            plane, surface = (-sp[0], -sp[1], -sp[2], -sp[3]), 1
+        fogs += struct.pack("<3ff4fI3f3f4x", *colour, depth, *plane, surface, *mins, *maxs)
     planes = bsp.planes.astype("<f4").tobytes()
     nodes = np.ascontiguousarray(bsp.nodes[:, 0:3]).astype("<i4").tobytes()
     leafs = np.ascontiguousarray(bsp.leafs[:, 0:2]).astype("<i2").tobytes()
-    order = ["mat", "tex", "chunk", "group", "model", "lightmap", "lmdim", "vis", "plane", "node", "leaf", "cvis", "data"]
+    order = ["mat", "tex", "chunk", "group", "model", "lightmap", "lmdim", "vis", "plane", "node", "leaf", "cvis", "fog", "data"]
     size = {"mat": len(sec["mat"]), "tex": 72 * len(textures), "chunk": 48 * len(recs), "group": 32 * len(grecs),
             "model": 32 * len(models),
             "lightmap": len(lmdata), "lmdim": len(lmdim), "vis": vis.size, "plane": len(planes), "node": len(nodes), "leaf": len(leafs),
-            "cvis": cvis.size, "data": len(blob)}
+            "cvis": cvis.size, "fog": len(fogs), "data": len(blob)}
     off, o = {}, 128
     for k in order:
         off[k] = o
@@ -1076,11 +1109,12 @@ def build(args):
     sec["data"] = bytes(blob)
     sec["cvis"] = cvis.tobytes()
     sec["lmdim"] = lmdim
-    head = struct.pack("<4sI7I3I11IfIIIIII", b"PMAP", 10, len(mats), len(textures), len(recs), len(models),
+    sec["fog"] = fogs
+    head = struct.pack("<4sI7I3I11IfIIIIIIII", b"PMAP", 11, len(mats), len(textures), len(recs), len(models),
                        len(bsp.lightmaps), ncl, vis_bytes, len(bsp.planes), len(bsp.nodes), len(bsp.leafs),
                        off["mat"], off["tex"], off["chunk"], off["model"], off["lightmap"], off["vis"], off["plane"],
                        off["node"], off["leaf"], off["data"], total, 1.0 / q, BATCH, len(grecs), off["group"],
-                       off["cvis"], cvis_bytes, off["lmdim"])
+                       off["cvis"], cvis_bytes, off["lmdim"], len(fogs) // 64, off["fog"])
     with open(args.out, "wb") as f:
         f.write(head + b"\0" * (128 - len(head)))
         for k in order:

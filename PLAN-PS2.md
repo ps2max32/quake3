@@ -682,6 +682,16 @@ PS2 renderer follows. The same place by `+devmap`, `+setviewpos`,
     MXOS's window for mapped files is 64 MiB: the whole file of 256 levels
     does not fit beside the models' (asked of MXOS: the program's
     `map_size`, 128 MiB).
+- **Fog** (15 of the maps have fog volumes: pits, mostly). The map file
+  (version 11) has the volumes: colour, the depth at which the fog is
+  opaque, the plane of its top. A volume's surfaces are drawn once more
+  with the fog's colour over them, as the engine does: a texture of the
+  fog's strength (the root of depth / opaque depth, times the share of the
+  eye's ray that is in the fog) with coordinates from the vertex's
+  position, by the program that lays the dynamic lights' spot on the world
+  (`q3wd`): no new program. The share is the engine's t / (t - eye) made
+  straight, since the program's coordinates are linear in the position.
+  What stands in the fog (models, sprites) is not fogged yet.
 - **The sky had no clouds**, one colour: its layers were drawn with the
   texture level chosen for a surface 16,000 units away, the smallest. They
   are drawn with the first level (a cloud's texel is pixels wide).

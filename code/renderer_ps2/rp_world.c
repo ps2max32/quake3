@@ -11,7 +11,7 @@
    A group across the near plane or the guard band is drawn with the programs
    that cut such triangles (q3w2c, q3w1c, tools/ps2vu.py).
 
-   Not yet: fog and doors' areas (what is behind a closed door is drawn). */
+   Fog: rp_world_fog (the world's surfaces; not yet what stands in it). */
 
 #include <mx/frame.h>
 #include <mx/gif.h>
@@ -41,6 +41,17 @@ struct pm_head {
 	u32 ngroup, off_group;
 	u32 off_cvis, cvis_bytes;
 	u32 off_lmdim;
+	u32 nfog, off_fog;
+};
+/* a fog volume: its colour (0 .. 1), the depth of it that is opaque, its top
+   as a plane (inside where n . p - d > 0; surface 0: none, all of the
+   volume), its box */
+struct pm_fog {
+	float colour[3], depth;
+	float plane[4];
+	u32 surface;
+	float mins[3], maxs[3];
+	u32 pad;
 };
 struct pm_mat {
 	char name[64];
@@ -203,7 +214,7 @@ void rp_world_free(void) {
 int rp_world_load(const void *p, u32 size) {
 	const struct pm_head *h = p;
 	rp_world_free();
-	if (size < sizeof *h || h->magic != PM_MAGIC || h->version != 10 || h->size > size || h->batch != Q3VU_BATCH)
+	if (size < sizeof *h || h->magic != PM_MAGIC || h->version != 11 || h->size > size || h->batch != Q3VU_BATCH)
 		return -1;
 	/* the chunks stay in memory: the DMAC reads them every frame. The textures
 	   are locked when they are sent to GS memory (rp_tex.c); the rest only
@@ -822,6 +833,107 @@ void rp_world_dlights(const struct rp_dlight *lights, unsigned nl, unsigned max)
 			dl_stats.runs++, dl_stats.chunks += cnt[w];
 		}
 		dl_stats.lights++;
+	}
+}
+
+/* ---- fog. A fog volume's surfaces (a chunk's fog: tools/ps2map.py) are
+   drawn once more with the fog's colour over them, as much of it as the
+   ray from the eye passes through fog: the engine's way (a texture of the
+   fog's strength by depth and by the share of the ray that is in the fog,
+   its coordinates from the vertex), by the program that lays a texture on
+   the world by position (q3wd, the dynamic lights'). The strength is the
+   root of depth / the fog's opaque depth, times the share; the share is the
+   engine's t / (t - eye) made straight (the program's coordinates are
+   linear in the position): t / (128 - eye) from above the fog, 1 within. ---- */
+
+#define FOG_W 64
+#define FOG_H 32
+static u8 fog_tex[FOG_W * FOG_H] MX_FAST_BSS MX_ALIGNED(64);
+static u32 fog_clut[256] MX_FAST_BSS MX_ALIGNED(64);
+static struct rp_image *fog_img;
+
+static struct rp_image *fog_image(void) {
+	if (fog_img)
+		return fog_img;
+	for (int y = 0; y < FOG_H; y++)
+		for (int x = 0; x < FOG_W; x++) {
+			/* the first column and row: none (the coordinates are clamped there) */
+			float d = x ? ((float)x + 0.5f) / FOG_W : 0, share = y ? ((float)y + 0.5f) / FOG_H : 0;
+			float a = sqrtf(d * share);
+			fog_tex[y * FOG_W + x] = (u8)(a >= 1.0f ? 255 : a * 255.0f);
+		}
+	for (u32 i = 0; i < 256; i++)
+		fog_clut[(i & ~0x18u) | (i & 8) << 1 | (i & 16) >> 1] = (i + 1) >> 1 << 24 | 0x808080;
+	mx_dcache_writeback(fog_tex, sizeof fog_tex);
+	mx_dcache_writeback(fog_clut, sizeof fog_clut);
+	static const u8 *level;
+	level = fog_tex;
+	fog_img = rp_image_static("*fog", MX_GS_PSM_T8, FOG_W, FOG_H, 1, 1, &level, fog_clut);
+	return fog_img;
+}
+
+void rp_world_fog(void) {
+	static u16 list[256];
+	const struct pm_head *h = pm.h;
+	const struct rp_view *v = &rp_view;
+	if (!h || !h->nfog || !nitem)
+		return;
+	const struct pm_fog *fogs = (const void *)(pm.base + h->off_fog);
+	float ps = h->pos_scale;
+	for (u32 f = 0; f < h->nfog && f < 255; f++) {
+		u32 cnt = 0;
+		for (u32 r = 0; r < nwrun; r++) {
+			if (wrun[r].blended)
+				continue;
+			for (u32 i = wrun[r].first; i < (u32)wrun[r].first + wrun[r].n && cnt < 256; i++)
+				if (pm.chunk[item[i].chunk].fog == f)
+					list[cnt++] = (u16)i;
+		}
+		if (!cnt)
+			continue;
+		const struct pm_fog *fg = &fogs[f];
+		struct rp_image *im = fog_image();
+		const struct mx_tex *t = im ? rp_image_place(im) : 0;
+		if (!t)
+			return;
+		if (!wmatrix)
+			wmatrix = rp_matrix(ps, 0, 0);
+		struct rp_state s;
+		memset(&s, 0, sizeof s);
+		s.tex = *t, s.tex_ok = 1, s.tcc = 1;
+		s.blend = RP_BLEND_ALPHA, s.z = RP_Z_TEST, s.prog = RP_PROG_DLIGHT, s.clamp = 1, s.nomip = 1;
+		s.texels = 1.0f;
+		float (*m)[4] = s.model;
+		/* s: the depth before the eye by the fog's opaque depth */
+		float id = 1.0f / (fg->depth > 1.0f ? fg->depth : 1.0f);
+		for (int a = 0; a < 3; a++)
+			m[a][0] = ps * v->F[a] * id;
+		m[3][0] = -(v->org[0] * v->F[0] + v->org[1] * v->F[1] + v->org[2] * v->F[2]) * id;
+		/* t: the share of the ray in the fog, by how far the vertex is under the
+		   fog's top */
+		if (!fg->surface)
+			m[3][1] = 1.0f;
+		else {
+			float eye = v->org[0] * fg->plane[0] + v->org[1] * fg->plane[1] + v->org[2] * fg->plane[2] - fg->plane[3];
+			float k = eye < 0 ? 1.0f / (128.0f - eye) : 1.0f / (eye + 16.0f), t0 = eye < 0 ? 0.0f : 1.0f;
+			for (int a = 0; a < 3; a++)
+				m[a][1] = ps * fg->plane[a] * k;
+			m[3][1] = t0 - fg->plane[3] * k;
+		}
+		/* the colour: the fog's as it is (the texture's is 0x80), its strength the
+		   texture's alpha */
+		for (int a = 0; a < 3; a++) {
+			float c = fg->colour[a] * 255.0f;
+			m[4][a] = c > 255.0f ? 255.0f : c;
+		}
+		m[4][3] = 128.0f;
+		if (rp_run(wmatrix, &s) < 0)
+			return;
+		for (u32 k = 0; k < cnt; k++) {
+			const struct item *it = &item[list[k]];
+			const struct pm_chunk *ch = &pm.chunk[it->chunk];
+			rp_draw(pm.base + ch->off_data, it->mask, it->clip, ch->nverts, ch->nbatch);
+		}
 	}
 }
 
