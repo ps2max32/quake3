@@ -89,7 +89,7 @@ struct pm_leaf {
 enum { MAT_LIGHTMAP = 1, MAT_SKY = 2, MAT_NODRAW = 4, MAT_SCRIPT = 32 }; /* rp_world.h's RP_MAT_* */
 enum { BLEND_NONE, BLEND_ADD, BLEND_ALPHA, BLEND_FILTER, BLEND_OTHER };
 /* a material's alpha test: rp_list.h's RP_ALPHA_* */
-enum { CH_LIGHTMAP = 1 };
+enum { CH_LIGHTMAP = 1, CH_SPRITE = 2 /* no vertices: quads that turn to the eye */ };
 
 static struct {
 	const u8 *base;
@@ -197,7 +197,7 @@ void rp_world_free(void) {
 int rp_world_load(const void *p, u32 size) {
 	const struct pm_head *h = p;
 	rp_world_free();
-	if (size < sizeof *h || h->magic != PM_MAGIC || h->version != 9 || h->size > size || h->batch != Q3VU_BATCH)
+	if (size < sizeof *h || h->magic != PM_MAGIC || h->version != 10 || h->size > size || h->batch != Q3VU_BATCH)
 		return -1;
 	/* the chunks stay in memory: the DMAC reads them every frame. The textures
 	   are locked when they are sent to GS memory (rp_tex.c); the rest only
@@ -257,6 +257,20 @@ static struct {
 } wrun[MAX_WRUN];
 static u32 nitem, nwrun;
 static const void *wmatrix;
+/* the chunks of quads that turn to the eye (lamps' glows) a view sees: their
+   records and material, for the scene's quads */
+#define MAX_WSPRITE 128
+static struct {
+	const float *rec;
+	u16 n, mat;
+} wsprite[MAX_WSPRITE];
+static u32 nwsprite;
+u32 rp_world_sprites(u32 i, const float **rec, u32 *mat) {
+	if (i >= nwsprite)
+		return 0;
+	*rec = wsprite[i].rec, *mat = wsprite[i].mat;
+	return wsprite[i].n;
+}
 static const u8 *areamask; /* rp_world_areas */
 void rp_world_areas(const u8 *mask) { areamask = mask; }
 static u32 sky_seen; /* the strips the view sees sky surfaces in */
@@ -388,6 +402,7 @@ void rp_world_cull(struct rp_world_stats *st) {
 	nitem = nwrun = 0;
 	wmatrix = 0;
 	sky_seen = sky_full = 0;
+	nwsprite = 0;
 	if (!h || !h->nmodel)
 		return;
 	const float *org = v->org;
@@ -465,6 +480,18 @@ void rp_world_cull(struct rp_world_stats *st) {
 					/* behind a closed door: the game says which areas are shut off */
 					if (ch->area != 255 && areamask && (areamask[ch->area >> 3] >> (ch->area & 7) & 1))
 						continue;
+					/* quads that turn to the eye: the scene's, not the list's */
+					if (ch->flags & CH_SPRITE) {
+						int gone = 0;
+						for (int p = 0; p < 5 && !gone; p++)
+							gone = sel_far(&fr[p], ch->mins) < 0;
+						if (!gone && nwsprite < MAX_WSPRITE) {
+							wsprite[nwsprite].rec = (const float *)(pm.base + ch->off_data);
+							wsprite[nwsprite].n = ch->qwc, wsprite[nwsprite].mat = ch->mat;
+							nwsprite++;
+						}
+						continue;
+					}
 					/* all of it facing away: N . (eye - P) <= -sin |eye - P|
 					   for every P of its box (the widest normal still faces
 					   away) */

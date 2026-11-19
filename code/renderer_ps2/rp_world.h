@@ -52,6 +52,13 @@ int rp_world_sky_rect(u32 strip, float *r);
    closed door, its chunks are not drawn); 0: none. */
 void rp_world_areas(const u8 *mask);
 void rp_world_cull(struct rp_world_stats *st);
+/* After rp_world_cull: the view's i-th chunk of quads that turn to the eye
+   (deformVertexes autosprite, autosprite2: lamps' glows), 0 when there is
+   none: its material and its records, 16 floats each: the centre; the
+   radius (autosprite: a square facing the eye) or 0; the half of the line it
+   turns about and its half width (autosprite2); its four corners' texture
+   coordinates. Returns the records. */
+u32 rp_world_sprites(u32 i, const float **rec, u32 *mat);
 void rp_world_add(int blended);
 /* The map's brush model n ("*n": a door, a platform) at origin, turned by
    axis: its surfaces that write depth (blended 0) or the blended ones, into

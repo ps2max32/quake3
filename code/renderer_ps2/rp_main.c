@@ -214,7 +214,7 @@ struct quad {
 	const struct rp_vert *v;
 	u32 n;
 };
-#define MAX_BEAM_QUAD 256
+#define MAX_BEAM_QUAD 512
 #define MAX_QUAD (MAX_SPRITE + MAX_POLY + MAX_BEAM_QUAD)
 static struct quad quad[MAX_QUAD];
 static u16 quad_order[MAX_QUAD];
@@ -321,7 +321,13 @@ static void scene_beam(u32 *n, const refdef_t *fd, const refEntity_t *e, const s
 	}
 }
 
-static u32 scene_quads(const refdef_t *fd) {
+/* the shaders of the map's materials that are scripts (RP_LoadWorld) */
+#define MAX_WMAT 1024
+static qhandle_t wshader[MAX_WMAT];
+
+/* a scene's quads; world: with the world's quads that turn to the eye, of the
+   view's cull */
+static u32 scene_quads(const refdef_t *fd, int world) {
 	u32 n = 0;
 	float now = fd->time * 0.001f;
 	nbeam = 0;
@@ -367,6 +373,49 @@ static u32 scene_quads(const refdef_t *fd) {
 		q->shader = e->customShader, q->sort = sh->sort, q->time = now - e->shaderTime;
 		memcpy(q->ent, e->shaderRGBA, 4);
 		q->v = v, q->n = 4;
+	}
+	/* the world's quads that turn to the eye (lamps' glows) */
+	if (world) {
+		const float *rec;
+		u32 mat, cnt;
+		for (u32 i = 0; (cnt = rp_world_sprites(i, &rec, &mat)) != 0; i++) {
+			qhandle_t hs = mat < MAX_WMAT ? wshader[mat] : 0;
+			struct rp_shader *sh = rp_shader_get(hs);
+			if (!sh || !sh->nstage)
+				continue;
+			for (u32 k = 0; k < cnt && nbeam < MAX_BEAM_QUAD && n < MAX_QUAD; k++, rec += 16) {
+				struct rp_vert *v = beam_vert[nbeam++];
+				float a[3], b[3];
+				if (rec[3] > 0) {
+					/* a square facing the eye */
+					VectorScale(fd->viewaxis[1], rec[3], a);
+					VectorScale(fd->viewaxis[2], rec[3], b);
+				} else {
+					/* turned about its line: its width across the line and the eye's ray */
+					float ray[3];
+					VectorSubtract(rec, fd->vieworg, ray);
+					VectorCopy(rec + 4, a);
+					CrossProduct(a, ray, b);
+					if (VectorNormalize(b) == 0)
+						VectorCopy(fd->viewaxis[1], b);
+					VectorScale(b, rec[7], b);
+				}
+				/* the corners: (a square) left and up as a sprite's; (a line) its first
+				   end to either side, then its second end, the same sides round */
+				static const float sq[4][2] = {{1, 1}, {-1, 1}, {-1, -1}, {1, -1}}, ln[4][2] = {{-1, 1}, {-1, -1}, {1, -1}, {1, 1}};
+				const float (*sg)[2] = rec[3] > 0 ? sq : ln;
+				for (int c = 0; c < 4; c++) {
+					for (int x = 0; x < 3; x++)
+						v[c].xyz[x] = rec[x] + sg[c][0] * a[x] + sg[c][1] * b[x];
+					v[c].st[0] = rec[8 + 2 * c], v[c].st[1] = rec[9 + 2 * c];
+					v[c].rgba[0] = v[c].rgba[1] = v[c].rgba[2] = v[c].rgba[3] = 255;
+				}
+				struct quad *q = &quad[n++];
+				q->shader = hs, q->sort = sh->sort, q->time = now;
+				q->ent[0] = q->ent[1] = q->ent[2] = q->ent[3] = 255;
+				q->v = v, q->n = 4;
+			}
+		}
 	}
 	/* by sort, the order kept (few, and nearly in order: insertion) */
 	for (u32 i = 0; i < n; i++) {
@@ -446,11 +495,8 @@ static void RP_RenderScene(const refdef_t *fd) {
 		/* the game's 1080 lines are a field's 540 */
 		float ys = (float)mx_gs.h / 1080.0f;
 		rp_view_rect(&cam, (float)fd->x, (float)fd->y * ys, (float)fd->width, (float)fd->height * ys);
-		u32 nq = scene_quads(fd), decals = 0;
 		float now = fd->time * 0.001f;
 		scene_time = now;
-		while (decals < nq && quad[quad_order[decals]].sort <= SORT_DECAL)
-			decals++;
 		rp_scene_world = world;
 		int skip = r_ps2draw->integer;
 		int draw_world = world && world_ok && !(skip & 2);
@@ -462,6 +508,10 @@ static void RP_RenderScene(const refdef_t *fd) {
 			ACC(seen), ACC(groups), ACC(drawn), ACC(clip), ACC(back), ACC(verts);
 #undef ACC
 		}
+		/* the scene's quads (after the cull: the world's own are of this view) */
+		u32 nq = scene_quads(fd, draw_world), decals = 0;
+		while (decals < nq && quad[quad_order[decals]].sort <= SORT_DECAL)
+			decals++;
 		/* a scene of its own on the screen (the HUD's models): no depth is there yet */
 		if (!world)
 			rp_zclear((float)fd->x, (float)fd->y * ys, (float)(fd->x + fd->width), (float)(fd->y + fd->height) * ys);
@@ -874,8 +924,6 @@ static qhandle_t RP_RegisterShaderNoMip(const char *name) { return rp_shader_reg
 /* maps/<name>.bsp: its world is maps/<name>.pmap, a file beside the paks, mapped
    and locked in memory (the DMAC reads its chunks and textures where they lie) */
 /* the shaders of the map's materials that are scripts, and the scene's time */
-#define MAX_WMAT 1024
-static qhandle_t wshader[MAX_WMAT];
 
 /* A material's passes at this frame (rp_world.h): a lightmapped one's first
    stage is the map's own pass (texture and lightmap); the others, and every

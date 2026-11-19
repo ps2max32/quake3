@@ -33,7 +33,7 @@ File layout (little-endian; "off" are bytes from the file's start):
 
   head (128 bytes):
     u32 magic "PMAP", version 9 (5: a texture with alpha of its own had no lightmap; 6: no cvis; 7: no areas;
-      8: lightmap pages of 128 x 128 all)
+      8: lightmap pages of 128 x 128 all; 9: no chunks of quads that turn to the eye)
     u32 nmat, ntex, nchunk, nmodel, nlightmap, ncluster, vis_bytes
     u32 nplane, nnode, nleaf
     u32 off_mat, off_tex, off_chunk, off_model, off_lightmap, off_vis,
@@ -124,6 +124,7 @@ BLEND_NONE, BLEND_ADD, BLEND_ALPHA, BLEND_FILTER, BLEND_OTHER = range(5)
 ALPHA_NONE, ALPHA_GT0, ALPHA_LT128, ALPHA_GE128 = range(4)
 CULL_FRONT, CULL_BACK, CULL_NONE = range(3)
 CH_LIGHTMAP = 1
+CH_SPRITE = 2  # no vertices: off_data is qwc records of quads that turn to the eye (64 bytes each)
 SURF_SKY, SURF_NODRAW = 0x4, 0x80
 MST_PLANAR, MST_PATCH, MST_TRIANGLES, MST_FLARE = 1, 2, 3, 4
 
@@ -699,8 +700,13 @@ def build(args):
                 # texture's.)
                 flags = (flags & ~MAT_LIGHTMAP) | MAT_VERTEX
         mat_index[key] = len(mats)
+        # deformVertexes autosprite, autosprite2: quads that turn to the eye
+        sprite = 0
+        for l in (scripts.get(name) or {}).get("lines", []):
+            if l[0].lower() == "deformvertexes" and len(l) > 1 and l[1].lower() in ("autosprite", "autosprite2"):
+                sprite = 1 if l[1].lower() == "autosprite" else 2
         mats.append(dict(name=name, tex=ti, texname=tex, flags=flags, blend=blend, alpha=alpha, cull=cull,
-                         surf=surf, cont=cont))
+                         surf=surf, cont=cont, sprite=sprite))
         return mat_index[key]
 
     # the world's size picks the positions' unit
@@ -713,6 +719,7 @@ def build(args):
 
     # triangles by (model, material, lightmap page, fog)
     groups = {}
+    sprites = []  # surfaces of quads that turn to the eye: (material, fog, clusters, areas, records, mins, maxs)
     for si, s in enumerate(bsp.surfaces):
         shader_num, fog, stype, lm = s[0], s[1], s[2], s[7]
         if stype == MST_FLARE or si not in surf_model:
@@ -723,6 +730,38 @@ def build(args):
         # the sky's surfaces stay (the renderer draws the sky where the view sees them)
         if m["flags"] & MAT_NODRAW:
             stats["skipped"] += 1
+            continue
+        if m["sprite"] and surf_model[si] == 0 and stype != MST_PATCH and s[4] >= 4 and s[4] % 4 == 0:
+            # each four vertices a quad: its centre and size (autosprite), or the line through
+            # the middles of its two short sides and its width (autosprite2: it turns about
+            # that line), with its corners' texture coordinates
+            dv = bsp.verts[s[3]:s[3] + s[4]]
+            rec, lo, hi = b"", [], []
+            for k in range(0, s[4], 4):
+                p, st = dv["xyz"][k:k + 4].astype(np.float64), dv["st"][k:k + 4]
+                if m["sprite"] == 1:
+                    c = p.mean(0)
+                    r = float(np.linalg.norm(p[0] - c)) * 0.7071
+                    rec += struct.pack("<3ff3ff8f", *c, r, 0, 0, 0, 0, 0, 0, 1, 0, 1, 1, 0, 1)
+                    lo.append(c - r * 1.5), hi.append(c + r * 1.5)
+                else:
+                    # its two short sides: the nearest two corners and the other two (the
+                    # corners come in any order); a and d on one long side
+                    i, j = min(((i, j) for i in range(4) for j in range(i + 1, 4)),
+                               key=lambda ij: float(np.linalg.norm(p[ij[0]] - p[ij[1]])))
+                    k, l = (x for x in range(4) if x not in (i, j))
+                    if np.linalg.norm(p[k] - p[i]) < np.linalg.norm(p[l] - p[i]):
+                        k, l = l, k
+                    o = [i, j, k, l]
+                    a, b_, c_, d = (p[x] for x in o)
+                    e0, e1 = (a + b_) / 2, (c_ + d) / 2
+                    c, axis = (e0 + e1) / 2, (e1 - e0) / 2
+                    hw = (float(np.linalg.norm(a - b_)) + float(np.linalg.norm(c_ - d))) / 4
+                    rec += struct.pack("<3ff3ff8f", *c, 0, *axis, hw, *[float(x) for i in o for x in st[i]])
+                    lo.append(np.minimum(e0, e1) - hw), hi.append(np.maximum(e0, e1) + hw)
+            sprites.append((mi, fog, surf_clusters.get(si, set()), frozenset(surf_areas.get(si, set())), rec,
+                            np.min(lo, axis=0), np.max(hi, axis=0)))
+            stats["surfaces"] += 1
             continue
         if stype == MST_PATCH:
             verts, tris = patch_triangles(bsp, s, args.curve)
@@ -916,6 +955,20 @@ def build(args):
         stats["strips"] += len(strips)
         stats["batches"] += len(batches)
 
+    # the surfaces of quads that turn to the eye: a chunk each, without vertices, after the
+    # world's chunks (a view finds them as it finds those: by cluster, area and bounds)
+    at = next((i for i, r in enumerate(recs) if r["model"] != 0), len(recs))
+    for mi, fog, clusters, areas, rec, lo, hi in sorted(sprites, key=lambda t: t[0]):
+        off = len(blob)
+        blob += rec + b"\0" * (-len(rec) % 16)
+        recs.insert(at, dict(mins=lo, maxs=hi, mat=mi, lm=-1, nverts=0, flags=CH_SPRITE, fog=fog & 255, off=off,
+                             qwc=len(rec) // 64, nbatch=0, model=0, cone=(0, 0, 0, 255),
+                             area=next(iter(areas)) if len(areas) == 1 and 0 <= next(iter(areas)) < 255 else 255,
+                             group=ngroup))
+        world_vis.insert(at, clusters)
+        ngroup += 1
+        at += 1
+
     # groups: bounds and chunk ranges (the chunks lie by group, the groups by model and material)
     grecs = []
     for i, r in enumerate(recs):
@@ -1002,7 +1055,7 @@ def build(args):
     sec["data"] = bytes(blob)
     sec["cvis"] = cvis.tobytes()
     sec["lmdim"] = lmdim
-    head = struct.pack("<4sI7I3I11IfIIIIII", b"PMAP", 9, len(mats), len(textures), len(recs), len(models),
+    head = struct.pack("<4sI7I3I11IfIIIIII", b"PMAP", 10, len(mats), len(textures), len(recs), len(models),
                        len(bsp.lightmaps), ncl, vis_bytes, len(bsp.planes), len(bsp.nodes), len(bsp.leafs),
                        off["mat"], off["tex"], off["chunk"], off["model"], off["lightmap"], off["vis"], off["plane"],
                        off["node"], off["leaf"], off["data"], total, 1.0 / q, BATCH, len(grecs), off["group"],
