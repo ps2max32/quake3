@@ -507,6 +507,43 @@ standing views of q3dm1 (a corridor beside a wall, a view into the court):
   sounds' first copies to SPU RAM (17 ms each; 2.7 MB of sounds for SPU
   RAM's 1.8 MB, their ADPCM in the heap).
 
+**The morning after**, the same measures:
+
+| | The timedemo's passes a field | Still drawn when the beam came | The EE a frame (median) | Images a frame |
+|---|---|---|---|---|
+| The night's end | 7.15 ms | 44 to 105 of 6540 | 10.2 ms | 772 KB |
+| Areas, lightmaps by place in pages of 64 x 64 | 6.81 ms | 19 to 57 | 10.9 ms | 671 KB |
+| Less of the EE a run | 6.79 ms | 19 to 54 | 10.6 ms | |
+
+Standing views (ms a field; none with a strip still drawn): q3dm1's
+corridor 9.2 and court 11.2 (14.5 and 15.6 the evening before), q3dm12 13.6
+(16.6), q3dm0 at a closed door 9.4 to 10.3 (13.0), q3dm17 9.4, q3tourney2
+9.0, q3dm11 8.9, q3dm6 5.6.
+
+- **A closed door** shuts its area off (the game's area mask, a chunk's
+  area in the map file): the view of one in q3dm0 13.1 -> 9.6 ms.
+- **Lightmaps.** q3map fills its pages in the BSP's order of surfaces and a
+  view drew with most of a map's pages, 16 KB each: 448 KB in a view of
+  q3dm12, where 6 images a frame then found no room. The map tool packs the
+  surfaces' rectangles again by place, into pages of 64 x 64: 244 KB there,
+  and none without room. The groups of a material and a page are smaller
+  and a view leaves more of them out (that view: 22,000 vertices over the
+  strips for 31,800), but there are more runs: 147 a frame in the timedemo
+  for 101, and the EE's frame was 0.7 ms longer until a run's state was
+  copied only as far as its program reads it.
+- **An image with alpha on a lightmapped surface** went two ways through
+  VU1 (the night's fix of the lost lightmaps): it has a CLUT of its own for
+  that use now, and goes once (q3dm12: 16.6 -> 15.8 ms).
+- **One frame ahead** (`r_ps2ahead`, maxsdk's `mx_hires_ahead`): the game is
+  faster than the fields and two frames waited to be shown; what it drew
+  was on the screen two fields later than it could be. With one the
+  timedemo repeats 52 fields of 2190 where it repeated 10.
+- The lamps' glows and bulbs turn to the eye (map file version 10).
+- **Open**: a run on the PS2 stopped three times in some 150 (twice in a
+  standing view, once at the timedemo's end, before the client's shutdown);
+  not seen again in 8 runs of 3000 frames with the watchdog, which now
+  prints VU1's, VIF1's and the GIF's state.
+
 ## 3. Why the earlier attempts stalled
 
 | Attempt | Result | Why |
