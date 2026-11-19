@@ -91,10 +91,12 @@ static void screen_init(void) {
 		base += 2;
 	else if (base[0] == '.' && !base[1])
 		base = "";
-	Com_sprintf(path, sizeof path, "%s%s%s/ps2tex.bin", base, base[0] ? "/" : "", BASEGAME);
+	/* the game's directory: baseq3, or the demo's demoq3 (+set com_basegame demoq3) */
+	const char *game = ri.Cvar_Get("com_basegame", BASEGAME, 0)->string;
+	Com_sprintf(path, sizeof path, "%s%s%s/ps2tex.bin", base, base[0] ? "/" : "", game);
 	if (rp_bin_open(&rp_bin_tex, path, 1) < 0)
 		ri.Error(ERR_FATAL, "ps2: no %s (tools/ps2bin.py makes it of ps2tex.pk3)", path);
-	Com_sprintf(path, sizeof path, "%s%s%s/ps2mdl.bin", base, base[0] ? "/" : "", BASEGAME);
+	Com_sprintf(path, sizeof path, "%s%s%s/ps2mdl.bin", base, base[0] ? "/" : "", game);
 	if (rp_bin_open(&rp_bin_mdl, path, 2) < 0)
 		ri.Error(ERR_FATAL, "ps2: no %s (tools/ps2bin.py makes it of the paks)", path);
 	ri.Printf(PRINT_ALL, "ps2: renderer: %u images (%u MB) and %u models (%u MB) mapped\n", rp_bin_tex.count,
@@ -1792,7 +1794,8 @@ static void RP_LoadWorld(const char *name) {
 	world_free();
 	marks_forget();
 	COM_StripExtension(name, base, sizeof base);
-	Com_sprintf(path, sizeof path, "%s/%s/%s.pmap", ri.Cvar_Get("fs_basepath", "", 0)->string, BASEGAME, base);
+	Com_sprintf(path, sizeof path, "%s/%s/%s.pmap", ri.Cvar_Get("fs_basepath", "", 0)->string,
+	            ri.Cvar_Get("com_basegame", BASEGAME, 0)->string, base);
 	world_map = mx_vm_map_file(path[0] == '.' && path[1] == '/' ? path + 2 : path, &world_size);
 	if (!world_map) {
 		ri.Printf(PRINT_WARNING, "ps2: renderer: no %s (tools/ps2map.py makes it): the world is not drawn\n", path);

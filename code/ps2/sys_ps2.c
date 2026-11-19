@@ -697,7 +697,7 @@ int main(int argc, char **argv) {
 	           "+set vm_ui 0 +set sv_pure 0 +set r_vertexLight 0 +set r_textureMode GL_LINEAR_MIPMAP_LINEAR +set r_picmip 2 "
 	           "+set s_mixPreStep 0 +set s_mixahead 0.14 +set in_joystick 1 +set j_yaw -0.0167 +set j_pitch 0.011 +set j_forward -0.00776 +set j_side 0.00776 +set j_deadzone 0.22 +set j_curve 1.5 "
 	           "+set r_ignoreGLErrors 1 +set com_introplayed 1 +set cl_allowDownload 0 "
-	           "+set ui_cdkeychecked 1 +set bot_enable 0 +set cg_drawFPS 0 +set com_maxfps 0 "
+	           "+set ui_cdkeychecked 1 +set bot_enable 1 +set cg_drawFPS 0 +set com_maxfps 0 "
 	           "+bind JOY1 \"+moveup\" +bind JOY2 \"+movedown\" +bind JOY3 weapnext "
 	           "+bind JOY4 weapprev +bind JOY5 \"+attack\" +bind JOY6 \"+speed\" " PS2_ARGS,
 	           sizeof cmdline);
