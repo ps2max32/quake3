@@ -245,6 +245,10 @@ static struct {
 static u32 nitem, nwrun;
 static const void *wmatrix;
 static u32 sky_seen; /* the strips the view sees sky surfaces in */
+/* and where in each: the picture's pixels its sky surfaces' boxes cover */
+static struct {
+	float x0, x1, y0, y1;
+} sky_rect[16];
 static rp_world_passes_fn passes_fn;
 
 u32 rp_world_materials(void) { return pm.h ? pm.h->nmat : 0; }
@@ -257,6 +261,91 @@ const char *rp_world_material(u32 i, u32 *flags) {
 }
 void rp_world_script(rp_world_passes_fn fn) { passes_fn = fn; }
 u32 rp_world_sky(void) { return sky_seen; }
+int rp_world_sky_rect(u32 strip, float *r) {
+	if (strip >= 16 || !(sky_seen >> strip & 1))
+		return 0;
+	r[0] = sky_rect[strip].x0, r[1] = sky_rect[strip].x1, r[2] = sky_rect[strip].y0, r[3] = sky_rect[strip].y1;
+	return 1;
+}
+
+/* A sky surface's box (mins at b[0..2], maxs at b[4..6]) seen by the view:
+   the pixels it covers go into the rectangles of the strips it is in. Its
+   sides are cut to the frustum first (a box beside the eye that reaches
+   behind it would cover the picture otherwise): a flat box is one side. */
+static void sky_box(const struct rp_view *v, const float *b) {
+	float w0 = (float)mx_gs.w, h0 = (float)mx_gs.h;
+	float cxs = v->cx - 2048.0f + w0 * 0.5f, cys = v->cy - 2048.0f + h0 * 0.5f;
+	float x0 = 1e9f, x1 = -1e9f, y0 = 1e9f, y1 = -1e9f;
+	int flat = -1;
+	for (int a = 0; a < 3; a++)
+		if (b[4 + a] - b[a] < 1.0f)
+			flat = a;
+	for (int f = 0; f < 6; f++) {
+		int a = f >> 1, hi = f & 1;
+		if (flat >= 0 && (a != flat || hi))
+			continue;
+		/* the side of axis a at its low or high end: four corners around */
+		int a1 = (a + 1) % 3, a2 = (a + 2) % 3;
+		float poly[2][12][3];
+		u32 n = 4;
+		for (int k = 0; k < 4; k++) {
+			poly[0][k][a] = hi ? b[4 + a] : b[a];
+			poly[0][k][a1] = (k == 1 || k == 2) ? b[4 + a1] : b[a1];
+			poly[0][k][a2] = k >= 2 ? b[4 + a2] : b[a2];
+		}
+		int cur = 0;
+		for (int p = 0; p < 5 && n >= 3; p++) {
+			const float *pn = v->fr[p].n;
+			float pd = v->fr[p].d, d[12];
+			u32 m = 0;
+			for (u32 i = 0; i < n; i++)
+				d[i] = pn[0] * poly[cur][i][0] + pn[1] * poly[cur][i][1] + pn[2] * poly[cur][i][2] - pd;
+			for (u32 i = 0; i < n && m < 11; i++) {
+				u32 q = i + 1 == n ? 0 : i + 1;
+				if (d[i] >= 0) {
+					for (int c = 0; c < 3; c++)
+						poly[cur ^ 1][m][c] = poly[cur][i][c];
+					m++;
+				}
+				if ((d[i] < 0) != (d[q] < 0)) {
+					float t = d[i] / (d[i] - d[q]);
+					for (int c = 0; c < 3; c++)
+						poly[cur ^ 1][m][c] = poly[cur][i][c] + t * (poly[cur][q][c] - poly[cur][i][c]);
+					m++;
+				}
+			}
+			n = m, cur ^= 1;
+		}
+		if (n < 3)
+			continue;
+		for (u32 i = 0; i < n; i++) {
+			float d[3] = {poly[cur][i][0] - v->org[0], poly[cur][i][1] - v->org[1], poly[cur][i][2] - v->org[2]};
+			float w = v->F[0] * d[0] + v->F[1] * d[1] + v->F[2] * d[2];
+			float iw = 1.0f / (w < 1.0f ? 1.0f : w);
+			float px = cxs - v->fx * (v->L[0] * d[0] + v->L[1] * d[1] + v->L[2] * d[2]) * iw;
+			float py = cys - v->fy * (v->U[0] * d[0] + v->U[1] * d[1] + v->U[2] * d[2]) * iw;
+			x0 = px < x0 ? px : x0, x1 = px > x1 ? px : x1, y0 = py < y0 ? py : y0, y1 = py > y1 ? py : y1;
+		}
+	}
+	x0 = x0 < 0 ? 0 : x0, y0 = y0 < 0 ? 0 : y0, x1 = x1 > w0 ? w0 : x1, y1 = y1 > h0 ? h0 : y1;
+	if (x1 <= x0 || y1 <= y0)
+		return;
+	u32 n = v->nstrip ? v->nstrip : 1;
+	float sh = v->nstrip ? (float)v->strip_h : h0;
+	for (u32 k = 0; k < n && k < 16; k++) {
+		float t = (float)k * sh, e = t + sh;
+		if (y1 <= t || y0 >= e)
+			continue;
+		float a = y0 > t ? y0 : t, c = y1 < e ? y1 : e;
+		if (!(sky_seen >> k & 1)) {
+			sky_seen |= 1u << k;
+			sky_rect[k].x0 = x0, sky_rect[k].x1 = x1, sky_rect[k].y0 = a, sky_rect[k].y1 = c;
+		} else {
+			sky_rect[k].x0 = x0 < sky_rect[k].x0 ? x0 : sky_rect[k].x0, sky_rect[k].x1 = x1 > sky_rect[k].x1 ? x1 : sky_rect[k].x1;
+			sky_rect[k].y0 = a < sky_rect[k].y0 ? a : sky_rect[k].y0, sky_rect[k].y1 = c > sky_rect[k].y1 ? c : sky_rect[k].y1;
+		}
+	}
+}
 
 /* A plane against a box (mins at b[0..2], maxs at b[4..6], as a group and a
    chunk have them): which of the box's numbers make the corner farthest
@@ -326,7 +415,14 @@ void rp_world_cull(struct rp_world_stats *st) {
 					continue;
 				/* the sky's surfaces are not drawn: where they are seen, the sky is */
 				if (sky) {
-					sky_seen |= gmask;
+					for (u32 j = gr->first_chunk; j < gr->first_chunk + gr->nchunk; j++) {
+						const struct pm_chunk *ch = &pm.chunk[j];
+						int gone = 0;
+						for (int p = 0; p < 5 && !gone; p++)
+							gone = sel_far(&fr[p], ch->mins) < 0;
+						if (!gone)
+							sky_box(v, ch->mins);
+					}
 					continue;
 				}
 				int one = !(gmask & (gmask - 1));
@@ -427,7 +523,8 @@ static int run_draw(const void *matrix, const struct item *it, u32 n) {
 		s.alpha = m->alpha;
 		s.z = RP_Z_WRITE;
 		s.prog = RP_PROG_WORLD;
-		s.texels = m->texels;
+		/* placed without its finest levels (no room for them): as many texels less */
+		s.texels = s.tex_ok && wtex[m->tex]->from ? m->texels / (float)(1u << wtex[m->tex]->from) : m->texels;
 		for (u32 k = own ? 0 : 1; k <= np; k++) {
 			if (k)
 				pass[k - 1].texels = m->texels;

@@ -41,6 +41,9 @@ void rp_world_script(rp_world_passes_fn fn);
 /* After rp_world_cull: the strips in which the view sees the sky's surfaces
    (0: none). */
 u32 rp_world_sky(void);
+/* And where in strip k: r[0..3] the picture's pixels x0, x1, y0, y1 that its
+   sky surfaces' boxes cover; 0: none. */
+int rp_world_sky_rect(u32 strip, float *r);
 
 /* In a frame, after rp_view_set: what of the world the view sees. Then its
    draws into the frame's list: those that write depth (blended 0), and the

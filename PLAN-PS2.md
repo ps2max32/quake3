@@ -426,6 +426,52 @@ after it (`q3mclip`, the world's routines), where it was dropped before
 (holes in the weapon near the eye). Models across a plane no longer go the
 EE's way.
 
+### Strips still being drawn at a place (2026-11-19)
+
+A run that goes to a place and stands there (`+devmap`, `+setviewpos`,
+`r_ps2beamat`: the counts from that view on), q3dm1 in a corridor beside a
+wall, 512 fields on the PS2:
+
+| | A field's passes | Still drawn when the beam came |
+|---|---|---|
+| Everything | 14.5 ms | 1025 of 1537 (two strips of three, every field) |
+| No sky | 11.6 ms | 0 |
+| No lightmap pass | 10.7 ms | 0 |
+| No models | 12.8 ms | 513 |
+| The GS draws nothing | 5.1 ms | 0 |
+| Nothing drawn | 0.13 ms | 0 |
+
+- The picture from GS memory is PCSX2's: nothing is drawn wrong there. What
+  shows on the TV is strips half drawn.
+- **The sky** was drawn over the whole of every strip in which a sky
+  surface is in the PVS and the frustum, seen or not: 2.9 ms here, with no
+  sky in the picture. It is now drawn in the part of a strip that its sky
+  surfaces' boxes cover, cut to the frustum (0 late here, 12.0 ms), and
+  after the world's surfaces that write depth. The depth test alone gives
+  almost nothing (14.3 ms): a pixel that fails it costs the GS about what
+  one drawn costs. The sky in 32 x 32 quads a side for 8 x 8: 14.2 ms (the
+  GS's page breaks are a small part).
+- **A pass had the time of one strip** (the Z of a pass was the strip after
+  it, in the picture): 5.3 to 6.4 ms, whatever the other strips left. Here
+  the passes took 5.6, 6.0 and 3.4 ms: two late every field with 2.3 ms
+  unused. With a Z strip of the passes' own (maxsdk's `mx_hires_own_z`,
+  `r_ps2ownz`, now the default) a pass has the field less its strip's time.
+
+The timedemo with that, the same day:
+
+| | Still drawn when the beam came | The EE a frame | Images that found no room |
+|---|---|---|---|
+| The Z in the strip after | 680 of 6532 | 10.9 ms | 0 |
+| A Z strip of its own, three strips | 161 of 6538 | 11.1 ms | 91 |
+| The same, five strips of 128 lines | 752 of 10850 | 11.8 ms | 45 |
+
+The Z strip takes 720 KB of GS memory: 1.2 MB is left for the images, and
+the demo's frames want up to 1.5 MB. When a frame's images do not fit, the
+models' and the effects' are placed without their finest level (but the
+view weapon's) until the frames have fitted for two seconds, and any image
+that finds no room is placed without its finest one or two. Five strips of
+128 lines leave 1.4 MB but every pass plays more of the world.
+
 ## 3. Why the earlier attempts stalled
 
 | Attempt | Result | Why |

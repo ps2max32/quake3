@@ -42,6 +42,14 @@ void rp_tex_init(void) {
 static u32 frame_uploads;
 
 static u32 frame_blocks; /* GS memory (256-byte blocks) of the images the frame drew with */
+/* The same had every image all its levels: against what GS memory holds
+   this says whether a frame's images fit. When they do not, the models' and
+   the effects' images are placed without their finest level (a quarter of
+   the memory; the map's stay as they are) until the frames have fitted
+   again for two seconds: images that push each other out of GS memory
+   every frame are sent again every frame. */
+static u32 want_blocks, tight, calm;
+int rp_tex_full;
 
 static int starts(const char *s, const char *with) {
 	while (*with && *s == *with)
@@ -66,6 +74,17 @@ void rp_tex_frame(void) {
 	if (kb > rp_tex_stats.used_max_kb)
 		rp_tex_stats.used_max_kb = kb;
 	frame_blocks = 0;
+	{
+		struct mx_vcache_stats vs;
+		mx_vcache_stats(&vs);
+		u32 cap = vs.pages * 32;
+		if (want_blocks * 100 > cap * 92)
+			tight = 1, calm = 0;
+		else if (want_blocks * 100 < cap * 78 && tight && ++calm > 120)
+			tight = 0;
+		rp_tex_stats.tight += tight;
+		want_blocks = 0;
+	}
 }
 
 u64 rp_tex_key(void) { return ++serial; }
@@ -309,23 +328,55 @@ static void texflush(void) {
 
 const struct mx_tex *rp_image_place(struct rp_image *im) {
 	u32 frame = mx_frame_number();
-	if (im->frame == frame + 1)
+	/* placed this frame already; but without its finest level, and now for
+	   the view weapon (rp_tex_full): once more, whole if there is room */
+	int again = im->frame == frame + 1 && rp_tex_full && im->ok && im->from;
+	if (im->frame == frame + 1 && !again)
 		return im->ok ? &im->t : 0;
+	struct mx_tex was = im->t;
+	u32 was_from = im->from;
 	u32 tw = log2u(im->w), th = log2u(im->h), from = 0;
 	u32 cpsm = im->clut && !im->wide ? MX_GS_PSM_CT32 : MX_VCACHE_NO_CLUT;
 	/* not there, and the frame has sent its share: not this frame (asked again
 	   by the next draw with it) */
 	if (frame_uploads >= FRAME_UPLOADS) {
 		struct mx_tex t;
-		if (!mx_vcache_peek(mx_vcache_tex_key(im->key, 0), &t) &&
+		if (!mx_vcache_peek(mx_vcache_tex_key(im->key, 0), &t) && !mx_vcache_peek(mx_vcache_tex_key(im->key, 1), &t) &&
+		    !mx_vcache_peek(mx_vcache_tex_key(im->key, 2), &t) &&
 		    !(im->split && im->m.tail && mx_vcache_peek(mx_vcache_tex_key(im->key, im->m.tail), &t))) {
+			if (again)
+				return &im->t;
 			rp_tex_stats.later++;
 			return 0;
 		}
 	}
 	im->frame = frame + 1, im->ok = 0;
-	int r = im->split ? mx_vcache_tex_mem(im->key, &im->m, im->psm, tw, th, cpsm, 0, 0, &im->t, &from)
-	                  : mx_vcache_tex(im->key, im->psm, tw, th, im->levels, cpsm, &im->t);
+	/* a frame's images do not fit: this one without its finest level, when it
+	   is a model's or an effect's */
+	u32 f0 = tight && !rp_tex_full && (im->kind == RP_IMAGE_MODEL || im->kind == RP_IMAGE_OTHER) && im->levels > 2 && im->w >= 64;
+	if (f0 && im->split && f0 > im->m.tail)
+		f0 = 0;
+	int r = im->split ? mx_vcache_tex_mem(im->key, &im->m, im->psm, tw, th, cpsm, f0, 0, &im->t, &from)
+	                  : mx_vcache_tex(mx_vcache_tex_key(im->key, f0), im->psm, tw - f0, th - f0, im->levels - f0, cpsm, &im->t);
+	if (!im->split)
+		from = f0;
+	if (again && r == MX_VCACHE_FULL) {
+		im->t = was, im->from = (u8)was_from, im->ok = 1;
+		return &im->t;
+	}
+	/* no room for all of it: without its finest level, or its two finest (a
+	   quarter, a sixteenth of the memory): less sharp while the frame's images
+	   are more than GS memory holds, in place of not drawn */
+	for (u32 need = f0 + 1; r == MX_VCACHE_FULL && im->split && need <= im->m.tail; need++) {
+		r = mx_vcache_tex_mem(im->key, &im->m, im->psm, tw, th, cpsm, need, 0, &im->t, &from);
+		if (r != MX_VCACHE_FULL)
+			rp_tex_stats.coarse++;
+	}
+	for (u32 f = f0 + 1; r == MX_VCACHE_FULL && !im->split && f <= 2 && f + 1 < (u32)im->levels; f++) {
+		r = mx_vcache_tex(mx_vcache_tex_key(im->key, f), im->psm, tw - f, th - f, im->levels - f, cpsm, &im->t);
+		if (r != MX_VCACHE_FULL)
+			from = f, rp_tex_stats.coarse++;
+	}
 	if (r == MX_VCACHE_FULL) {
 		rp_tex_stats.full++;
 		return 0;
@@ -344,6 +395,7 @@ const struct mx_tex *rp_image_place(struct rp_image *im) {
 	im->from = (u8)from, im->ok = 1;
 	u32 blocks = im->t.blocks + (im->wide ? 4 : 0);
 	frame_blocks += blocks, rp_tex_stats.kind_blocks[im->kind] += blocks;
+	want_blocks += blocks << (2 * from);
 	im->uses++;
 	if (r == MX_VCACHE_HIT && rc == MX_VCACHE_HIT)
 		return &im->t;

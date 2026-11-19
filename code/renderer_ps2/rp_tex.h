@@ -41,6 +41,8 @@ enum { RP_IMAGE_WORLD, RP_IMAGE_LIGHTMAP, RP_IMAGE_MODEL, RP_IMAGE_SCREEN, RP_IM
 struct rp_tex_stats {
 	u32 uploads, upload_kb; /* textures sent to GS memory, since the start */
 	u32 full;               /* not placed: no room in GS memory */
+	u32 coarse;             /* placed without their finest levels: no room for all of them */
+	u32 tight;              /* frames whose images did not fit GS memory at their full size */
 	u32 later;              /* not placed in a frame that had sent its share of images */
 	u32 frames, used_kb;    /* frames counted; GS memory of the images they drew with, summed (KB) */
 	u32 used_max_kb;        /* the most a frame drew with */
@@ -75,8 +77,13 @@ struct rp_image *rp_image_at(u32 i);
 struct rp_image *rp_image_find(const char *name);
 /* Its place in GS memory for the frame being built (sent there if it was
    not: beam racing's once record), or 0 if there is no room. Not while a
-   strip's record is written (mx_hires_strip). */
+   strip's record is written (mx_hires_strip). When a frame's images are more
+   than GS memory holds, a model's or an effect's is placed without its
+   finest level, and any image that finds no room without its finest two. */
 const struct mx_tex *rp_image_place(struct rp_image *im);
+/* 1 while the view weapon's images are placed: all their levels, whatever
+   GS memory is short of (it is the model nearest the eye). */
+extern int rp_tex_full;
 /* A CLUT that is no image's (16 x 16, or 8 x 2 with small; CT32, the GS's
    order, where it is read from): its block in GS memory for this frame, or
    0. */

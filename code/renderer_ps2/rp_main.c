@@ -62,6 +62,9 @@ static void screen_init(void) {
 	if (screen_on)
 		return;
 	mx_hires_strip_lines((u32)ri.Cvar_Get("r_ps2strip", "192", CVAR_LATCH)->integer);
+	/* r_ps2ownz 1 (the default): a Z strip of the passes' own (720 KB of GS memory less for
+	   the textures): a pass has the time the beam is outside its strip */
+	mx_hires_own_z(ri.Cvar_Get("r_ps2ownz", "1", CVAR_LATCH)->integer);
 	if (mx_hires_init(&mx_video_1080i, 1920, 540, MX_GS_PSM_CT16S, rec, sizeof rec, (void *)0x70002000, 0x2000) < 0)
 		ri.Error(ERR_FATAL, "ps2: no 1080i, or its buffer does not fit");
 	u32 sbytes = mx_hires_strip_records(srec, sizeof srec);
@@ -342,11 +345,6 @@ static void RP_RenderScene(const refdef_t *fd) {
 		int draw_world = world && world_ok && !(skip & 2);
 		if (draw_world) {
 			rp_world_cull(&world_st);
-			/* the sky first, where the view sees the map's sky surfaces */
-			u32 sky_strips = sky_shader ? rp_world_sky() : 0;
-			const struct rp_shader *sky = sky_strips ? rp_shader_get(sky_shader) : NULL;
-			if (sky && !(rp_debug & 524288))
-				rp_sky_draw(sky, now, sky_strips);
 			rp_world_add(0);
 #define ACC(f) world_sum.f += world_st.f
 			ACC(seen), ACC(groups), ACC(drawn), ACC(clip), ACC(back), ACC(verts);
@@ -377,6 +375,15 @@ static void RP_RenderScene(const refdef_t *fd) {
 			else if (!kind[i])
 				rp_model_draw(e, now - e->shaderTime);
 		}
+		/* the sky, behind what was drawn, where the view sees the map's sky
+		   surfaces: after all that writes depth (a pixel that fails the
+		   depth test costs the GS less than one drawn and blended) */
+		if (draw_world) {
+			u32 sky_strips = sky_shader ? rp_world_sky() : 0;
+			const struct rp_shader *sky = sky_strips ? rp_shader_get(sky_shader) : NULL;
+			if (sky && !(rp_debug & 524288))
+				rp_sky_draw(sky, now, sky_strips);
+		}
 		if (skip & 8)
 			nq = decals = 0;
 		quads_draw(0, decals);
@@ -398,10 +405,12 @@ static void RP_RenderScene(const refdef_t *fd) {
 					rc[2] = r1[2] > rc[2] ? r1[2] : rc[2], rc[3] = r1[3] > rc[3] ? r1[3] : rc[3];
 				}
 			rp_zclear(rc[0], rc[1], rc[2], rc[3]);
+			rp_tex_full = 1;
 			for (u8 blended = 0; blended < 2; blended++)
 				for (u32 i = first_ment; i < nment; i++)
 					if (kind[i] == (2 | blended))
 						rp_model_draw(&ments[i], now - ments[i].shaderTime);
+			rp_tex_full = 0;
 		}
 	}
 	first_sprite = nsprite, first_poly = npoly, first_ment = nment;
@@ -675,10 +684,10 @@ void ps2_ren_report(void) {
 	if (st_frames)
 		Com_Printf("ps2: renderer: a frame: %u runs, %u draws; over the strips %u vertices in %u batches, %u set-ups, %u "
 		           "quadwords of records, %u of chains; %u draws left out (no memory); textures sent %u (%u KB), %u "
-		           "found no room, %u waited a frame\n", rp_list_stats.runs / st_frames, rp_list_stats.draws / st_frames,
+		           "found no room (%u placed without their finest levels; %u frames with more images than fit), %u waited a frame\n", rp_list_stats.runs / st_frames, rp_list_stats.draws / st_frames,
 		           rp_list_stats.sent / st_frames, rp_list_stats.batches / st_frames, rp_list_stats.setups / st_frames,
 		           rp_list_stats.qw / st_frames, rp_list_stats.dyn_qw / st_frames, rp_list_stats.lost,
-		           rp_tex_stats.uploads, rp_tex_stats.upload_kb, rp_tex_stats.full, rp_tex_stats.later);
+		           rp_tex_stats.uploads, rp_tex_stats.upload_kb, rp_tex_stats.full, rp_tex_stats.coarse, rp_tex_stats.tight, rp_tex_stats.later);
 	if (st_frames) {
 		static const char *const prog[4] = {"the world's", "GS packets", "the models'", "the stages'"};
 		for (int k = 0; k < 4; k++)
