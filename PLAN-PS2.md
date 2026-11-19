@@ -879,6 +879,14 @@ PS2 renderer follows. The same place by `+devmap`, `+setviewpos`,
   to 110 swap ins for 9; 18.9-19.0 ms a frame for 18.6). Not kept. For the
   file of 256 levels the first level is apart already in effect (the cache
   holds images from the 128 level; the pool reads the 256 level ahead).
+- **Also measured on the PS2 and not kept:** the level's models read at its
+  load (5 MB, 0.7 s): 47 file pages in the timedemo for 104, but 107 swap
+  ins for 9 (memory is full: what the models take, the game's own pages
+  give), 18.71 ms for 18.72. The sounds as a mapped file (ps2snd.bin, 12 MB,
+  in place of the 2.7 MB a level copied from the pak): the load 1.9 s
+  shorter, but the sounds copied to SPU RAM during play (23 that SPU RAM
+  had let go) are then read from the file: 132 file pages for 105, 18.69 to
+  18.73 ms for 18.58.
 - Portals to another place (7 maps) still show their script only.
 - **The sky had no clouds**, one colour: its layers were drawn with the
   texture level chosen for a surface 16,000 units away, the smallest. They
