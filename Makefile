@@ -159,13 +159,21 @@ $(eval $(call srcdir,mod/qagame,$(C),-DQAGAME))
 $(eval $(call srcdir,mod/cgame,$(C),-DCGAME))
 $(eval $(call srcdir,mod/ui,$(C),-DUI))
 
-# $(call module,name,sources)
+# $(call module,name,sources): a module as one object, with only its entry
+# points seen from outside, and symbols at the ends of its data and its zeroed
+# data: sys_ps2.c gives it its data as linked each time it is loaded (the
+# object must have one .data and one .bss and no small data: the test)
 define module
 $(OUT)/$(1).o: $(patsubst %,$(OUT)/mod/$(1)/%.o,$(2))
 	$(LLVM)/ld.lld -m elf32ltsmipn32 -r -o $$@.r $$^
 	$(LLVM)/llvm-objcopy --keep-global-symbol=vmMain --keep-global-symbol=dllEntry $$@.r $$@.l
 	$(LLVM)/llvm-objcopy --redefine-sym=vmMain=$(1)_vmMain --redefine-sym=dllEntry=$(1)_dllEntry \
+	  --add-symbol $(1)_data_start=.data:0,global \
+	  --add-symbol $(1)_data_end=.data:$$$$($(LLVM)/llvm-size -A $$@.l | awk '$$$$1 == ".data" { print $$$$2 }'),global \
+	  --add-symbol $(1)_bss_start=.bss:0,global \
+	  --add-symbol $(1)_bss_end=.bss:$$$$($(LLVM)/llvm-size -A $$@.l | awk '$$$$1 == ".bss" { print $$$$2 }'),global \
 	  $$@.l $$@
+	test "$$$$($(LLVM)/llvm-size -A $$@ | grep -c -E '^\.(data|bss|sdata|sbss)')" = 2
 	rm -f $$@.r $$@.l
 endef
 $(eval $(call module,qagame,$(GAME_SRC)))

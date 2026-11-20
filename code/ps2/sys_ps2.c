@@ -85,26 +85,52 @@ typedef intptr_t (QDECL *syscall_t)(intptr_t, ...);
 	intptr_t m##_vmMain(int command, int arg0, int arg1, int arg2, int arg3, int arg4, \
 	                    int arg5, int arg6, int arg7, int arg8, int arg9, int arg10,   \
 	                    int arg11);                                                    \
-	void m##_dllEntry(syscall_t syscallptr);
+	void m##_dllEntry(syscall_t syscallptr);                                           \
+	extern char m##_data_start[], m##_data_end[], m##_bss_start[], m##_bss_end[];      \
+	static void *m##_data0;
 MODULE(qagame)
 MODULE(cgame)
 MODULE(ui)
+
+/* A module is part of the program (the Makefile's module rule, which also
+   marks where its data and its zeroed data lie). One that is loaded starts
+   with its data as it was linked, as a library loaded anew does: the game's
+   code counts on it (the lists of the loading screen's icons, the bots'
+   states in the game's pool, the time of the bots' last frame are never set
+   back: from the second level on the icons were other pictures and no bot
+   came). The first time the data is kept, later it is put back and the
+   zeroed data zeroed. */
+static void module_fresh(char *d0, char *d1, char *b0, char *b1, void **kept) {
+	size_t n = (size_t)(d1 - d0);
+	if (!*kept) {
+		*kept = malloc(n ? n : 1);
+		if (*kept)
+			memcpy(*kept, d0, n);
+		return;
+	}
+	memcpy(d0, *kept, n);
+	memset(b0, 0, (size_t)(b1 - b0));
+}
+#define MODULE_FRESH(m) module_fresh(m##_data_start, m##_data_end, m##_bss_start, m##_bss_end, &m##_data0)
 
 void *QDECL Sys_LoadGameDll(const char *name, vmMainProc *entryPoint,
                             intptr_t (QDECL *systemcalls)(intptr_t, ...)) {
 	const char *base = strrchr(name, '/');
 	base = base ? base + 1 : name;
 	if (!Q_stricmpn(base, "qagame", 6)) {
+		MODULE_FRESH(qagame);
 		qagame_dllEntry(systemcalls);
 		*entryPoint = (vmMainProc)qagame_vmMain;
 		return (void *)1;
 	}
 	if (!Q_stricmpn(base, "cgame", 5)) {
+		MODULE_FRESH(cgame);
 		cgame_dllEntry(systemcalls);
 		*entryPoint = (vmMainProc)cgame_vmMain;
 		return (void *)2;
 	}
 	if (!Q_stricmpn(base, "ui", 2)) {
+		MODULE_FRESH(ui);
 		ui_dllEntry(systemcalls);
 		*entryPoint = (vmMainProc)ui_vmMain;
 		return (void *)3;

@@ -960,11 +960,21 @@ static int mirror_view(const refdef_t *fd, const struct rp_cam *cam, float ys, f
 	return 1;
 }
 
+/* r_ps2shotload n: the picture of the screen while the n-th level of the run
+   was loaded (the last frame before the level's first view), then quit */
+static cvar_t *r_ps2shotload;
+static u32 load_views, loads;
+
 static void RP_RenderScene(const refdef_t *fd) {
 	st.scenes++;
 	int world = !(fd->rdflags & RDF_NOWORLDMODEL);
 	if (world)
 		st.views++;
+	if (world && !load_views++ && r_ps2shotload && r_ps2shotload->integer && ++loads == (u32)r_ps2shotload->integer) {
+		int r = mx_hires_save_tga("quake3.tga");
+		ri.Printf(PRINT_ALL, "ps2: renderer: the picture of load %u: quake3.tga (%d)\n", loads, r);
+		ri.Cmd_ExecuteText(EXEC_APPEND, "quit\n");
+	}
 	/* r_ps2beamat n: beam racing's counts start at the n-th view of the world
 	   (a run's report is then of a place, not of the load before it) */
 	if (world && r_ps2beamat->integer && st.views == (unsigned)r_ps2beamat->integer)
@@ -1893,6 +1903,11 @@ void ps2_ren_report(void) {
 			           m[3]);
 		}
 	}
+	{
+		extern unsigned world_st_vu0, world_st_vu0_diff;
+		if (world_st_vu0)
+			Com_Printf("ps2: renderer: VU0: %u boxes of the world tested both ways, %u differ\n", world_st_vu0, world_st_vu0_diff);
+	}
 	if (dyn_width)
 		Com_Printf("ps2: renderer: width: %u of %u frames at half, %u changes; %u frames at half while the whole "
 		           "width was asked for (GS memory not back yet, or the layout between)\n", half_frames,
@@ -2006,6 +2021,8 @@ static void RP_BeginRegistration(glconfig_t *config) {
 	r_ps2passes = ri.Cvar_Get("r_ps2passes", "0", 0);
 	r_ps2widthflip = ri.Cvar_Get("r_ps2widthflip", "0", 0);
 	r_ps2halfat = ri.Cvar_Get("r_ps2halfat", "95", 0);
+	r_ps2shotload = ri.Cvar_Get("r_ps2shotload", "0", 0);
+	load_views = 0;
 	r_ps2hud = ri.Cvar_Get("r_ps2hud", "0", CVAR_ARCHIVE);
 	r_ps2beamat = ri.Cvar_Get("r_ps2beamat", "0", 0);
 	r_ps2fill = ri.Cvar_Get("r_ps2fill", "1", CVAR_ARCHIVE);

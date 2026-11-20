@@ -1013,7 +1013,7 @@ PS2 renderer follows. The same place by `+devmap`, `+setviewpos`,
   near plane, the opening's planes, and alphaGen portal (the haze by the
   eye's distance; opaque when no view was drawn); a view only while the
   opening covers a quarter of the picture. In PCSX2 q3dm0's teleporter
-  shows the room with the machine as on the PC. On the PS2 (the .11)
+  shows the room with the machine as on the PC. On the PS2 (a SCPH-90006)
   standing at q3dm0's portal and mirror hung the console three times (a
   reset by hand) and the picture flickered heavily (beam racing's strips
   late). `r_ps2mirror` is 0 by default; the cause is not found.
@@ -1155,7 +1155,7 @@ a second; passes still drawn when the beam came, of about 9200):
 
 - Two remedies for them, built as settings and tried by the user on the TV
   (2026-11-20, evening; maxsdk `mx_hires_skip_late`, and `mx_hires_widths`
-  without a Z strip of the passes' own). Timedemo four, the .11, textures
+  without a Z strip of the passes' own). Timedemo four, a SCPH-90006, textures
   128 and 256:
 
   | Setting | fps | Passes overtaken | Left out | Textures' memory |
@@ -1188,6 +1188,58 @@ a second; passes still drawn when the beam came, of about 9200):
     longer answered for some minutes. Neither was seen in the timedemos,
     which are a minute long: a longer run without a player is the next
     test.
+
+- The game modules' data (2026-11-20, late). qagame, cgame and ui are
+  linked into the program, so their data was not new when a level was
+  loaded, as a library's is that the engine loads anew, and the game's code
+  counts on that. Seen from the second or third level of one run on: the
+  loading screen's icons showed skins (cgame's lists of icons are never
+  emptied, their shaders were of a registration gone), and no bots came
+  ("client 0 already setup": the bots' states in the game's pool, which is
+  not zeroed; then "AAS not initialized": the time of the bots' last frame
+  is a static, so the bot library got no frames). Now the Makefile's module
+  rule marks each module's .data and .bss, and `Sys_LoadGameDll` puts the
+  data back as linked and zeroes the rest at every load. Tested on a SCPH-90006
+  without a player: three single player levels in one run, bots in each;
+  the icons right at the third load (`r_ps2shotload n`: the picture of the
+  n-th load's screen). Ten timedemos in one run (five minutes) ended as
+  they should, the console's lines all there: the hang and the lost console
+  of the play sessions did not come back there.
+
+- The units' load with the defaults of now (`r_ps2width 0`; the sampler at
+  2 kHz, timedemo four, textures 128 / 256): the EE busy 95 / 93 %; a pass
+  being sent 60 / 58 % of the time (71 % when all frames were 1920 wide);
+  VU1 running 55 / 53 %, of it waiting at an XGKICK 38 / 36 % (48 %); the
+  GS's FIFO not empty 45 / 43 % (56 %); VU0 0 %.
+- `r_ps2ownz 1` ten timedemos long without a player, on the card's kernel:
+  ended as it should; of 97,525 passes none overtaken and 41 left out
+  ahead. So the hang of the play session with it is not reproduced there
+  (that session ran on a kernel tried from RAM).
+
+- The timedemo with the defaults, repeated (a SCPH-90006): textures 128 five
+  runs 62.4 to 62.6 fps, 0 or 1 pass overtaken of 9200; textures 256 three
+  runs 55.7 to 56.1 fps, 0 to 2 overtaken; none left out.
+
+- VU0 for the world's culling (2026-11-20, late): the boxes of the groups
+  and the chunks against the frustum, the guard band and the lines between
+  the strips, four planes at a time from the box's centre and extent
+  (`box_vu0` in rp_world.c; the compiler's vectors are VU0's macro
+  instructions, `-mvu0`). The boxes are read where they lie in the map's
+  file (16-byte aligned), so no number goes between the FPU and VU0 but the
+  signs at the end: what made the first trial slower. Timedemo four, three
+  runs each way: 62.8 to 62.9 fps for 62.2 to 62.4 (1 %). `r_ps2debug
+  536870912` does both and counts the boxes judged differently: 0 of
+  635,592. The sampler does not see it (it counts VU0's micro programs).
+  The profile does: the culling (`rp_world_cull` and `rp_strip_mask`)
+  is 3.6 % of the EE's samples with VU0 and 5.7 % by the FPU (1604 and
+  2540 of 44,000): a third less.
+
+- Is the GS's idle time (its FIFO empty 55 % of the time) room for more?
+  `r_ps2trilinear 2` (between two levels only while the passes are short)
+  with the defaults, timedemo four: the governor found room in 68 of 1258
+  frames (textures 256: 30), and 9 passes were overtaken where there were 0
+  or 1. The idle time is the beam's: a pass waits for its strip, and where
+  the passes are long the GS has nothing to spare. Trilinear stays off.
 
 ## 3. Why the earlier attempts stalled
 

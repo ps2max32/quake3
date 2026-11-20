@@ -183,7 +183,9 @@ void rp_list_end(void);
    lightmap (a script's $lightmap after two stages: the map's own pass),
    524288 no sky, 1048576 every texture sent into the stream area waits for VU1 first (a FLUSH), 67108864 a model's
    pieces each in the strips of its own box (not in all the model is in),
-   134217728 a chunk of the world in all the strips its group is in */
+   134217728 a chunk of the world in all the strips its group is in,
+   268435456 the world's boxes tested by the FPU, not by VU0, 536870912 by
+   both, and the boxes where they differ counted (the run's report) */
 /* The guard band: how far from the GS's centre (2048, the picture's) a vertex
    may be, in pixels each way; a triangle with a vertex outside is cut there
    on VU1 (the programs that cut). The GS's own range is 2047. r_ps2guardx,
