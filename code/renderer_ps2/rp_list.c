@@ -28,6 +28,7 @@
 #include <mx/vif.h>
 
 #include "rp_list.h"
+#include "rp_tex.h"
 #include "vu/q3vu.h"
 
 unsigned rp_debug;
@@ -51,7 +52,8 @@ static u32 fbits(float f) {
 
 /* ---- memory for a frame's chains: a ring, a frame's part free when it is done ------- */
 
-#define DYN_QW (768 * 1024 / 16)
+static u32 dyn_qw = 768 * 1024 / 16; /* rp_list_init */
+#define DYN_QW dyn_qw
 #define DYN_FRAMES 16
 static u64 *dyn; /* uncached: written once, read by the DMAC */
 /* the next quadword; those in use, from the oldest frame in flight's first
@@ -119,6 +121,7 @@ void rp_view_rect(const struct rp_cam *cam, float x, float y, float w, float h) 
 	struct rp_view *v = &rp_view;
 	float tx = tan_deg(cam->fov_x * 0.5f), ty = tan_deg(cam->fov_y * 0.5f);
 	v->fx = w * 0.5f / tx, v->fy = h * 0.5f / ty;
+	v->flod = v->fx * 1920.0f / (float)mx_gs.w;
 	v->cx = 2048.0f + x + w * 0.5f - (float)mx_gs.w * 0.5f;
 	v->cy = 2048.0f + y + h * 0.5f - (float)mx_gs.h * 0.5f;
 	/* the planes of the guard band, as tangents from the view's centre: the
@@ -448,7 +451,7 @@ static const void *setup_chain(const struct rp_state *s, int cut, int state) {
 			tex = lit = 0;
 		if (tex) {
 			const struct mx_tex *t = &s->tex;
-			s32 k = lod_k(s->texels, rp_view.fx);
+			s32 k = lod_k(s->texels, rp_view.flod);
 			u64 t1 = (rp_debug & 1) || s->nomip ? mx_gs_tex1(1, 0, 1, 1, 0, 0, 0)
 			                                    : mx_tex_tex1(t, 1, t->levels > 1 ? 4 : 1, 0, k);
 			/* a texture without alpha of its own: its CLUT's alpha is the
@@ -555,8 +558,13 @@ static u64 dimx(void) {
 	return v;
 }
 
-void rp_list_init(void) {
+void rp_dyn_range(u32 *lo, u32 *hi) {
+	*lo = dyn ? mx_paddr_of(dyn).v : 0, *hi = *lo + DYN_QW * 16;
+}
+
+void rp_list_init(u32 bytes) {
 	if (!dyn) {
+		dyn_qw = bytes / 16;
 		void *p = mx_dma_alloc(DYN_QW * 16);
 		dyn = p ? (u64 *)MX_UCAB((u8 *)p) : 0;
 	}
@@ -606,8 +614,25 @@ void rp_list_begin(void) {
    records: all of them into the frame's record, once). */
 void rp_list_end(void) {
 	static const void *list[2][LIST_MAX];
+	static s16 sid[MAX_RUN], sseg[MAX_RUN];
 	u32 nstrip = rp_view.nstrip;
 	rp_list_stats.runs += nrun, rp_list_stats.draws += ndraw;
+	/* the textures of the stream area: their places, by the runs that draw
+	   with them (rp_tex.h) */
+	int streaming = rp_tex_stream_pages() != 0;
+	if (streaming) {
+		for (u32 r = 0; r < nrun; r++)
+			sid[r] = (s16)(run[r].s.tex_ok ? rp_tex_stream_id(&run[r].s.tex) : -1);
+		rp_tex_stream_plan(sid, sseg, nrun);
+		for (u32 r = 0; r < nrun; r++) {
+			if (sid[r] < 0)
+				continue;
+			if (sseg[r] >= 0)
+				rp_tex_stream_fix((u32)sseg[r], &run[r].s.tex, &run[r].s.lm.cbp);
+			else
+				run[r].s.tex_ok = 0;
+		}
+	}
 	/* the wait between runs of programs with other buffers */
 	u64 *fl = rp_dyn(2);
 	if (fl)
@@ -640,9 +665,14 @@ void rp_list_end(void) {
 		int windowed = 0;
 		u32 at_sent = rp_list_stats.sent, at_batches = rp_list_stats.batches, at_setups = rp_list_stats.setups;
 		u32 at_msent = rp_list_stats.p_sent[RP_PROG_MODEL], at_mb = rp_list_stats.p_batches[RP_PROG_MODEL];
+		u32 at_skb = rp_tex_stats.stream_sent_kb;
 		u32 ndr = 0;
 		if (nstrip)
 			mx_hires_strip((int)k);
+		/* what GS memory's stream area holds: what the strip before sent (the
+		   passes of a field are played in order), not known in a field's first */
+		if (streaming)
+			rp_tex_stream_strip(k == 0);
 		for (u32 r = 0; r < nrun; r++) {
 			struct run *rn = &run[r];
 			const struct draw *d = &draw[rn->first];
@@ -654,7 +684,7 @@ void rp_list_end(void) {
 					for (int v = 0; v < 2; v++) {
 						if (!n[v])
 							continue;
-						const void *pre[3];
+						const void *pre[4];
 						u32 np = 0;
 						int fam = rn->s.prog == RP_PROG_MODEL;
 						if (rn->s.prog != RP_PROG_GS) {
@@ -669,6 +699,12 @@ void rp_list_end(void) {
 						}
 						if (rn->matrix && matrix != rn->matrix)
 							pre[np++] = matrix = rn->matrix;
+						/* its texture into the stream area, when the strip has not sent it yet */
+						if (streaming && sid[r] >= 0 && sseg[r] >= 0) {
+							const void *up = rp_tex_stream_need((u32)sseg[r]);
+							if (up)
+								pre[np++] = up;
+						}
 						if (!rn->setup[v][!set])
 							rn->setup[v][!set] = setup_chain(&rn->s, v, !set);
 						if (!rn->setup[v][!set])
@@ -715,6 +751,7 @@ void rp_list_end(void) {
 		rp_list_stats.k_msent[k] = rp_list_stats.p_sent[RP_PROG_MODEL] - at_msent;
 		rp_list_stats.k_mbatches[k] = rp_list_stats.p_batches[RP_PROG_MODEL] - at_mb;
 		rp_list_stats.k_draws[k] = ndr;
+		rp_list_stats.k_stream_kb[k] = rp_tex_stats.stream_sent_kb - at_skb;
 	}
 	if (nstrip)
 		mx_hires_strip(-1);

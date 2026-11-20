@@ -682,6 +682,84 @@ PS2 renderer follows. The same place by `+devmap`, `+setviewpos`,
     MXOS's window for mapped files is 64 MiB: the whole file of 256 levels
     does not fit beside the models' (asked of MXOS: the program's
     `map_size`, 128 MiB).
+  - *Paging without waiting*: a level of a mapped file of 32 KiB or more
+    may be paged out, as long as a coarser level is there to draw with
+    meanwhile; the rest (the smaller levels, an image's last level, the
+    CLUTs) is pinned while the image is loaded (q3dm1: 2.5 MB of a file of
+    128, 2.9 MB of one of 256; the full game's timedemo: 3.5 MB). When a
+    frame wants a level that is not in memory, the coarser one is sent and
+    the pager asked for the finer, which a later frame sends: the game
+    never waits for the file (it waited 523 ms in the timedemo before).
+    The pinned levels are sent without being locked each frame.
+  - *Sending in the passes* (`r_ps2texstream`, pages of GS memory taken
+    from the cache, off by default; `r_ps2texstreamkb`, the most a frame
+    sends there): an image that finds no room in the cache is not drawn
+    coarser but sent in the strips' records, right before the first run
+    that draws with it in each strip. The runs' order is known when the
+    frame's list ends, so the area is planned then (Belady's choice over
+    the passes' order: this strip's runs, then the next strip's from the
+    first on), and a strip sends only what the strip before did not leave
+    there. The KB a frame streams follow the time the passes leave of 80 %
+    of a field (a quarter of it, about 1 us a KB), and drop to the least
+    for half a second after a pass the beam overtook.
+    - q3dm1's view (256 levels, 48 pages, no limit): no image coarser for
+      room, none without room; 1.2 MB a frame streamed, sent 1.6 times
+      (2.1 MB a field, 2.3 ms more of the passes: 1 GB/s). The floor and
+      the walls as sharp as the PC's. With the limit the governor's bias
+      goes down slowly (1.5 at the picture).
+    - The full game's timedemo (a file of 256 levels, 37 dB): 23.6 ms a
+      frame with 48 pages (437 KB a frame streamed, sent as 600; one pass
+      overtaken by the beam in 8743), 23.1 ms with 32 pages (8 overtaken),
+      22.6 ms without (none); 19.0 ms for the file of 128 levels at 35 dB.
+      Its passes take 5 to 7 ms a strip already, so there is little to
+      spare: without the limit (1 MB a frame) 620 passes were overtaken.
+    - A pass left out would leave the next strip with what the strip
+      before it did not send: drawn with the wrong texture for a field
+      (none was left out in these runs with the limit).
+    - The uploads go by DIRECTHL: a later frame's once record over PATH3
+      in intermittent mode lets DIRECT in between its slices (EE User's
+      Manual 7.1.3). A texture is sent without a FLUSH first when no run
+      of the strip drew from its pages (the pass begins with one).
+  - *CLUTs below the picture*: 540 lines at 16 bits leave the lower 36
+    lines of the framebuffer's last row of pages unwritten (with a Z strip
+    of its own): 120 runs of 4 blocks at 1920 (`mx_hires_spare`), each a
+    16 x 16 CLUT. A CLUT keeps its place while frames draw with it; with
+    none free the cache has it. The full game: all 74 CLUTs a frame there,
+    1454 images without room for 2075 (1920, 256 levels).
+  - *Half the width* (`r_ps2width 960`: the display shows each pixel
+    twice; the textures keep the levels of 1920, the lines as sharp as
+    before): framebuffer and Z strip take half, the cache 330 pages for
+    152. Full game, 256 levels: 19.3 ms a frame (22.6 at 1920), 9 images
+    without room, the passes 4.6 ms a field; the same as 1920 with the
+    file of 128. Z in the strip (374 pages) makes passes late; 9 strips of
+    64 lines cost VIF1 and VU1 twice the work (draws across strips, each
+    run's set-up in every strip): late passes even at 960.
+  - *The width from frame to frame* (`r_ps2width 0`, maxsdk's
+    `mx_hires_widths`): three layouts of the strips (whole width; half at
+    the buffer's start; half at its end) so that a record's passes never
+    draw over strips the beam has still to show of the record before
+    (half-front follows anything, whole follows whole or half-end). At
+    half the width the rest of the buffer and the Z strip go to GS memory
+    (the cache takes them) once the frames at the whole width are done,
+    and come back (`mx_vcache_release`: the entries there placed again
+    elsewhere) before a frame at the whole width. Half when textures are
+    placed coarser than their distance asks or the passes take 80 % of a
+    field; whole again after 2 s that would fit. Full game, 256 levels:
+    20.6 ms (nearly all at half), 21.2 with the stream area; a change every
+    30 frames (a test, `r_ps2widthflip`): about 5 frames until the whole
+    width is back.
+  - *Models in the strips piece by piece*: a model's pieces (VU1 batches)
+    each by its own box in the two frames, so a piece is drawn in the
+    strips it touches only: 7 % fewer vertices through VU1 at 3 strips, 18
+    % at 9.
+  - Found on the way: a frame was taken for done while an older record's
+    last pass was still read (a record whose passes were all left out
+    retired at once): maxsdk's hires now counts frames done up to the
+    oldest record still played; and a frame without textures in the
+    stream area called the chains of the frame before (now freed): VU1 ran
+    in garbage and the passes stopped. VU1 left running by a program is
+    not reset by the kernel for the next one (asked of MXOS): mx_hires_init
+    resets it.
 - **Fog** (15 of the maps have fog volumes: pits, mostly). The map file
   (version 11) has the volumes: colour, the depth at which the fog is
   opaque, the plane of its top. A volume's surfaces are drawn once more

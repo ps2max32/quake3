@@ -21,6 +21,9 @@ struct rp_image {
 	u8 kind;                /* RP_IMAGE_*: what it is of, for the report */
 	u32 asked;              /* the frame a draw asked for it last, + 1 */
 	u8 kept;                /* in the list of the screen's pictures that keep their place */
+	u8 pinned;              /* its small levels and its CLUT are pinned in memory (image_pin) */
+	u16 stream;             /* in the stream area in frame stream_frame: its instance + 1 */
+	u32 stream_frame;       /* that frame + 1 */
 	const u8 *level[MX_TEX_LEVELS]; /* not split: where they lie (a locked file) */
 	const void *clut;       /* 256 or 16 words in the GS's order; 0: none of its own */
 	u64 clut_key;           /* wide: its CLUT's place of its own in GS memory */
@@ -53,6 +56,14 @@ struct rp_tex_stats {
 	u32 coarse;             /* placed without their finest levels: no room for all of them */
 	u32 far;                /* placed from the level its distance needs (tight), not from its first */
 	u32 file_waits, file_wait_kb, file_wait_us; /* levels sent from the file while not in memory: the game waited */
+	u32 paged;              /* placed from a coarser level as their finer ones were not in memory (asked in) */
+	u32 stream, stream_kb;  /* images streamed (sent in the passes, rp_tex_stream_*), their KB, frames summed */
+	u32 stream_segs;        /* their pieces of the frame's runs (an image put out of the area and back: two) */
+	u32 stream_sent, stream_sent_kb; /* sent in the strips' records, frames summed (a record's, not a field's) */
+	u32 stream_over;        /* not streamed: over the frame's KB (r_ps2texstreamkb), or larger than the area */
+	u32 stream_noflush;     /* of stream_sent, without waiting for VU1 first */
+	u32 clut_slot, clut_cache; /* CLUTs drawn with from the framebuffer's spare blocks, from the cache (frames summed) */
+	u32 clut_slot_sent;     /* sent into those blocks */
 	float far_bias_max;     /* the most levels sooner than the distance asks (tight, images without room) */
 	float far_bias_sum;     /* its sum over the tight frames */
 	u32 far_floors;         /* times going lower was too much (an image without room for a frame) */
@@ -65,6 +76,10 @@ struct rp_tex_stats {
 	u32 kind_blocks[RP_IMAGE_KINDS]; /* of used_kb, by kind (256-byte blocks) */
 };
 extern struct rp_tex_stats rp_tex_stats;
+/* the images' memory pinned now (their levels under 32 KiB, their CLUTs), KB */
+extern u32 rp_tex_pinned_kb;
+/* the CLUTs' places in the framebuffer's spare blocks (mx_hires_spare), 0: none */
+u32 rp_tex_clut_slots(void);
 
 /* Once, when the screen is set up; GS memory outside the picture is the
    images'. */
@@ -123,7 +138,17 @@ extern int rp_tex_full;
    find no room, the levels go coarser sooner than the distance asks, a
    quarter of a level a frame, until the frame's images have room. */
 int rp_tex_tight(void);
+/* the GS memory the governor reckons with, in percent of the cache's (100) */
+void rp_tex_room(u32 pct);
+/* the largest level the cache places itself (128) */
+void rp_tex_max(u32 texels);
+float rp_tex_far_bias(void);
+/* the frame before's images at their full size, and what the cache had at
+   the start (GS memory beside the whole width's picture), 256-byte blocks */
+u32 rp_tex_want_blocks(void);
+u32 rp_tex_full_blocks(void);
 void rp_image_want(struct rp_image *im, float rho);
+void rp_image_want_model(struct rp_image *im, float rho);
 void rp_tex_fine_units(u32 units);
 /* The pool takes its GS memory (on) or gives it back to the cache: when a
    map is loaded, by whether the map has images for it (the cache's entries
@@ -133,6 +158,34 @@ u32 rp_tex_fine_pool(void);
 u32 rp_image_fine_units(const struct rp_image *im);
 int rp_image_fine(struct rp_image *im);
 u32 rp_tex_level_at(float rho, float b);
+/* The stream area (r_ps2texstream: its pages, 0 none; r_ps2texstreamkb: the
+   most a frame streams): GS memory for images the cache has no room for, sent
+   in the passes (the strips' records) right before the runs that draw with
+   them. rp_image_place gives such an image's mx_tex with an instance in
+   its blocks (not yet a place); at the end of the frame's list:
+   rp_tex_stream_plan places the frame's instances, by the runs that draw
+   with them (an instance whose pages a later one needs before it is drawn
+   with again is put out, and back in a piece of its own: seg), then for each
+   run rp_tex_stream_fix gives its texture the blocks of its piece, and in
+   each strip rp_tex_stream_need the chain that sends it when the strip's GS
+   memory does not hold it yet (rp_tex_stream_strip: a strip begins; first:
+   the field's first, which knows nothing of the field before). A pass left
+   out (mx_hires_stats.late) leaves the next strip without what it did not
+   send: that strip is drawn with another texture for a field. */
+void rp_tex_stream(u32 pages, u32 kb);
+/* Before rp_tex_frame: the time the passes of a field had to spare lately
+   (us, below 0: over) and whether a pass was late since (overtaken by the
+   beam, or left out): the KB a frame streams follows it, from the frame
+   before's, up to r_ps2texstreamkb; after a late pass the least for a
+   while. */
+void rp_tex_stream_room(float us, int late);
+u32 rp_tex_stream_pages(void);
+int rp_tex_stream_id(const struct mx_tex *t);
+void rp_tex_stream_plan(const s16 *id, s16 *seg, u32 n);
+void rp_tex_stream_fix(u32 seg, struct mx_tex *t, u32 *lm_cbp);
+void rp_tex_stream_strip(int first);
+const void *rp_tex_stream_need(u32 seg);
+
 /* A CLUT that is no image's (16 x 16, or 8 x 2 with small; CT32, the GS's
    order, where it is read from): its block in GS memory for this frame, or
    0. */

@@ -148,6 +148,11 @@ static void images_load(void) {
 	u32 bytes = 0, none = 0;
 	for (u32 i = 0; i < h->ntex && i < MAX_TEX; i++) {
 		wtex[i] = rp_image_bin(pm.tex[i].name, &bytes);
+		/* a model the map compiled into its surfaces (models/mapobjects/: the
+		   statues, the torches) is the world's: a level by its distance, not
+		   the first to go coarser when GS memory is short */
+		if (wtex[i] && wtex[i]->kind == RP_IMAGE_MODEL)
+			wtex[i]->kind = RP_IMAGE_WORLD;
 		wfine[i] = wtex[i] ? (u8)rp_image_fine_units(wtex[i]) : 0;
 		fine_on |= wfine[i] != 0;
 		none += !wtex[i];
@@ -605,7 +610,7 @@ void rp_world_cull(struct rp_world_stats *st) {
 						if ((far_on || wfine[cm->tex < MAX_TEX && cm->tex >= 0 ? cm->tex : 0]) && cm->tex >= 0 &&
 						    cm->tex < MAX_TEX && wtex[cm->tex]) {
 							float w = cut ? 4.0f : rp_box_dist(&v->fr[0], ch->mins, ch->maxs, 0) / v->fr_len[0] + 4.0f;
-							float rho = cm->texels * (w < 4.0f ? 4.0f : w) / v->fx;
+							float rho = cm->texels * (w < 4.0f ? 4.0f : w) / v->flod;
 							if (!want_rho[cm->tex])
 								want_tex[nwant++] = (u16)cm->tex, want_rho[cm->tex] = rho;
 							else if (rho < want_rho[cm->tex])

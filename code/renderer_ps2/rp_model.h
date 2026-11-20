@@ -53,6 +53,7 @@ extern unsigned rp_ndlight;
 struct rp_model_stats {
 	u32 drawn, culled, cut;   /* entities: inside the guard band, out of view, across a plane (cut on VU1) */
 	u32 surfs, pieces, verts; /* of those drawn */
+	u32 pieces_out;           /* pieces in none of the strips the model is in (left out) */
 	u32 nostage, stages;      /* surfaces without a stage to draw; stages after the first, not drawn yet */
 	u32 paged;                /* frames of surfaces not ready when a draw wanted them (their vertices not in memory, or no room) */
 	u32 made, evicted;        /* frames of surfaces made ready; of them given up for others */

@@ -181,6 +181,7 @@ struct msurf {
 	struct piece *piece;
 	u8 *fixed;          /* memory the DMAC reads */
 	u32 frame_bytes;    /* of a frame's block */
+	u32 bnd;            /* in a frame's block: each piece's bounds (s16 mins[3], maxs[3], 2 more), for its strips */
 	u16 (*pv)[Q3VU_M_VERTS]; /* a piece's vertices in the file */
 	u16 *block;         /* a frame's block in the cache + 1; 0: not made */
 	u16 last;           /* the block (+ 1) it was drawn with last */
@@ -297,6 +298,7 @@ static int surf_make(struct msurf *sf) {
 		pe[np][p->ntri][3] = 0;
 		p->ntri++;
 	}
+	sf->bnd = frame, frame += (u32)np * 16u;
 	sf->npiece = np, sf->piece = pc, sf->frame_bytes = frame;
 	sf->fixed = mx_heap_alloc(heap, fixed, 64);
 	sf->pv = pv;
@@ -377,9 +379,15 @@ static const u8 *frame_block(struct msurf *sf, int f) {
 		const struct piece *p = &sf->piece[i];
 		s16 *pos = (s16 *)(blk + p->pos);
 		s8 *nrm = (s8 *)(blk + p->nrm);
+		s16 *bnd = (s16 *)(blk + sf->bnd) + 8 * i;
+		bnd[0] = bnd[1] = bnd[2] = 32767, bnd[3] = bnd[4] = bnd[5] = -32768;
 		for (int k = 0; k < p->nvert; k++) {
 			const md3XyzNormal_t *v = &x[sf->pv[i][k]];
 			pos[3 * k] = v->xyz[0], pos[3 * k + 1] = v->xyz[1], pos[3 * k + 2] = v->xyz[2];
+			for (int a = 0; a < 3; a++) {
+				bnd[a] = v->xyz[a] < bnd[a] ? v->xyz[a] : bnd[a];
+				bnd[3 + a] = v->xyz[a] > bnd[3 + a] ? v->xyz[a] : bnd[3 + a];
+			}
 			/* the engine's: X cos(lat) sin(lng), Y sin(lat) sin(lng), Z cos(lng) */
 			u32 lat = (u32)(v->normal >> 8) & 255, lng = (u32)v->normal & 255;
 			float sl = sin_tab[lng];
@@ -637,8 +645,14 @@ int rp_scene_world;
 int rp_view_mirror;
 struct rp_dlight rp_dlights[RP_DLIGHTS];
 unsigned rp_ndlight; /* the scene being drawn has the map's world (rp_main.c) */
-/* the surface on VU1: a chain of its pieces */
-static const void *surf_chain(struct msurf *sf, int frame, int oldframe) {
+/* the surface on VU1: a chain of its pieces. With strips (e, mask: the
+   model's): the pieces in runs of those drawn in the same strips (by each
+   piece's box in the two frames), each run a chain of its own (ends with
+   RET) into run[], its strips into rmask[], their number into *nrun; a
+   piece in no strip is left out. Without: one run, the model's mask. */
+#define SURF_RUNS 32
+static const void *surf_chain(struct msurf *sf, int frame, int oldframe, const refEntity_t *e, u32 mask,
+                              const void **run, u32 *rmask, int *nrun) {
 	/* a frame that is not ready: the other one, or the block drawn last */
 	u16 last = sf->last;
 	const u8 *fn = frame_block(sf, frame), *fo = frame_block(sf, oldframe);
@@ -659,12 +673,47 @@ static const void *surf_chain(struct msurf *sf, int frame, int oldframe) {
 		if (!mx_mem_resident(x, (u32)sf->md3->numVerts * sizeof *x))
 			mx_mem_prefetch(x, (u32)sf->md3->numVerts * sizeof *x);
 	}
-	u64 *c0 = rp_dyn((u32)sf->npiece * 6 + 1), *c = c0;
+	u64 *c0 = rp_dyn((u32)sf->npiece * 7 + 1), *c = c0;
 	if (!c)
 		return 0;
+	int split = rp_view.nstrip > 1 && sf->npiece > 1 && e && !(rp_debug & 67108864);
+	u32 run_mask = ~0u;
+	*nrun = 0;
 	for (int i = 0; i < sf->npiece; i++) {
 		const struct piece *p = &sf->piece[i];
 		u32 n = p->nvert;
+		if (split) {
+			/* the piece's strips: its box in both frames, where the model is */
+			const s16 *bn = (const s16 *)(fn + sf->bnd) + 8 * i, *bo = (const s16 *)(fo + sf->bnd) + 8 * i;
+			float pt[8][3];
+			for (int k = 0; k < 8; k++) {
+				float l[3];
+				for (int a = 0; a < 3; a++) {
+					s16 v = k >> a & 1 ? (bn[3 + a] > bo[3 + a] ? bn[3 + a] : bo[3 + a])
+					                   : (bn[a] < bo[a] ? bn[a] : bo[a]);
+					l[a] = (float)v * MD3_XYZ_SCALE;
+				}
+				for (int a = 0; a < 3; a++)
+					pt[k][a] = e->origin[a] + l[0] * e->axis[0][a] + l[1] * e->axis[1][a] + l[2] * e->axis[2][a];
+			}
+			u32 pm = rp_strip_points(pt, 8) & mask;
+			if (!pm) {
+				rp_model_stats.pieces_out++;
+				continue;
+			}
+			if (pm != run_mask) {
+				if (*nrun == SURF_RUNS) {
+					/* too many runs: the rest in the last, in all its strips */
+					rmask[*nrun - 1] |= pm;
+				} else {
+					if (*nrun)
+						c = mx_e_ret(c, 0, 0, 0);
+					run[*nrun] = c, rmask[*nrun] = pm, ++*nrun;
+					run_mask = pm;
+				}
+			}
+		} else if (!*nrun)
+			run[0] = c, rmask[0] = mask, *nrun = 1;
 		c = mx_e_ref(c, sf->fixed + p->st, p->st_qw, mx_vif_stcycl(4, 1),
 		             mx_vif_unpack(MX_UNPACK_V3_16, Q3VU_M_VERT, n, MX_UNPACK_FLG));
 		c = mx_e_ref(c, fn + p->nrm, p->nrm_qw, mx_vif_nop(), mx_vif_unpack(MX_UNPACK_V3_8, Q3VU_M_VERT + 1, n, MX_UNPACK_FLG));
@@ -675,7 +724,12 @@ static const void *surf_chain(struct msurf *sf, int frame, int oldframe) {
 		c = mx_e_cnt(c, 0, mx_vif_itop(n), mx_vif_mscnt());
 		rp_model_stats.verts += n;
 	}
-	mx_e_ret(c, 0, 0, 0);
+	if (!*nrun) {
+		rp_dyn_end(c0);
+		return 0;
+	}
+	c = mx_e_ret(c, 0, 0, 0);
+	rp_dyn_end(c);
 	rp_model_stats.pieces += (u32)sf->npiece;
 	return c0;
 }
@@ -765,6 +819,8 @@ void rp_model_draw(const refEntity_t *e, float t) {
 	for (int a = 0; a < 3; a++)
 		d[a] = c[a] - vw->org[a];
 	int near = (e->renderfx & RF_DEPTHHACK) || dot3(d, d) < 600.0f * 600.0f;
+	/* the pixels across its sphere (the view weapon: as near as it gets) */
+	float dist = sqrtf(dot3(d, d)), px = (e->renderfx & RF_DEPTHHACK) ? 1e9f : dist > r ? 2 * r * vw->fy / dist : 1e9f;
 	float det = e->axis[0][0] * (e->axis[1][1] * e->axis[2][2] - e->axis[1][2] * e->axis[2][1]) -
 	            e->axis[0][1] * (e->axis[1][0] * e->axis[2][2] - e->axis[1][2] * e->axis[2][0]) +
 	            e->axis[0][2] * (e->axis[1][0] * e->axis[2][1] - e->axis[1][1] * e->axis[2][0]);
@@ -789,7 +845,9 @@ void rp_model_draw(const refEntity_t *e, float t) {
 		}
 		/* the stages: the first, then those that blend over it (one that does
 		   not would cover it) */
-		const void *chain = 0;
+		const void *chain = 0, *run[SURF_RUNS];
+		u32 rmask[SURF_RUNS];
+		int nrun = 0;
 		/* far off one stage is drawn. An item's first is often its shine (an
 		   environment map) with its skin blended over it: then the skin, alone */
 		int skin = !near && sh->nstage > 1 && sh->st[0].env && !sh->st[1].env && sh->st[1].blend == RP_BLEND_ALPHA;
@@ -806,6 +864,10 @@ void rp_model_draw(const refEntity_t *e, float t) {
 				rp_model_stats.stages++;
 				continue;
 			}
+			/* the level the model's size on the screen asks for: its skin
+			   (one image for the whole of it) over the pixels of its sphere */
+			if (stg->nimg && stg->img[0] && px > 0)
+				rp_image_want_model(stg->img[0], (float)(stg->img[0]->w > stg->img[0]->h ? stg->img[0]->w : stg->img[0]->h) / px);
 			if (!rp_stage_state(stg, t, &s)) {
 				if (k == skin) {
 					rp_model_stats.nostage++;
@@ -865,10 +927,11 @@ void rp_model_draw(const refEntity_t *e, float t) {
 			if (!matrix)
 				matrix = rp_matrix((float)MD3_XYZ_SCALE, e->origin, e->axis);
 			if (!chain)
-				chain = surf_chain(sf, frame, oldframe);
+				chain = surf_chain(sf, frame, oldframe, e, mask, run, rmask, &nrun);
 			if (!chain || rp_run(matrix, &s) < 0)
 				break;
-			rp_draw(chain, mask, cut, (u32)sf->md3->numTriangles * 3u, (u32)sf->npiece);
+			for (int r = 0; r < nrun; r++)
+				rp_draw(run[r], rmask[r], cut, (u32)sf->md3->numTriangles * 3u / (u32)nrun, (u32)sf->npiece / (u32)nrun);
 			if (k == skin)
 				rp_model_stats.surfs++;
 		}
@@ -886,8 +949,12 @@ void rp_model_draw(const refEntity_t *e, float t) {
 			for (int a = 0; a < 3; a++)
 				u[1][a] = fogc[a], u[5][a] = 255.0f;
 			u[1][3] = foga * 128.0f, u[5][3] = 255.0f;
-			if (rp_run(matrix, &s) >= 0)
-				rp_draw(chain, mask, cut, (u32)sf->md3->numTriangles * 3u, (u32)sf->npiece), rp_model_stats.fogged++;
+			if (rp_run(matrix, &s) >= 0) {
+				for (int r = 0; r < nrun; r++)
+					rp_draw(run[r], rmask[r], cut, (u32)sf->md3->numTriangles * 3u / (u32)nrun,
+					        (u32)sf->npiece / (u32)nrun);
+				rp_model_stats.fogged++;
+			}
 		}
 	}
 }

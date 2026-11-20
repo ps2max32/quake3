@@ -46,9 +46,16 @@
 refimport_t ri;
 static float scene_time; /* the scene's being drawn, for its shaders */
 extern unsigned world_st_fine, world_st_cand;
+/* the Game Options menu's: High Quality Sky (r_fastsky 1: no sky, black
+   where it is) and Dynamic Lights (r_dynamiclight 0: none on the world; the
+   models are lit by them all the same, as the engine's renderer) */
+static cvar_t *r_fastsky, *r_dynamiclight;
 static cvar_t *r_ps2draw, *r_ps2shot, *r_ps2passes, *r_ps2beamat, *r_ps2fill, *r_ps2marks, *r_ps2dlight, *r_ps2mirror, *r_ps2clean, *r_ps2markrays;
 
 /* ---- the screen ------------------------------------------------------------------- */
+
+/* the game's 1920 columns to the picture's (r_ps2width) */
+#define XS ((float)mx_gs.w * (1.0f / 1920.0f))
 
 /* beam racing's records, read by the DMAC: four frames, and four of each of
    the three strips. They hold CALLs (the draws lie elsewhere: rp_list.c): a
@@ -59,6 +66,10 @@ static u8 srec[4 * 3 * 32 * 1024] MX_FAST_BSS MX_ALIGNED(64);
 static int screen_on, in_frame;
 /* cycles a frame waited for a free record: not the frame's work (sys_ps2.c) */
 unsigned ps2_ren_wait;
+/* r_ps2width 0: the width from frame to frame (width_choose) */
+static int dyn_width, half_now;
+static u32 half_frames, width_changes, calm_frames, press_frames, width_asked, width_held;
+static cvar_t *r_ps2widthflip; /* a test: the width asked for changes every n frames */
 
 static void screen_init(void) {
 	if (screen_on)
@@ -71,11 +82,22 @@ static void screen_init(void) {
 	   is on the screen at the next field (2: two fields later at 60 frames a
 	   second, and a frame that takes long is covered by one that waited) */
 	mx_hires_ahead((u32)ri.Cvar_Get("r_ps2ahead", "1", CVAR_ARCHIVE)->integer);
-	if (mx_hires_init(&mx_video_1080i, 1920, 540, MX_GS_PSM_CT16S, rec, sizeof rec, (void *)0x70002000, 0x2000) < 0)
+	/* r_ps2width: the picture's width, 1920 or 960 (the display shows each
+	   pixel twice: half the framebuffer and the Z, half the fill, the rest of
+	   GS memory the textures'). The textures keep the levels of 1920: the
+	   lines are as sharp as before. 0: from frame to frame, by what the
+	   frames need (width_choose) */
+	int wcfg = ri.Cvar_Get("r_ps2width", "1920", CVAR_LATCH)->integer;
+	u32 width = wcfg == 960 ? 960 : 1920;
+	dyn_width = wcfg == 0;
+	mx_hires_widths(dyn_width);
+	if (dyn_width)
+		mx_hires_own_z(1);
+	if (mx_hires_init(&mx_video_1080i, width, 540, MX_GS_PSM_CT16S, rec, sizeof rec, (void *)0x70002000, 0x2000) < 0)
 		ri.Error(ERR_FATAL, "ps2: no 1080i, or its buffer does not fit");
 	u32 sbytes = mx_hires_strip_records(srec, sizeof srec);
-	ri.Printf(PRINT_ALL, "ps2: renderer: 1080i, %u strips of %u lines, a strip's record %u KB\n", mx_hires_passes(),
-	          mx_hires_strip_height(), sbytes / 1024);
+	ri.Printf(PRINT_ALL, "ps2: renderer: 1080i, %u wide, %u strips of %u lines, a strip's record %u KB\n", mx_gs.w,
+	          mx_hires_passes(), mx_hires_strip_height(), sbytes / 1024);
 	/* r_ps2texfine: the units (32 KB of GS memory, taken from the cache's) of
 	   the pool for the first levels of textures of 256 texels, for a file of
 	   images made with tools/ps2pak.py --max 256 (0, the default: none, they
@@ -83,7 +105,16 @@ static void screen_init(void) {
 	   nearest the eye are as sharp as the PC's) */
 	rp_tex_fine_units((u32)ri.Cvar_Get("r_ps2texfine", "0", CVAR_ARCHIVE | CVAR_LATCH)->integer);
 	rp_tex_init();
-	rp_list_init();
+	rp_tex_room((u32)ri.Cvar_Get("r_ps2texroom", "100", 0)->integer);
+	rp_tex_max((u32)ri.Cvar_Get("r_ps2texmax", "128", 0)->integer);
+	/* the stream area: GS memory (pages of 8 KB, taken from the cache) for the
+	   images the cache has no room for, sent in the passes (0: none: such an
+	   image is placed coarser, or not drawn); the most a frame sends there */
+	rp_tex_stream((u32)ri.Cvar_Get("r_ps2texstream", "0", CVAR_LATCH)->integer,
+	              (u32)ri.Cvar_Get("r_ps2texstreamkb", "1024", 0)->integer);
+	/* the frames' chains: more frames wait to be shown at half the width
+	   (their passes take less), and the stream area's chains are more */
+	rp_list_init(width < 1920 || dyn_width || rp_tex_stream_pages() ? 1024 * 1024 : 768 * 1024);
 	/* the images and the models: two files beside the paks, mapped */
 	char path[MAX_OSPATH];
 	const char *base = ri.Cvar_Get("fs_basepath", "", 0)->string;
@@ -804,7 +835,7 @@ static int mirror_view(const refdef_t *fd, const struct rp_cam *cam, float ys, f
 	portal_point(&o, cam->org, m.org);
 	for (int i = 0; i < 3; i++)
 		portal_vector(&o, cam->axis[i], m.axis[i]);
-	rp_view_rect(&m, (float)fd->x, (float)fd->y * ys, (float)fd->width, (float)fd->height * ys);
+	rp_view_rect(&m, (float)fd->x * XS, (float)fd->y * ys, (float)fd->width * XS, (float)fd->height * ys);
 	/* what is before the camera's plane only (the engine's portalPlane) */
 	VectorNegate(o.caxis[0], rp_view.fr[0].n);
 	rp_view.fr[0].d = DotProduct(o.corg, rp_view.fr[0].n), rp_view.fr_len[0] = 1.0f;
@@ -853,13 +884,13 @@ static int mirror_view(const refdef_t *fd, const struct rp_cam *cam, float ys, f
 		if (!blended) {
 			u32 sky_strips = sky_shader ? rp_world_sky() : 0;
 			const struct rp_shader *sky = sky_strips ? rp_shader_get(sky_shader) : NULL;
-			if (sky)
+			if (sky && !r_fastsky->integer)
 				rp_sky_draw(sky, now, sky_strips);
 			rp_world_add(1);
 		}
 	}
 	rp_poly_flush();
-	rp_zclear((float)fd->x, (float)fd->y * ys, (float)(fd->x + fd->width), (float)(fd->y + fd->height) * ys);
+	rp_zclear((float)fd->x * XS, (float)fd->y * ys, (float)(fd->x + fd->width) * XS, (float)(fd->y + fd->height) * ys);
 	rp_view_mirror = 0;
 	rp_world_pvs(NULL);
 	st_mirrors++;
@@ -891,7 +922,7 @@ static void RP_RenderScene(const refdef_t *fd) {
 		   images are more than GS memory holds */
 		rp_tex_full = !world;
 		float ys = (float)mx_gs.h / 1080.0f;
-		rp_view_rect(&cam, (float)fd->x, (float)fd->y * ys, (float)fd->width, (float)fd->height * ys);
+		rp_view_rect(&cam, (float)fd->x * XS, (float)fd->y * ys, (float)fd->width * XS, (float)fd->height * ys);
 		float now = fd->time * 0.001f;
 		scene_time = now;
 		rp_scene_world = world;
@@ -903,7 +934,7 @@ static void RP_RenderScene(const refdef_t *fd) {
 			float mpl[4];
 			portal_drawn = 0;
 			if ((r_ps2mirror->integer & 5) && mirror_view(fd, &cam, ys, now, mpl)) {
-				rp_view_rect(&cam, (float)fd->x, (float)fd->y * ys, (float)fd->width, (float)fd->height * ys);
+				rp_view_rect(&cam, (float)fd->x * XS, (float)fd->y * ys, (float)fd->width * XS, (float)fd->height * ys);
 				rp_world_cull(&world_st);
 				/* r_ps2debug 33554432: the mirror's view alone */
 				if (rp_debug & 33554432)
@@ -914,7 +945,7 @@ static void RP_RenderScene(const refdef_t *fd) {
 			if (draw_world)
 				rp_world_add(0);
 			/* the dynamic lights on it: after its depth is there, before what stands in it */
-			if (r_ps2dlight->integer && rp_ndlight) {
+			if (r_dynamiclight->integer && r_ps2dlight->integer && rp_ndlight) {
 				static struct rp_dlight lit[RP_DLIGHTS];
 				unsigned n = dlights_choose(lit);
 				rp_world_dlights(lit, n, n);
@@ -931,7 +962,7 @@ static void RP_RenderScene(const refdef_t *fd) {
 			decals++;
 		/* a scene of its own on the screen (the HUD's models): no depth is there yet */
 		if (!world)
-			rp_zclear((float)fd->x, (float)fd->y * ys, (float)(fd->x + fd->width), (float)(fd->y + fd->height) * ys);
+			rp_zclear((float)fd->x * XS, (float)fd->y * ys, (float)(fd->x + fd->width) * XS, (float)(fd->y + fd->height) * ys);
 		/* the models that write depth; the marks on the walls; the world's
 		   blended surfaces; the models that blend, and the rest; last the view
 		   weapon, over depth of its own (the engine squeezes its depth range) */
@@ -965,7 +996,7 @@ static void RP_RenderScene(const refdef_t *fd) {
 		if (draw_world) {
 			u32 sky_strips = sky_shader ? rp_world_sky() : 0;
 			const struct rp_shader *sky = sky_strips ? rp_shader_get(sky_shader) : NULL;
-			if (sky && !(rp_debug & 524288))
+			if (sky && !r_fastsky->integer && !(rp_debug & 524288))
 				rp_sky_draw(sky, now, sky_strips);
 		}
 		if (skip & 8)
@@ -1041,7 +1072,7 @@ static void RP_DrawStretchPic(float x, float y, float w, float h, float s1, floa
 	u32 col = (u32)color2d[0] | (u32)color2d[1] << 8 | (u32)color2d[2] << 16 | (u32)color2d[3] << 24;
 	/* as the picture before (a line of text): nothing to look up */
 	if (shader == last2d.shader && last2d.plain && col == last2d.colour) {
-		rp_pic(x, y * ys, w, h * ys, s1, t1, s2, t2, last2d.rgba);
+		rp_pic(x * XS, y * ys, w * XS, h * ys, s1, t1, s2, t2, last2d.rgba);
 		return;
 	}
 	struct rp_shader *sh = rp_shader_get(shader);
@@ -1069,7 +1100,7 @@ static void RP_DrawStretchPic(float x, float y, float w, float h, float s1, floa
 			a2 = m[0] * s2 + m[1] * t2 + m[2], b2 = m[3] * s2 + m[4] * t2 + m[5];
 		}
 		u32 rgba = (u32)c[0] | (u32)c[1] << 8 | (u32)c[2] << 16 | (u32)c[3] << 24;
-		rp_pic(x, y * ys, w, h * ys, a1, b1, a2, b2, rgba);
+		rp_pic(x * XS, y * ys, w * XS, h * ys, a1, b1, a2, b2, rgba);
 		last2d.rgba = rgba, last2d.colour = col;
 		last2d.plain = sh->nstage == 1 && stg->nimg == 1 && !stg->ntcmod && last2d.shader == shader &&
 		               stg->rgbgen != RGB_WAVE && stg->alphagen != A_WAVE;
@@ -1077,16 +1108,62 @@ static void RP_DrawStretchPic(float x, float y, float w, float h, float s1, floa
 }
 
 
+/* r_ps2width 0: half the width (960) while the frames need more than the
+   whole width leaves: textures that are placed coarser than their distance
+   asks (the governor's bias), or passes that take more than 80 % of a
+   field, ten frames in a row; the whole width again after two seconds at
+   half in which the frames' textures at their full size would fit the
+   whole width's GS memory (85 %) and the passes (twice the pixels) would
+   take under 60 % of a field. */
+static void width_choose(void) {
+	if (r_ps2widthflip && r_ps2widthflip->integer > 0) {
+		static u32 n;
+		width_asked = (n++ / (u32)r_ps2widthflip->integer) & 1 ? 1920 : 960;
+		mx_hires_width(width_asked);
+		return;
+	}
+	float field = 1e6f / (float)mx_gs.hz, passes = field_passes_us();
+	int pressed = rp_tex_far_bias() >= 0.5f || passes > 0.8f * field;
+	if (!half_now) {
+		press_frames = pressed ? press_frames + 1 : 0;
+		width_asked = press_frames >= 10 ? 960 : 1920;
+		if (press_frames >= 10)
+			press_frames = 0, calm_frames = 0;
+		mx_hires_width(width_asked);
+		return;
+	}
+	int fits = rp_tex_want_blocks() * 100 < rp_tex_full_blocks() * 85 && 1.6f * passes < 0.6f * field &&
+	           rp_tex_far_bias() == 0;
+	calm_frames = fits ? calm_frames + 1 : 0;
+	width_asked = calm_frames >= 120 ? 1920 : 960;
+	mx_hires_width(width_asked);
+}
+
 static void RP_BeginFrame(stereoFrame_t stereoFrame) {
 	if (!screen_on || in_frame)
 		return;
+	if (dyn_width)
+		width_choose();
 	u32 t0 = mx_count();
 	mx_frame_begin_n();
 	ps2_ren_wait += mx_count() - t0;
 	in_frame = 1;
+	if (dyn_width) {
+		int half = mx_gs.w < 1920;
+		width_changes += half != half_now;
+		width_held += half && width_asked == 1920;
+		half_now = half, half_frames += half;
+	}
 	if (mark_rays > st_mark_rays_max)
 		st_mark_rays_max = mark_rays;
 	mark_rays = 0;
+	/* the stream area's share of the field: what the passes leave of 80 % */
+	if (mx_hires_passes()) {
+		static u32 was_late;
+		u32 late = mx_hires_stats.late + mx_hires_stats.over;
+		rp_tex_stream_room(0.80f * 1e6f / (float)mx_gs.hz - field_passes_us(), late != was_late);
+		was_late = late;
+	}
 	rp_tex_frame();
 	mx_hires_clear(0, 0, 0);
 	rp_list_begin();
@@ -1108,7 +1185,7 @@ static struct {
 	u32 frame;
 	u16 demo, tex_kb;
 	u16 quad_kpx; /* the quads' fill, thousands of pixels */
-	u16 sent[8], batches[8], setups[8], msent[8], mbatches[8], draws[8];
+	u16 sent[8], batches[8], setups[8], msent[8], mbatches[8], draws[8], stream_kb[8];
 } frame_log[FRAME_LOG];
 static u32 pass_tex_kb;
 
@@ -1129,6 +1206,7 @@ static void passes_frame(u32 frame, int df) {
 		f->setups[k] = (u16)rp_list_stats.k_setups[k];
 		f->msent[k] = (u16)rp_list_stats.k_msent[k], f->mbatches[k] = (u16)rp_list_stats.k_mbatches[k];
 		f->draws[k] = (u16)rp_list_stats.k_draws[k];
+		f->stream_kb[k] = (u16)rp_list_stats.k_stream_kb[k];
 	}
 }
 
@@ -1139,16 +1217,17 @@ static void passes_report(void) {
 	mx_hires_log(0, 0);
 	static char text[64 * 96];
 	FILE *fo = fopen("quake3.pass", "w");
-	int len = sprintf(text, "# frame demo strip wait_us run_us over out sent batches setups tex_kb msent mbatches draws quad_kpx\n");
+	int len = sprintf(text, "# frame demo strip wait_us run_us over out sent batches setups tex_kb msent mbatches draws quad_kpx stream_kb\n");
 	for (u32 i = first; i < n && fo; i++) {
 		const struct mx_hires_pass *e = &pass_log[i % PASS_LOG];
 		const typeof(frame_log[0]) *f = &frame_log[e->frame % FRAME_LOG];
 		u32 k = e->strip & 7;
 		int known = f->frame == e->frame;
-		len += sprintf(text + len, "%u %u %u %u %u %u %u %u %u %u %u %u %u %u %u\n", e->frame, known ? f->demo : 0, e->strip,
+		len += sprintf(text + len, "%u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u\n", e->frame, known ? f->demo : 0, e->strip,
 		               e->wait_us, e->run_us, e->over, e->out, known ? f->sent[k] : 0, known ? f->batches[k] : 0,
 		               known ? f->setups[k] : 0, known ? f->tex_kb : 0, known ? f->msent[k] : 0,
-		               known ? f->mbatches[k] : 0, known ? f->draws[k] : 0, known ? f->quad_kpx : 0);
+		               known ? f->mbatches[k] : 0, known ? f->draws[k] : 0, known ? f->quad_kpx : 0,
+		               known ? f->stream_kb[k] : 0);
 		if (len > (int)sizeof text - 96) {
 			fwrite(text, 1, len, fo);
 			len = 0;
@@ -1575,8 +1654,39 @@ void ps2_ren_report(void) {
 	           st_mark_frags, st_mark_traces, (unsigned)(st_mark_cycles / (MX_EE_HZ / 1000)), st_mark_known,
 	           (unsigned)(st_quad_cycles / (MX_EE_HZ / 1000)), rp_dl_stats.lights, rp_dl_stats.runs, rp_dl_stats.chunks, st_dl_off, world_st_fine / n, world_st_cand / n, rp_tex_stats.fine_sent, rp_tex_stats.fine_wait);
 	unsigned v = st.views - st_at.views;
-	Com_Printf("ps2: renderer: textures: %u levels sent while not in memory (%u KB; the game waited %u ms)\n",
-	           rp_tex_stats.file_waits, rp_tex_stats.file_wait_kb, rp_tex_stats.file_wait_us / 1000);
+	u32 tf = rp_tex_stats.frames ? rp_tex_stats.frames : 1;
+	Com_Printf("ps2: renderer: textures: %u levels sent while not in memory (%u KB; the game waited %u ms); %u placed "
+	           "from a coarser level while their finer one was read in; %u KB pinned (levels under 32 KiB, CLUTs); "
+	           "a frame streamed %u images (%u KB) in %u pieces, sent %u times (%u KB) in the strips (area %u pages); "
+	           "%u not streamed (over the frame's KB); %u sent without a FLUSH\n",
+	           rp_tex_stats.file_waits, rp_tex_stats.file_wait_kb, rp_tex_stats.file_wait_us / 1000, rp_tex_stats.paged,
+	           rp_tex_pinned_kb, rp_tex_stats.stream / tf, rp_tex_stats.stream_kb / tf, rp_tex_stats.stream_segs / tf,
+	           rp_tex_stats.stream_sent / tf, rp_tex_stats.stream_sent_kb / tf, rp_tex_stream_pages(), rp_tex_stats.stream_over,
+	           rp_tex_stats.stream_noflush);
+	Com_Printf("ps2: renderer: CLUTs: %u slots below the picture, a frame %u drawn from them (%u sent there), %u from "
+	           "the cache\n", rp_tex_clut_slots(), rp_tex_stats.clut_slot / tf, rp_tex_stats.clut_slot_sent,
+	           rp_tex_stats.clut_cache / tf);
+	if (mx_hires_stats.stuck[15]) {
+		const u32 *k = mx_hires_stats.stuck;
+		u32 lo, hi;
+		rp_dyn_range(&lo, &hi);
+		Com_Printf("ps2: stuck pass (strip %u): VIF1 STAT %08x CODE %08x; VIF1 DMA CHCR %08x MADR %08x QWC %x TADR %08x "
+		           "ASR0 %08x ASR1 %08x; GIF STAT %08x; GIF DMA CHCR %08x MADR %08x QWC %x TADR %08x; dyn %08x-%08x\n",
+		           k[13], k[0], k[1], k[2], k[3], k[4], k[5], k[6], k[7], k[8], k[9], k[10], k[11], k[12], lo, hi);
+		const u32 *v = mx_hires_stats.stuck_vu1;
+		Com_Printf("ps2: stuck pass: VPU_STAT %08x; VU1 TPC %04x VI01-15 %x %x %x %x %x %x %x %x %x %x %x %x %x %x %x\n",
+		           k[14], v[16], v[1], v[2], v[3], v[4], v[5], v[6], v[7], v[8], v[9], v[10], v[11], v[12], v[13],
+		           v[14], v[15]);
+		for (u32 i = 0; i < 20; i++) {
+			const u32 *m = mx_hires_stats.stuck_mem[i];
+			Com_Printf("ps2: stuck mem %08x: %08x %08x %08x %08x\n", (k[5] & 0x01FFFFF0u) - 256 + i * 16, m[0], m[1], m[2],
+			           m[3]);
+		}
+	}
+	if (dyn_width)
+		Com_Printf("ps2: renderer: width: %u of %u frames at half, %u changes; %u frames at half while the whole "
+		           "width was asked for (GS memory not back yet, or the layout between)\n", half_frames,
+		           rp_tex_stats.frames, width_changes, width_held);
 	Com_Printf("ps2: renderer: marks: %u rays in a frame at most, %u small marks flat (two rays), %u left out for the "
 	           "frame's rays (r_ps2markrays)\n", st_mark_rays_max, st_mark_flat, st_mark_over);
 	if (v && world_sum.drawn)
@@ -1610,7 +1720,45 @@ void ps2_ren_report(void) {
 	}
 }
 
-int ps2_ren_screenshot(const char *path) { return screen_on ? mx_hires_save_tga(path) : -1; }
+/* the picture, and the images' state then (is GS memory short: tight, the
+   levels the world's textures are taken coarser by) */
+int ps2_ren_screenshot(const char *path) {
+	if (!screen_on)
+		return -1;
+	const struct rp_tex_stats *t = &rp_tex_stats;
+	ri.Printf(PRINT_ALL, "ps2: renderer: textures at the picture: tight %d, far bias %.2f; frames %u, tight %u; "
+	          "%u placed coarser for room, %u from their distance's level, %u without room; %u from a coarser level "
+	          "while the finer was read in, %u sent while not in memory (waited %u ms); %u KB pinned; streamed %u images "
+	          "(%u KB) in %u pieces, sent %u times (%u KB) in the strips, %u over the frame's KB\n",
+	          rp_tex_tight(), rp_tex_far_bias(), t->frames, t->tight, t->coarse, t->far, t->full, t->paged, t->file_waits,
+	          t->file_wait_us / 1000, rp_tex_pinned_kb, t->stream, t->stream_kb, t->stream_segs, t->stream_sent,
+	          t->stream_sent_kb, t->stream_over);
+	ri.Printf(PRINT_ALL, "ps2: renderer: CLUTs at the picture: %u slots below it, %u drawn from them, %u from the cache\n",
+	          rp_tex_clut_slots(), t->clut_slot, t->clut_cache);
+	/* r_ps2debug 4096 also: the frame's images of the world and the models,
+	   each with the level it was placed from and the one its distance wanted */
+	if (rp_debug & 4096) {
+		u32 f = mx_frame_number();
+		FILE *out = fopen("quake3.images", "w");
+		for (u32 i = 0;; i++) {
+			struct rp_image *im = rp_image_at(i);
+			if (!im) {
+				if (i > 4096)
+					break;
+				continue;
+			}
+			if (im->frame + 1 < f || (im->kind != RP_IMAGE_WORLD && im->kind != RP_IMAGE_MODEL))
+				continue;
+			if (out)
+				fprintf(out, "%s %ux%u %s levels %u from %u want %d%s\n", im->name, im->w, im->h,
+				        im->psm == MX_GS_PSM_T4 ? "T4" : "T8", im->levels, im->from,
+				        im->want_frame + 1 >= f ? im->want : -1, im->kind == RP_IMAGE_MODEL ? " (model)" : "");
+		}
+		if (out)
+			fclose(out);
+	}
+	return mx_hires_save_tga(path);
+}
 
 /* ---- the rest of the interface -------------------------------------------------------- */
 
@@ -1629,6 +1777,7 @@ static void RP_BeginRegistration(glconfig_t *config) {
 	r_ps2draw = ri.Cvar_Get("r_ps2draw", "1", 0);
 	r_ps2shot = ri.Cvar_Get("r_ps2shot", "0", 0);
 	r_ps2passes = ri.Cvar_Get("r_ps2passes", "0", 0);
+	r_ps2widthflip = ri.Cvar_Get("r_ps2widthflip", "0", 0);
 	r_ps2beamat = ri.Cvar_Get("r_ps2beamat", "0", 0);
 	r_ps2fill = ri.Cvar_Get("r_ps2fill", "1", CVAR_ARCHIVE);
 	r_ps2marks = ri.Cvar_Get("r_ps2marks", "1", CVAR_ARCHIVE);
@@ -1644,6 +1793,11 @@ static void RP_BeginRegistration(glconfig_t *config) {
 	r_ps2markrays = ri.Cvar_Get("r_ps2markrays", "64", CVAR_ARCHIVE);
 	r_ps2clean = ri.Cvar_Get("r_ps2clean", "1", CVAR_ARCHIVE);
 	rp_debug = (unsigned)ri.Cvar_Get("r_ps2debug", "0", 0)->integer;
+	r_fastsky = ri.Cvar_Get("r_fastsky", "0", CVAR_ARCHIVE);
+	r_dynamiclight = ri.Cvar_Get("r_dynamiclight", "1", CVAR_ARCHIVE);
+	/* the Graphics menu's video mode: the one there is */
+	ri.Cvar_Get("r_availableModes", "", CVAR_ROM);
+	ri.Cvar_Set("r_availableModes", "1920x1080");
 	screen_init();
 	/* no frame in flight draws what goes now: the map, the images */
 	world_free();

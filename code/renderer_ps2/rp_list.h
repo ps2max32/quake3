@@ -26,6 +26,7 @@ struct rp_plane {
 struct rp_view {
 	float org[3], F[3], L[3], U[3];
 	float fx, fy;               /* pixels a unit at distance 1 */
+	float flod;                 /* fx at a picture 1920 wide: the textures' levels (r_ps2width) */
 	float cx, cy;               /* the view's centre in the GS's coordinates (2048: the picture's) */
 	float rowx[3], rowy[3];     /* a world direction to GS x * w and y * w */
 	struct rp_plane fr[5];      /* the frustum: near, left, right, bottom, top */
@@ -69,6 +70,8 @@ u32 rp_strip_lines(float y0, float y1);
 u64 *rp_dyn(u32 qw);
 /* Give back the end of the last rp_dyn: it ends at end. */
 void rp_dyn_end(u64 *end);
+/* its memory's physical range (for finding a stuck DMA) */
+void rp_dyn_range(u32 *lo, u32 *hi);
 
 /* ---- runs and draws ------------------------------------------------------------------ */
 
@@ -147,13 +150,15 @@ struct rp_list_stats {
 	u32 lost;          /* draws left out: no room */
 	u32 k_sent[16], k_batches[16], k_setups[16]; /* the last frame's, by strip */
 	u32 k_msent[16], k_mbatches[16], k_draws[16]; /* of them the models' program's; draws (CALLs) */
+	u32 k_stream_kb[16];                          /* textures sent into the stream area (rp_tex.h) */
 	u32 p_sent[RP_PROGS], p_batches[RP_PROGS], p_setups[RP_PROGS]; /* sent, batches and setups by program (RP_PROG_*) */
 	u32 p_clip[RP_PROGS];                        /* of p_sent, by the programs that cut */
 };
 extern struct rp_list_stats rp_list_stats;
 
-/* Once, when the screen is set up. */
-void rp_list_init(void);
+/* Once, when the screen is set up: bytes of memory for the frames' chains
+   (rp_dyn), for all the frames in flight. */
+void rp_list_init(u32 bytes);
 /* A frame: after mx_frame_begin_n (the frame's GS registers and VU1 set-up
    into the record, the list empty); before mx_frame_end (the draws into the
    strips' records). */
@@ -173,7 +178,8 @@ void rp_list_end(void);
    every list sent twice, the second time not drawn (VIF1 and VU1 work
    twice, the GS once: whether they wait for each other), 262144 no late
    lightmap (a script's $lightmap after two stages: the map's own pass),
-   524288 no sky */
+   524288 no sky, 1048576 every texture sent into the stream area waits for VU1 first (a FLUSH), 67108864 a model's
+   pieces in all the strips the model is in (not each by its own box) */
 extern unsigned rp_debug;
 
 #endif
