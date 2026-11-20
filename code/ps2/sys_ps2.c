@@ -346,21 +346,25 @@ void IN_Frame(void) {
 	}
 	last = held;
 	/* the sticks: axes 0, 1 left (side, forward), 2, 3 right (yaw, pitch), in
-	   half SDL's range (-16383 .. 16383: j_yaw -0.0167 is 300 degrees a
-	   second at full turn, j_pitch 0.011 195), shaped as a PS4 or PS5 game
-	   does: a round dead zone (j_deadzone, of the stick's reach) and on the
-	   right stick a curve (j_curve: the reach to that power). The move
-	   (j_forward, j_side) is clamped to 127 by the game: they are set so
-	   that full reach is 127 (q3's 0.25 reached it at 3% of the reach: a
-	   stick a little off straight walked at 45 degrees) */
+	   half SDL's range (-16383 .. 16383: j_yaw -0.012 is 215 degrees a second
+	   at full turn, j_pitch 0.008 145), shaped as a PS4 or PS5 game does: a
+	   round dead zone (j_deadzone, of the stick's reach) around the stick's
+	   own middle, and on the right stick a curve (j_curve: the reach to that
+	   power) and the Controls menu's Mouse Speed (sensitivity: its default 5
+	   is the speeds above, 10 twice them). The move (j_forward, j_side) is
+	   clamped to 127 by the game: they are set so that full reach is 127
+	   (q3's 0.25 reached it at 3% of the reach: a stick a little off
+	   straight walked at 45 degrees). maxsdk moves each stick's middle
+	   (where it rests) to 128 (mx_pad_sticks). */
 	u8 st[4];
 	static int axis[4];
 	if (mx_pad_sticks(0, st)) {
 		static const int map[4] = {2, 3, 0, 1}; /* st: right x, y, left x, y */
-		static cvar_t *dz, *curve;
+		static cvar_t *dz, *curve, *sens;
 		if (!dz) {
 			dz = Cvar_Get("j_deadzone", "0.22", CVAR_ARCHIVE);
-			curve = Cvar_Get("j_curve", "1.5", CVAR_ARCHIVE);
+			curve = Cvar_Get("j_curve", "2", CVAR_ARCHIVE);
+			sens = Cvar_Get("sensitivity", "5", CVAR_ARCHIVE);
 		}
 		float f[4];
 		for (int k = 0; k < 4; k++) {
@@ -374,7 +378,7 @@ void IN_Frame(void) {
 			if (r > 1)
 				r = 1;
 			if (s == 0)
-				r = powf(r, curve->value);
+				r = powf(r, curve->value) * (sens->value > 0 ? sens->value / 5.0f : 1);
 			/* the left stick (the move): the game's speed is its largest
 			   component (PM_CmdScale), so the circle is stretched to the
 			   square, the direction kept: full reach is full speed in every
@@ -681,6 +685,11 @@ static void ps2_run_report(void) {
 	ps2_beam_report();
 }
 
+static void ps2shot_f(void) {
+	const char *path = Cmd_Argc() > 1 ? Cmd_Argv(1) : "quake3.tga";
+	Com_Printf("ps2shot %s: %d\n", path, ps2_ren_screenshot(path));
+}
+
 int main(int argc, char **argv) {
 	mx_printf("Quake 3 (ioquake3) on maxsdk: virtual memory %s\n", mx_vm_active() ? "on" : "off");
 	Sys_Milliseconds();
@@ -695,7 +704,7 @@ int main(int argc, char **argv) {
 	Q_strncpyz(cmdline,
 	           "+set fs_basepath . +set fs_homepath . +set vm_game 0 +set vm_cgame 0 "
 	           "+set vm_ui 0 +set sv_pure 0 +set r_vertexLight 0 +set r_textureMode GL_LINEAR_MIPMAP_LINEAR +set r_picmip 2 "
-	           "+set s_mixPreStep 0 +set s_mixahead 0.14 +set in_joystick 1 +set j_yaw -0.0167 +set j_pitch 0.011 +set j_forward -0.00776 +set j_side 0.00776 +set j_deadzone 0.22 +set j_curve 1.5 "
+	           "+set s_mixPreStep 0 +set s_mixahead 0.14 +set in_joystick 1 +set j_yaw -0.012 +set j_pitch 0.008 +set j_forward -0.00776 +set j_side 0.00776 +set j_deadzone 0.22 +set j_curve 2 "
 	           "+set r_ignoreGLErrors 1 +set com_introplayed 1 +set cl_allowDownload 0 "
 	           "+set ui_cdkeychecked 1 +set bot_enable 1 +set cg_drawFPS 0 +set com_maxfps 0 "
 	           "+bind JOY1 \"+moveup\" +bind JOY2 \"+movedown\" +bind JOY3 weapnext "
@@ -705,7 +714,39 @@ int main(int argc, char **argv) {
 		Q_strcat(cmdline, sizeof cmdline, " ");
 		Q_strcat(cmdline, sizeof cmdline, argv[i]);
 	}
+	/* the game's data: baseq3 (the full game), else the demo's demoq3 (its
+	   pak0 is refused in baseq3: the full game's pak1-8 are wanted there).
+	   A com_basegame on the command line goes first; fs_basepath is the last
+	   one set there (a run's arguments may come as one argument) */
+	{
+		char bp[MAX_OSPATH] = ".";
+		int given = strstr(cmdline, "+set com_basegame ") != NULL;
+		for (const char *p = cmdline; (p = strstr(p, "+set fs_basepath ")) != NULL;) {
+			p += strlen("+set fs_basepath ");
+			size_t n = strcspn(p, " ");
+			if (n >= sizeof bp)
+				n = sizeof bp - 1;
+			memcpy(bp, p, n);
+			bp[n] = 0;
+		}
+		char path[MAX_OSPATH];
+		FILE *f;
+		Com_sprintf(path, sizeof path, "%s/" BASEGAME "/pak0.pk3", bp);
+		if (!given && !(f = fopen(path, "rb"))) {
+			Com_sprintf(path, sizeof path, "%s/demoq3/pak0.pk3", bp);
+			if ((f = fopen(path, "rb")) != NULL) {
+				fclose(f);
+				Q_strcat(cmdline, sizeof cmdline, " +set com_basegame demoq3");
+				mx_printf("ps2: no " BASEGAME "/pak0.pk3: the demo's data (demoq3)\n");
+			}
+		} else if (!given)
+			fclose(f);
+	}
 	Com_Init(cmdline);
+	/* ps2shot <file>: the picture as it is now, as a TGA (host: or a path):
+	   for pictures of fixed views, e.g. +devmap q3dm1 +wait 300 +setviewpos
+	   x y z yaw +wait 60 +ps2shot a.tga +quit */
+	Cmd_AddCommand("ps2shot", ps2shot_f);
 	NET_Init();
 	if (PS2_AUTOQUIT)
 		mx_thread_start(watchdog, NULL, wd_stack, sizeof wd_stack, mx_thread_prio(mx_thread_self()) - 1);

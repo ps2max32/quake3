@@ -320,6 +320,10 @@ static void Preferences_MenuInit( void ) {
 	s_preferences.synceveryframe.generic.type     = MTYPE_RADIOBUTTON;
 	s_preferences.synceveryframe.generic.name	  = "Sync Every Frame:";
 	s_preferences.synceveryframe.generic.flags	  = QMF_PULSEIFFOCUS|QMF_SMALLFONT;
+#ifdef PS2_REN_PS2
+	// the PS2's own renderer: a frame is always drawn as the beam reaches it
+	s_preferences.synceveryframe.generic.flags	 |= QMF_GRAYED;
+#endif
 	s_preferences.synceveryframe.generic.callback = Preferences_Event;
 	s_preferences.synceveryframe.generic.id       = ID_SYNCEVERYFRAME;
 	s_preferences.synceveryframe.generic.x	      = PREFERENCES_X_POS;

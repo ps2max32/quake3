@@ -663,6 +663,28 @@ static void GraphicsOptions_UpdateMenuItems( void )
 	else
 		s_graphicsoptions.colorlight.generic.flags &= ~QMF_GRAYED;
 #endif
+#ifdef PS2_REN_PS2
+	// the PS2's own renderer has one way to draw: 1080i by beam racing, 16-bit
+	// colour, the lightmaps' brightness, its own files of textures (their
+	// levels chosen by the GS memory there is) and of curved surfaces. None of
+	// these cvars changes it, so none can be chosen (and Apply, a vid_restart
+	// that reloads everything, never shows)
+	{
+		menucommon_s *fixed[] = {
+			&s_graphicsoptions.list.generic, &s_graphicsoptions.beam.generic,
+			&s_graphicsoptions.allow_extensions.generic, &s_graphicsoptions.ratio.generic,
+			&s_graphicsoptions.mode.generic, &s_graphicsoptions.colordepth.generic,
+			&s_graphicsoptions.fs.generic, &s_graphicsoptions.lighting.generic,
+			&s_graphicsoptions.colorlight.generic, &s_graphicsoptions.geometry.generic,
+			&s_graphicsoptions.tq.generic, &s_graphicsoptions.texturebits.generic,
+			&s_graphicsoptions.filter.generic,
+		};
+		int i;
+		for ( i = 0; i < (int)ARRAY_LEN( fixed ); i++ )
+			fixed[i]->flags |= QMF_GRAYED;
+		s_graphicsoptions.apply.generic.flags |= QMF_HIDDEN|QMF_INACTIVE;
+	}
+#endif
 
 	GraphicsOptions_CheckConfig();
 }	
@@ -984,6 +1006,15 @@ static void GraphicsOptions_SetMenuItems( void )
 	{
 		s_graphicsoptions.colordepth.curvalue = 1;
 	}
+#ifdef PS2_REN_PS2
+	// the PS2's own renderer: what it does, whatever the cvars say
+	s_graphicsoptions.beam.curvalue       = 1;	// 1080i by beam racing
+	s_graphicsoptions.colorlight.curvalue = 0;	// the lightmaps' brightness
+	s_graphicsoptions.fs.curvalue         = 1;
+	s_graphicsoptions.colordepth.curvalue = 1;	// 16 bit
+	s_graphicsoptions.lighting.curvalue   = 0;	// lightmap
+	s_graphicsoptions.allow_extensions.curvalue = 1;
+#endif
 }
 
 /*
