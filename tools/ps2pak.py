@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Quake 3's textures as 8-bit (or 4-bit) paletted textures for the PS2.
 
-    ps2pak.py OUT.pk3 BASEQ3_DIR [--max 128] [--max2d 256] [--t4 37] [--dirs DIR,...] [-j N]
+    ps2pak.py OUT.pk3 BASEQ3_DIR [--max 128] [--max2d 256] [--t4 35] [--dirs DIR,...] [-j N]
 
 Reads the pak*.pk3 of BASEQ3_DIR in order (a later pak's file replaces an
 earlier one's; a .tga is taken before a .jpg of the same name, as the renderer
@@ -23,8 +23,12 @@ made from the full-colour level (2 x 2 box, as R_MipMap) and given the
 nearest palette entry. A 4-bit palette (half the GS memory, half the bytes
 to send) when the image has 16 colours or fewer, or when 16 colours leave
 level 0 within --t4 dB (peak signal to noise, over its channels) of the
-full-colour texels: 37 dB is a third of Quake 3's textures, the ones of
-one hue; 0: only when exact.
+full-colour texels: 35 dB is half of Quake 3's textures (37 dB a third,
+the ones of one hue; under 35 a texture of two hues, grey with a blue band,
+loses the smaller one's detail); 0: only when exact. Measured on a
+SCPH-90006 with the timedemo four: from 37 to 35 dB the frames' images at
+full size 875 -> 793 KB, images without room in GS memory 100 -> 26, the
+same frame time.
 
 .p8 layout (little-endian):
     char  magic[4]   "P8T1"
@@ -191,7 +195,7 @@ def main():
     ap.add_argument("baseq3")
     ap.add_argument("--max", type=int, default=128)
     ap.add_argument("--max2d", type=int, default=256)
-    ap.add_argument("--t4", type=float, default=37.0)
+    ap.add_argument("--t4", type=float, default=35.0)
     ap.add_argument("--dirs", default="")
     ap.add_argument("-j", type=int, default=os.cpu_count())
     o = ap.parse_args()

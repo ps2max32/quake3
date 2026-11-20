@@ -34,7 +34,23 @@ Both files (little-endian):
         u32  off_level[7]              the levels, each padded to 16 bytes
                                        (T4: the first texel of a byte in its
                                        low four bits); the CLUT and the
-                                       levels lie one after the other
+                                       levels lie one after the other (off,
+                                       size), but the levels over 128 texels
+                                       a side of 32 KiB or more (a page of
+                                       maxsdk's VM, what is read at a time):
+                                       each from a page's start on pages of
+                                       its own, in the region after the
+                                       entries' data (256 x 256: T8 two
+                                       pages, T4 one), so mapping them in is
+                                       optional: one is read when the image
+                                       is drawn that near and can be given
+                                       up again alone, no padding read with
+                                       it, and the rest of the images stay
+                                       as close together as without them.
+                                       Smaller ones (256 x 64 and the like)
+                                       stay with the image's other levels:
+                                       alone on a page they would be read
+                                       with its padding
       models:
         the file as it is in the pak (an MD3), at off
 
@@ -111,30 +127,62 @@ def image(blob, levels=LEVELS):
     return (w0, h0, width, height, 0x14 if t4 else 0x13, len(offs), int(alpha), offs), data
 
 
+PAGE = 32768  # maxsdk's VM page: what is read from the file, and given up, at a time
+
+
 def write(out, kind, entries):
     """entries: [(name, fields or None, data)]"""
     entries.sort(key=lambda e: e[0])
     off_index = 32
     off = off_index + 128 * len(entries)
     off += -off % 16
-    index, blobs = [], []
+    index, blobs, firsts = [], [], []
     for name, f, data in entries:
+        big = []
+        if f:
+            # its levels over 128 texels a side to the region of their own
+            # pages (their places fixed below)
+            offs = f[7]
+            nb = 0
+            while nb + 2 < len(offs) and max(f[0], f[1]) >> nb > 128 and offs[nb + 1] - offs[nb] >= PAGE:
+                nb += 1
+            if nb:
+                big = [data[offs[l]:offs[l + 1]] for l in range(nb)]
+                cut = offs[nb] - offs[0]
+                data = data[:offs[0]] + data[offs[nb]:]
+                f = f[:7] + ([0] * nb + [o - cut for o in offs[nb:]],)
         rec = struct.pack("<64sII", name[:63], off, len(data))
         if f:
             w, h, pw, ph, psm, nl, alpha, offs = f
             rec += struct.pack("<4H4BI7I", w, h, pw, ph, psm, nl, alpha, 0, off,
                                *[(off + o) for o in (offs + [0] * 7)[:7]])
-        index.append(rec + b"\0" * (128 - len(rec)))
+        index.append(bytearray(rec + b"\0" * (128 - len(rec))))
+        for l, lev in enumerate(big):
+            firsts.append((len(index) - 1, l, lev))
         blobs.append(pad16(data))
         off += len(blobs[-1])
+    # the levels over 128: each from a page's start, on pages of its own
+    region = []
+    at = off
+    for i, l, lev in firsts:
+        at += -at % PAGE
+        struct.pack_into("<I", index[i], 88 + 4 * l, at)
+        region.append((at, lev))
+        at += len(lev)
+    end = at if region else off
     with open(out + ".tmp", "wb") as fo:
-        fo.write(struct.pack("<4s5I8x", b"PBIN", 2, kind, len(entries), off_index, off))
-        fo.write(b"".join(index))
+        fo.write(struct.pack("<4s5I8x", b"PBIN", 2, kind, len(entries), off_index, end))
+        fo.write(b"".join(bytes(r) for r in index))
         fo.write(b"\0" * (-(off_index + 128 * len(entries)) % 16))
         for b in blobs:
             fo.write(b)
+        pos = off
+        for o, first in region:
+            fo.write(b"\0" * (o - pos))
+            fo.write(first)
+            pos = o + len(first)
     os.replace(out + ".tmp", out)
-    return off
+    return end
 
 
 def main():
