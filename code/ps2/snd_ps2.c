@@ -14,7 +14,10 @@
    RAM, played by the SPU2's voices; the music goes into the stream as it
    is. */
 
+#include <mx/cpu.h>
+#include <mx/mx.h>
 #include <mx/snd.h>
+#include <mx/thread.h>
 
 #include "../client/snd_local.h"
 #include "../client/snd_codec.h"
@@ -28,6 +31,8 @@ static int painted; /* frames the mixer has painted into the ring */
 
 static void hw_reset(void);
 static void hw_free_all(void);
+static void hw_job_start(void);
+static void hw_job_wait(void);
 
 qboolean SNDDMA_Init(void)
 {
@@ -37,6 +42,7 @@ qboolean SNDDMA_Init(void)
 		return qfalse;
 	}
 	hw_reset();
+	hw_job_start();
 	dma.channels = 2;
 	dma.samplebits = 16;
 	dma.isfloat = 0;
@@ -100,6 +106,7 @@ void SNDDMA_Shutdown(void)
 {
 	if (ps2_sndhw) {
 		S_PS2_StopAll();
+		hw_job_wait();
 		hw_free_all();
 	}
 	mx_snd_stream_stop();
@@ -140,6 +147,7 @@ static unsigned hw_bytes, hw_all_bytes, hw_encode_ms, hw_evicted, hw_file_ms, hw
 static struct {
 	int chan;        /* mxsnd's channel, 0: none */
 	int left, right; /* its volumes */
+	int wait;        /* since when (ms) its sound waits for its copy into SPU RAM, 0: not */
 } hw_ch[MAX_CHANNELS];
 #define HW_LOOPS 32
 static struct {
@@ -178,11 +186,106 @@ static qboolean hw_evict(const sfx_t *keep)
 	return qtrue;
 }
 
+/* A copy into SPU RAM while the game plays is made by a thread of its own
+   (s_ps2async 1, the default): the IOP takes about 3 ms for each 4 KB of
+   it and the game slept through that, a frame or two at a sound's first
+   play (and again after it had left SPU RAM for others: a level's sounds
+   are more than SPU RAM holds). One copy at a time; the sound starts when
+   its copy is there, the frames go on meanwhile. The thread only copies
+   (mx_snd_load): what else touches maxsdk's sounds (freeing one, the
+   voices) is the game's thread's, and waits while a copy is made where it
+   would change SPU RAM's map (hw_job_wait). */
+enum { JOB_IDLE, JOB_ASKED, JOB_OK, JOB_FAILED };
+static struct {
+	sfx_t *sfx; /* the sound being copied, NULL: none */
+	int loop, tries;
+	volatile int state;
+	struct mx_snd_sample sample;
+	int sema, thread;
+	int t0;
+	sfx_t *failed; /* the last one that found no room: the channels that wait for it give up */
+} hw_job;
+static unsigned char hw_stack[8192] MX_FAST_BSS MX_ALIGNED(16);
+static unsigned hw_async_ups, hw_async_ms, hw_async_late;
+
+static void hw_thread(void *arg)
+{
+	(void)arg;
+	for (;;) {
+		mx_sema_wait(hw_job.sema);
+		sfx_t *sfx = hw_job.sfx;
+		byte *a = sfx->ps2Adpcm;
+		byte first = a[1], last = a[sfx->ps2Bytes - 15];
+		if (hw_job.loop)
+			a[1] = first | 4, a[sfx->ps2Bytes - 15] = (last & ~3) | 3;
+		int ok = mx_snd_load(&hw_job.sample, a, (u32)sfx->ps2Bytes, (u32)sfx->ps2Rate) == 0;
+		a[1] = first, a[sfx->ps2Bytes - 15] = last;
+		hw_job.state = ok ? JOB_OK : JOB_FAILED;
+	}
+}
+
+static void hw_job_start(void)
+{
+	if (hw_job.thread > 0 || !Cvar_Get("s_ps2async", "1", CVAR_ARCHIVE)->integer)
+		return;
+	hw_job.sema = mx_sema_create(0, 1);
+	hw_job.thread = mx_thread_start(hw_thread, NULL, hw_stack, sizeof hw_stack, mx_thread_prio(mx_thread_self()) - 1);
+}
+
+static qboolean hw_evict(const sfx_t *keep);
+static void hw_loaded_add(sfx_t *sfx, int bytes);
+
+/* the thread's copy that is done: the sound has its sample; one that found
+   no room: the sound used longest ago leaves SPU RAM and the copy is tried
+   again */
+static void hw_job_take(void)
+{
+	if (!hw_job.sfx || hw_job.state == JOB_ASKED)
+		return;
+	sfx_t *sfx = hw_job.sfx;
+	if (hw_job.state == JOB_OK) {
+		*SAMPLE(sfx, hw_job.loop) = hw_job.sample;
+		hw_loaded_add(sfx, sfx->ps2Bytes);
+		hw_async_ups++, hw_async_ms += (unsigned)(Sys_Milliseconds() - hw_job.t0);
+		if (Cvar_VariableIntegerValue("s_ps2log"))
+			Com_Printf("SPUCOPY %s %d %d %d ms beside the game\n", sfx->soundName, hw_job.loop, sfx->ps2Bytes,
+			           Sys_Milliseconds() - hw_job.t0);
+	} else if (hw_job.tries++ < 16 && hw_evict(sfx)) {
+		hw_job.state = JOB_ASKED;
+		mx_sema_signal(hw_job.sema);
+		return;
+	} else
+		hw_job.failed = sfx;
+	hw_job.sfx = NULL, hw_job.state = JOB_IDLE;
+}
+
+/* until no copy is being made (before SPU RAM's map is changed here) */
+static void hw_job_wait(void)
+{
+	while (hw_job.sfx) {
+		if (hw_job.state == JOB_ASKED)
+			mx_sleep_us(500);
+		hw_job_take();
+	}
+}
+
+static void hw_loaded_add(sfx_t *sfx, int bytes)
+{
+	hw_ups++;
+	hw_bytes += (unsigned)bytes;
+	int in = 0;
+	for (int i = 0; i < hw_nloaded; i++)
+		in |= hw_loaded[i] == sfx;
+	if (!in && hw_nloaded < HW_SFX)
+		hw_loaded[hw_nloaded++] = sfx;
+}
+
 /* sfx's sample in SPU RAM, played once or looping (the same ADPCM with the
    loop's flags in its first and last blocks), or NULL */
 static struct mx_snd_sample *hw_sample(sfx_t *sfx, int loop)
 {
 	struct mx_snd_sample *s = SAMPLE(sfx, loop);
+	hw_job_wait();
 	if (s->spu)
 		return s;
 	if (!sfx->ps2Adpcm || sfx->ps2Bytes < 16)
@@ -201,16 +304,36 @@ static struct mx_snd_sample *hw_sample(sfx_t *sfx, int loop)
 		Com_Memset(s, 0, sizeof *s);
 		return NULL;
 	}
-	hw_ups++;
 	if (Cvar_VariableIntegerValue("s_ps2log"))
 		Com_Printf("SPUCOPY %s %d %d %d ms\n", sfx->soundName, loop, sfx->ps2Bytes, Sys_Milliseconds() - t0);
-	hw_bytes += (unsigned)sfx->ps2Bytes;
-	int in = 0;
-	for (int i = 0; i < hw_nloaded; i++)
-		in |= hw_loaded[i] == sfx;
-	if (!in && hw_nloaded < HW_SFX)
-		hw_loaded[hw_nloaded++] = sfx;
+	hw_loaded_add(sfx, sfx->ps2Bytes);
 	return s;
+}
+
+/* The same while the game plays: a sample not in SPU RAM is copied there
+   by the thread, and until it is there this gives NULL with *pending 1 (the
+   caller asks again the next frame). */
+static struct mx_snd_sample *hw_sample_play(sfx_t *sfx, int loop, int *pending)
+{
+	struct mx_snd_sample *s = SAMPLE(sfx, loop);
+	*pending = 0;
+	if (hw_job.thread <= 0)
+		return hw_sample(sfx, loop);
+	if (s->spu)
+		return s;
+	if (!sfx->ps2Adpcm || sfx->ps2Bytes < 16)
+		return NULL;
+	if (hw_job.failed == sfx) {
+		hw_job.failed = NULL;
+		return NULL;
+	}
+	if (!hw_job.sfx) {
+		hw_job.sfx = sfx, hw_job.loop = loop, hw_job.tries = 0, hw_job.t0 = Sys_Milliseconds();
+		hw_job.state = JOB_ASKED;
+		mx_sema_signal(hw_job.sema);
+	}
+	*pending = 1;
+	return NULL;
 }
 
 /* The sound's ADPCM: <name>.adp of the PS2's sound pak (tools/ps2snd.py:
@@ -317,14 +440,17 @@ static void hw_report(void)
 	if (++frames % 256 || hw_ups + (unsigned)hw_nall == told)
 		return;
 	told = hw_ups + (unsigned)hw_nall;
-	Com_Printf("Sound: %d sounds, %u KB (%u from the pak); files %u ms, encoding %u ms; SPU RAM: %d in %u KB, "
-	           "%u copies in %u ms, %u dropped\n", hw_nall, hw_all_bytes / 1024, hw_packed, hw_file_ms, hw_encode_ms,
-	           hw_nloaded, hw_bytes / 1024, hw_ups, hw_spu_ms, hw_evicted);
+	/* to the console alone: as the game's print it stood on the screen for three seconds, a picture a letter */
+	mx_printf("Sound: %d sounds, %u KB (%u from the pak); files %u ms, encoding %u ms; SPU RAM: %d in %u KB, "
+	           "%u copies in %u ms, %u dropped; %u copies beside the game in %u ms, %u sounds given up\n", hw_nall,
+	           hw_all_bytes / 1024, hw_packed, hw_file_ms, hw_encode_ms, hw_nloaded, hw_bytes / 1024, hw_ups, hw_spu_ms,
+	           hw_evicted, hw_async_ups, hw_async_ms, hw_async_late);
 }
 
 void S_PS2_Update(void)
 {
 	hw_report();
+	hw_job_take();
 	/* the channels' clock: real time in dma.speed's samples */
 	s_soundtime = s_paintedtime = (int)((long long)Sys_Milliseconds() * dma.speed / 1000);
 	/* the mixer's full scale is 255 times s_volume */
@@ -343,7 +469,19 @@ void S_PS2_Update(void)
 			hw_ch[i].chan = 0;
 			if (!sfx->inMemory && !sfx->defaultSound)
 				S_memoryLoad(sfx);
-			const struct mx_snd_sample *sm = hw_sample(sfx, 0);
+			int pending;
+			const struct mx_snd_sample *sm = hw_sample_play(sfx, 0, &pending);
+			if (!sm && pending) {
+				/* its copy is on its way: started when it is there, within a third
+				   of a second (later the sound's moment is over) */
+				int now = Sys_Milliseconds();
+				if (!hw_ch[i].wait)
+					hw_ch[i].wait = now ? now : 1;
+				if (now - hw_ch[i].wait < 333)
+					continue;
+				hw_async_late++;
+			}
+			hw_ch[i].wait = 0;
 			if (sm)
 				hw_ch[i].chan = mx_snd_ch_play(sm, (u32)sfx->ps2Rate, left, right, ch->fullVolume ? 200 : 128);
 			hw_ch[i].left = left, hw_ch[i].right = right;
@@ -383,7 +521,8 @@ void S_PS2_Update(void)
 			continue;
 		if (!sfx->inMemory)
 			S_memoryLoad(sfx);
-		const struct mx_snd_sample *sm = hw_sample(sfx, 1);
+		int pending;
+		const struct mx_snd_sample *sm = hw_sample_play(sfx, 1, &pending);
 		if (!sm)
 			continue;
 		unsigned rate = (unsigned)sfx->ps2Rate;

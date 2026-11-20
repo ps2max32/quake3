@@ -70,24 +70,61 @@ unsigned ps2_ren_wait;
 static int dyn_width, half_now;
 static u32 half_frames, width_changes, calm_frames, press_frames, width_asked, width_held;
 static cvar_t *r_ps2widthflip; /* a test: the width asked for changes every n frames */
+static cvar_t *r_ps2halfat;    /* r_ps2width 0 with the Z in the picture: half the width when the passes take more than this, % of a field */
+static int z_in_picture; /* r_ps2ownz 0: the passes' Z is the next strip of the picture */
+static cvar_t *r_ps2trilinear;
+static u32 tri_frames, tri_changes, tri_calm;
 
 static void screen_init(void) {
 	if (screen_on)
 		return;
-	mx_hires_strip_lines((u32)ri.Cvar_Get("r_ps2strip", "192", CVAR_LATCH)->integer);
-	/* r_ps2ownz 1 (the default): a Z strip of the passes' own (720 KB of GS memory less for
-	   the textures): a pass has the time the beam is outside its strip */
-	mx_hires_own_z(ri.Cvar_Get("r_ps2ownz", "1", CVAR_LATCH)->integer);
+	/* r_ps2mode: what the settings below are when nothing sets them. 0 (the
+	   default), for the frame rate: the textures up to 128 texels. 1, for the
+	   picture: the textures up to 256 texels (a file of images made with
+	   --max 256). Both: 1920 wide and for a time 960 when the GS cannot keep
+	   up with the beam (r_ps2width 0), the Z in the picture, a frame shown
+	   from the next strip, and strips of 128 lines, the last one the picture's
+	   last 156: four passes a field, each with the time of two strips and of
+	   what the others leave, so that none is still drawn when the beam comes.
+	   r_ps2strip 192: three strips, 0.4 ms of the EE a frame less, but a pass
+	   has one strip's time: at 1920 wide 166 of the timedemo's 9200 passes are
+	   overtaken by the beam (the strip shows half drawn for a field) for 4 to
+	   8 with four strips. r_ps2width 960: half the pixels for the GS, the
+	   passes take 7 ms of a field for 12 and none is overtaken, and the
+	   textures of 256 fit GS memory. */
+	int mode = ri.Cvar_Get("r_ps2mode", "0", CVAR_ARCHIVE | CVAR_LATCH)->integer;
+	mx_hires_strip_lines((u32)ri.Cvar_Get("r_ps2strip", "128", CVAR_LATCH)->integer);
+	/* r_ps2merge 1 (the default): the picture's last 28 lines are no strip of
+	   their own in strips of 128 lines but the fourth's: four passes a field */
+	mx_hires_merge_last(ri.Cvar_Get("r_ps2merge", "1", CVAR_LATCH)->integer);
+	/* r_ps2ownz 0 (the default): the passes' Z is the next strip of the picture,
+	   and all of GS memory but the picture is the textures' (960 wide: 377 pages of 8 KB).
+	   A pass has the time the beam is in the strips that are neither its own
+	   nor its Z: one strip's of three, two of four. 1: a Z strip of the
+	   passes' own (360 KB at 960 wide, 720 KB at 1920): a pass has the time
+	   the beam is outside its strip */
+	z_in_picture = !ri.Cvar_Get("r_ps2ownz", "0", CVAR_LATCH)->integer;
+	mx_hires_own_z(!z_in_picture);
+	/* r_ps2skip 1 (the default), with r_ps2ownz 1: a pass that would still be
+	   drawn when the beam comes to its strip is left out (the strip shows the
+	   frame before for a field, not a half drawn one) */
+	mx_hires_skip_late(ri.Cvar_Get("r_ps2skip", "1", CVAR_LATCH)->integer);
 	/* r_ps2ahead: the frames that may wait to be shown. 1: what the game draws
 	   is on the screen at the next field (2: two fields later at 60 frames a
 	   second, and a frame that takes long is covered by one that waited) */
 	mx_hires_ahead((u32)ri.Cvar_Get("r_ps2ahead", "1", CVAR_ARCHIVE)->integer);
+	/* r_ps2swap 1: a frame is shown from the next strip's pass on, not from
+	   the next field: the frames need not keep to the fields (a field may
+	   show strips of two frames) */
+	mx_hires_swap_strips(ri.Cvar_Get("r_ps2swap", "1", CVAR_LATCH)->integer);
 	/* r_ps2width: the picture's width, 1920 or 960 (the display shows each
 	   pixel twice: half the framebuffer and the Z, half the fill, the rest of
 	   GS memory the textures'). The textures keep the levels of 1920: the
-	   lines are as sharp as before. 0: from frame to frame, by what the
-	   frames need (width_choose) */
-	int wcfg = ri.Cvar_Get("r_ps2width", "1920", CVAR_LATCH)->integer;
+	   lines are as sharp as before. 0 (the default): 1920, and 960 from frame
+	   to frame while the frames need it (width_choose): with the Z in the
+	   picture the half width is drawn into the same buffer (GS memory stays
+	   as it is, the GS fills half the pixels) */
+	int wcfg = ri.Cvar_Get("r_ps2width", "0", CVAR_LATCH)->integer;
 	u32 width = wcfg == 960 ? 960 : 1920;
 	dyn_width = wcfg == 0;
 	mx_hires_widths(dyn_width);
@@ -96,8 +133,6 @@ static void screen_init(void) {
 	   twice as fast, and reached the strip's last lines before the beam had
 	   shown them (black lines at the strips' edges, surfaces not drawn yet) */
 	mx_hires_margin(ri.Cvar_Get("r_ps2margin", "8", CVAR_LATCH)->integer);
-	if (dyn_width)
-		mx_hires_own_z(1);
 	if (mx_hires_init(&mx_video_1080i, width, 540, MX_GS_PSM_CT16S, rec, sizeof rec, (void *)0x70002000, 0x2000) < 0)
 		ri.Error(ERR_FATAL, "ps2: no 1080i, or its buffer does not fit");
 	u32 sbytes = mx_hires_strip_records(srec, sizeof srec);
@@ -111,8 +146,18 @@ static void screen_init(void) {
 	rp_tex_fine_units((u32)ri.Cvar_Get("r_ps2texfine", "0", CVAR_ARCHIVE | CVAR_LATCH)->integer);
 	rp_tex_init();
 	rp_tex_room((u32)ri.Cvar_Get("r_ps2texroom", "100", 0)->integer);
-	rp_tex_max((u32)ri.Cvar_Get("r_ps2texmax", "128", 0)->integer);
+	rp_tex_max((u32)ri.Cvar_Get("r_ps2texmax", mode ? "256" : "128", 0)->integer);
 	rp_tex_force(ri.Cvar_Get("r_ps2texforce", "0", 0)->integer);
+	rp_guard_x = (float)ri.Cvar_Get("r_ps2guardx", "2040", 0)->integer;
+	rp_guard_y = (float)ri.Cvar_Get("r_ps2guardy", "2040", 0)->integer;
+	/* r_ps2trilinear: the textures filtered between their levels (rp_list.h):
+	   the GS's work alone, a fifth to a third more of it. 0 (the default):
+	   not; 1: always (in a heavy scene a pass is then overtaken now and then,
+	   at textures 256 many); 2: while the passes have room for it
+	   (trilinear_choose: a quarter of the timedemo's frames, none overtaken,
+	   but the frames are 1 % slower) */
+	r_ps2trilinear = ri.Cvar_Get("r_ps2trilinear", "0", 0);
+	rp_trilinear = r_ps2trilinear->integer == 1;
 	/* the stream area: GS memory (pages of 8 KB, taken from the cache) for the
 	   images the cache has no room for, sent in the passes (0: none: such an
 	   image is placed coarser, or not drawn); the most a frame sends there */
@@ -420,9 +465,9 @@ static qhandle_t wshader[MAX_WMAT];
 static float fill_was[2]; /* what the last frame's quads filled, and the one's before */
 
 /* what the passes of a field took, us: the sum of the strips' last passes */
+static float strip_us[MX_HIRES_PASSES];
 static float field_passes_us(void) {
 	static u32 was_n[MX_HIRES_PASSES], was_sum[MX_HIRES_PASSES];
-	static float strip_us[MX_HIRES_PASSES];
 	float t = 0;
 	u32 np = mx_hires_passes();
 	for (u32 k = 0; k < np && k < MX_HIRES_PASSES; k++) {
@@ -442,6 +487,17 @@ static float fill_room(void) {
 	   fill: the larger rest) */
 	float had = fill_was[0] < fill_was[1] ? fill_was[0] : fill_was[1];
 	float rest = t - FILL_US * had;
+	if (z_in_picture && mx_hires_passes() == 3) {
+		/* three strips with the Z in the picture: a pass has its strip's time
+		   and cannot borrow, so the room is the longest pass's, of which the
+		   quads' part is taken as six tenths of their fill (a cloud is mostly
+		   in one strip) */
+		float worst = 0;
+		for (u32 k = 0; k < 3; k++)
+			worst = strip_us[k] > worst ? strip_us[k] : worst;
+		rest = worst - 0.6f * FILL_US * had;
+		return (0.8f * 1e6f / (float)mx_gs.hz / 3.0f - (rest > 0 ? rest : 0)) / (0.6f * FILL_US);
+	}
 	return (0.88f * 1e6f / (float)mx_gs.hz - (rest > 0 ? rest : 0)) / FILL_US;
 }
 
@@ -1135,6 +1191,37 @@ static void width_choose(void) {
 		return;
 	}
 	float field = 1e6f / (float)mx_gs.hz, passes = field_passes_us();
+	if (z_in_picture) {
+		/* the Z in the picture: the half width gives the textures no room, only
+		   the GS less to fill (the passes at the whole width take 1.65 times
+		   those at half: measured). Half at once when a pass was left out or
+		   overtaken by the beam, or when the passes took more than 95 % of a
+		   field (r_ps2halfat); for a second at least, and the whole width
+		   again when the passes there would take under 80 % of a field (their
+		   mean over some eight frames; 15 % less than r_ps2halfat) and the
+		   last frame's under 90 %. In the timedemo: 44 % of the frames at
+		   half, and of 9900 passes none overtaken (textures of 128) or 5
+		   (textures of 256) for 6 and 16 to 24 at the whole width */
+		static u32 was_late, hold;
+		static float mean;
+		float at = (r_ps2halfat ? r_ps2halfat->value : 95.0f) * 0.01f;
+		u32 late = mx_hires_stats.late + mx_hires_stats.over;
+		int hit = late != was_late;
+		was_late = late;
+		if (!half_now) {
+			width_asked = hit || passes > at * field ? 960 : 1920;
+			if (width_asked == 960)
+				hold = 60, mean = passes;
+		} else {
+			mean += (passes - mean) * 0.125f;
+			if (hit)
+				hold = 60;
+			hold -= hold > 0;
+			width_asked = !hold && 1.65f * mean < (at - 0.15f) * field && 1.65f * passes < (at - 0.05f) * field ? 1920 : 960;
+		}
+		mx_hires_width(width_asked);
+		return;
+	}
 	int pressed = rp_tex_far_bias() >= 0.5f || passes > 0.8f * field;
 	if (!half_now) {
 		press_frames = pressed ? press_frames + 1 : 0;
@@ -1149,6 +1236,35 @@ static void width_choose(void) {
 	calm_frames = fits ? calm_frames + 1 : 0;
 	width_asked = calm_frames >= 120 ? 1920 : 960;
 	mx_hires_width(width_asked);
+}
+
+/* r_ps2trilinear 2: the GS is idle for most of a field, so while the passes
+   are short the textures are filtered between their levels; when the passes
+   take more than 55 % of a field together, or one of them 65 % of the time a
+   pass has, not, until ten frames in a row would have had room for it (the
+   passes then are a third longer: under 50 % and 55 %). The passes' times are those of the
+   frames shown, a frame or two ago. */
+static void trilinear_choose(void) {
+	int v = r_ps2trilinear ? r_ps2trilinear->integer : 0;
+	u32 np = mx_hires_passes();
+	if (v != 2 || !np) {
+		rp_trilinear = v == 1;
+		return;
+	}
+	float field = 1e6f / (float)mx_gs.hz, passes = field_passes_us(), worst = 0;
+	for (u32 k = 0; k < np && k < MX_HIRES_PASSES; k++)
+		worst = strip_us[k] > worst ? strip_us[k] : worst;
+	/* the time a pass has: the strips that are neither its own nor its Z */
+	float window = field * (z_in_picture ? (float)(np - 2) : (float)(np - 1)) / (float)np;
+	if (rp_trilinear) {
+		if (passes > 0.55f * field || worst > 0.65f * window)
+			rp_trilinear = 0, tri_calm = 0, tri_changes++;
+	} else {
+		tri_calm = 1.3f * passes < 0.50f * field && 1.3f * worst < 0.55f * window ? tri_calm + 1 : 0;
+		if (tri_calm >= 10)
+			rp_trilinear = 1, tri_changes++;
+	}
+	tri_frames += (u32)rp_trilinear;
 }
 
 static void RP_BeginFrame(stereoFrame_t stereoFrame) {
@@ -1176,6 +1292,7 @@ static void RP_BeginFrame(stereoFrame_t stereoFrame) {
 		rp_tex_stream_room(0.80f * 1e6f / (float)mx_gs.hz - field_passes_us(), late != was_late);
 		was_late = late;
 	}
+	trilinear_choose();
 	rp_tex_frame();
 	mx_hires_clear(0, 0, 0);
 	rp_list_begin();
@@ -1259,7 +1376,7 @@ static struct hud_at {
 	u32 t, frames, half, late, over, uploads, upload_kb, full, coarse, paged, stream_kb, sent_kb, clut_slot, clut_cache,
 	    lost;
 } hud_was;
-static char hud_line[10][64];
+static char hud_line[12][64];
 static u32 hud_n;
 
 static void hud_text(float x, float y, const char *t, qhandle_t font) {
@@ -1303,6 +1420,10 @@ static void hud_draw(void) {
 			Com_sprintf(hud_line[n++], 64, "half width %3u%% of frames", (now.half - w->half) * 100 / fr);
 		Com_sprintf(hud_line[n++], 64, "passes %4.1f ms/field late %u over %u", field_passes_us() / 1000.0f,
 		            now.late - w->late, now.over - w->over);
+		/* since the start: passes left out (of them ahead, r_ps2skip) and passes
+		   the beam overtook */
+		Com_sprintf(hud_line[n++], 64, "since start late %u skip %u over %u", mx_hires_stats.late,
+		            mx_hires_stats.skipped, mx_hires_stats.over);
 		Com_sprintf(hud_line[n++], 64, "cache %4u KB used %4u wants %4u", vs.pages * 8, vs.used_blocks / 4,
 		            rp_tex_want_blocks() / 4);
 		Com_sprintf(hud_line[n++], 64, "tight %d far bias %.2f no room %u/s", rp_tex_tight(), rp_tex_far_bias(),
@@ -1361,6 +1482,7 @@ static void RP_EndFrame(int *frontEndMsec, int *backEndMsec) {
 		st_at = st;
 		rp_list_stats = (struct rp_list_stats){0};
 		rp_tex_stats = (struct rp_tex_stats){0};
+		tri_frames = tri_changes = 0;
 		world_st_fine = world_st_cand = 0;
 		pass_tex_kb = 0;
 		u32 kb = rp_model_stats.kb;
@@ -1734,6 +1856,8 @@ void ps2_ren_report(void) {
 	Com_Printf("ps2: renderer: polygons: %u drawn (%u across a plane), %u out of view; %u pictures; %u stages without "
 	           "an image in GS memory; %u views in a mirror\n", rp_poly_stats.polys, rp_poly_stats.cut, rp_poly_stats.culled,
 	           rp_poly_stats.pics, st_nostage, st_mirrors);
+	Com_Printf("ps2: renderer: trilinear: %u frames with the textures between two levels (r_ps2trilinear %d), %u changes\n",
+	           tri_frames, r_ps2trilinear ? r_ps2trilinear->integer : 0, tri_changes);
 	Com_Printf("ps2: renderer: the scene's quads fill %u thousand pixels a frame, %u thousand at most (the "
 	           "screen is 1037 thousand); %u frames with more than twice the screen; over r_ps2fill in %u frames, %u sprites left out; %u parts of marks by %u rays in %u ms (%u at places known); the quads' draws %u ms; %u lights on the world in %u runs of %u chunks (%u left out for the passes' time); %u of %u textures a frame with levels over 128 texels (%u sent to the pool, %u times not there yet)\n",
 	           (unsigned)(poly_px_sum / n / 1000), (unsigned)(poly_px_max / 1000), poly_px_over, st_fill_over, st_fill_out,
@@ -1812,6 +1936,16 @@ int ps2_ren_screenshot(const char *path) {
 	if (!screen_on)
 		return -1;
 	const struct rp_tex_stats *t = &rp_tex_stats;
+	{
+		/* the passes of the frames shown last: a field's together, and each strip's */
+		char each[96];
+		int len = 0;
+		float sum = field_passes_us();
+		for (u32 k = 0; k < mx_hires_passes() && k < 8; k++)
+			len += sprintf(each + len, "%s%u", k ? "/" : "", (unsigned)strip_us[k]);
+		ri.Printf(PRINT_ALL, "ps2: renderer: passes at the picture: %u us a field (%s us); so far %u left out, %u still drawn "
+		          "when the beam came\n", (unsigned)sum, each, mx_hires_stats.late, mx_hires_stats.over);
+	}
 	ri.Printf(PRINT_ALL, "ps2: renderer: textures at the picture: tight %d, far bias %.2f; frames %u, tight %u; "
 	          "%u placed coarser for room, %u from their distance's level, %u without room; %u from a coarser level "
 	          "while the finer was read in, %u sent while not in memory (waited %u ms); %u KB pinned; streamed %u images "
@@ -1871,6 +2005,7 @@ static void RP_BeginRegistration(glconfig_t *config) {
 	r_ps2shot = ri.Cvar_Get("r_ps2shot", "0", 0);
 	r_ps2passes = ri.Cvar_Get("r_ps2passes", "0", 0);
 	r_ps2widthflip = ri.Cvar_Get("r_ps2widthflip", "0", 0);
+	r_ps2halfat = ri.Cvar_Get("r_ps2halfat", "95", 0);
 	r_ps2hud = ri.Cvar_Get("r_ps2hud", "0", CVAR_ARCHIVE);
 	r_ps2beamat = ri.Cvar_Get("r_ps2beamat", "0", 0);
 	r_ps2fill = ri.Cvar_Get("r_ps2fill", "1", CVAR_ARCHIVE);
@@ -2100,6 +2235,36 @@ static qboolean RP_GetEntityToken(char *buffer, int size) { return qfalse; }
 static qboolean RP_inPVS(const vec3_t p1, const vec3_t p2) { return qtrue; }
 static void RP_TakeVideoFrame(int h, int w, byte *captureBuffer, byte *encodeBuffer, qboolean motionJpeg) {}
 
+/* the renderer's calls marked for the load's samples (code/ps2/ps2_load.c) */
+extern volatile unsigned char ps2_load_state;
+static void load_RenderScene(const refdef_t *fd) {
+	ps2_load_state = 1;
+	RP_RenderScene(fd);
+	ps2_load_state = 0;
+}
+static void load_BeginFrame(stereoFrame_t stereoFrame) {
+	ps2_load_state = 1;
+	RP_BeginFrame(stereoFrame);
+	ps2_load_state = 0;
+}
+static void load_EndFrame(int *frontEndMsec, int *backEndMsec) {
+	ps2_load_state = 1;
+	RP_EndFrame(frontEndMsec, backEndMsec);
+	ps2_load_state = 0;
+}
+static void load_DrawStretchPic(float x, float y, float w, float h, float s1, float t1, float s2, float t2, qhandle_t hShader) {
+	ps2_load_state = 1;
+	RP_DrawStretchPic(x, y, w, h, s1, t1, s2, t2, hShader);
+	ps2_load_state = 0;
+}
+static int load_MarkFragments(int numPoints, const vec3_t *points, const vec3_t projection, int maxPoints,
+                              vec3_t pointBuffer, int maxFragments, markFragment_t *fragmentBuffer) {
+	ps2_load_state = 1;
+	int r = RP_MarkFragments(numPoints, points, projection, maxPoints, pointBuffer, maxFragments, fragmentBuffer);
+	ps2_load_state = 0;
+	return r;
+}
+
 refexport_t *GetRefAPI(int apiVersion, refimport_t *rimp) {
 	static refexport_t re;
 	ri = *rimp;
@@ -2123,14 +2288,14 @@ refexport_t *GetRefAPI(int apiVersion, refimport_t *rimp) {
 	re.LightForPoint = RP_LightForPoint;
 	re.AddLightToScene = RP_AddLightToScene;
 	re.AddAdditiveLightToScene = RP_AddLightToScene;
-	re.RenderScene = RP_RenderScene;
+	re.RenderScene = load_RenderScene;
 	re.SetColor = RP_SetColor;
-	re.DrawStretchPic = RP_DrawStretchPic;
+	re.DrawStretchPic = load_DrawStretchPic;
 	re.DrawStretchRaw = RP_DrawStretchRaw;
 	re.UploadCinematic = RP_UploadCinematic;
-	re.BeginFrame = RP_BeginFrame;
-	re.EndFrame = RP_EndFrame;
-	re.MarkFragments = RP_MarkFragments;
+	re.BeginFrame = load_BeginFrame;
+	re.EndFrame = load_EndFrame;
+	re.MarkFragments = load_MarkFragments;
 	re.LerpTag = RP_LerpTag;
 	re.ModelBounds = RP_ModelBounds;
 	re.RegisterFont = RP_RegisterFont;

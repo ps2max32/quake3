@@ -82,6 +82,10 @@ cvar_t		*s_mixahead;
 cvar_t		*s_mixPreStep;
 
 static loopSound_t		loopSounds[MAX_GENTITIES];
+// the entities whose loopSounds entry is active or to be killed: the frame's
+// loops over all MAX_GENTITIES entries (57 KB) look at these alone
+static unsigned		loopLive[MAX_GENTITIES / 32];
+#define LOOP_LIVE(i) (loopLive[(i) >> 5] >> ((i) & 31) & 1)
 static	channel_t		*freelist = NULL;
 
 int						s_rawend[MAX_RAW_STREAMS];
@@ -699,6 +703,7 @@ void S_Base_ClearSoundBuffer( void ) {
 
 	// stop looping sounds
 	Com_Memset(loopSounds, 0, MAX_GENTITIES*sizeof(loopSound_t));
+	Com_Memset(loopLive, 0, sizeof(loopLive));
 	Com_Memset(loop_channels, 0, MAX_CHANNELS*sizeof(channel_t));
 	numLoopChannels = 0;
 
@@ -751,6 +756,7 @@ void S_Base_StopLoopingSound(int entityNum) {
 	loopSounds[entityNum].active = qfalse;
 //	loopSounds[entityNum].sfx = 0;
 	loopSounds[entityNum].kill = qfalse;
+	loopLive[entityNum >> 5] &= ~(1u << (entityNum & 31));
 }
 
 /*
@@ -762,6 +768,13 @@ S_ClearLoopingSounds
 void S_Base_ClearLoopingSounds( qboolean killall ) {
 	int i;
 	for ( i = 0 ; i < MAX_GENTITIES ; i++) {
+		if (!loopLive[i >> 5]) {
+			i |= 31;	// none of these 32 (the others are stopped already)
+			continue;
+		}
+		if (!LOOP_LIVE(i)) {
+			continue;
+		}
 		if (killall || loopSounds[i].kill == qtrue || (loopSounds[i].sfx && loopSounds[i].sfx->soundLength == 0)) {
 			S_Base_StopLoopingSound(i);
 		}
@@ -803,6 +816,7 @@ void S_Base_AddLoopingSound( int entityNum, const vec3_t origin, const vec3_t ve
 	VectorCopy( velocity, loopSounds[entityNum].velocity );
 	loopSounds[entityNum].active = qtrue;
 	loopSounds[entityNum].kill = qtrue;
+	loopLive[entityNum >> 5] |= 1u << (entityNum & 31);
 	loopSounds[entityNum].doppler = qfalse;
 	loopSounds[entityNum].oldDopplerScale = 1.0;
 	loopSounds[entityNum].dopplerScale = 1.0;
@@ -866,6 +880,7 @@ void S_Base_AddRealLoopingSound( int entityNum, const vec3_t origin, const vec3_
 	loopSounds[entityNum].sfx = sfx;
 	loopSounds[entityNum].active = qtrue;
 	loopSounds[entityNum].kill = qfalse;
+	loopLive[entityNum >> 5] |= 1u << (entityNum & 31);
 	loopSounds[entityNum].doppler = qfalse;
 }
 
@@ -894,6 +909,13 @@ void S_AddLoopSounds (void) {
 
 	loopFrame++;
 	for ( i = 0 ; i < MAX_GENTITIES ; i++) {
+		if (!loopLive[i >> 5]) {
+			i |= 31;
+			continue;
+		}
+		if (!LOOP_LIVE(i)) {
+			continue;
+		}
 		loop = &loopSounds[i];
 		if ( !loop->active || loop->mergeFrame == loopFrame ) {
 			continue;	// already merged into an earlier sound
@@ -908,6 +930,13 @@ void S_AddLoopSounds (void) {
 		loop->sfx->lastTimeUsed = time;
 
 		for (j=(i+1); j< MAX_GENTITIES ; j++) {
+			if (!loopLive[j >> 5]) {
+				j |= 31;
+				continue;
+			}
+			if (!LOOP_LIVE(j)) {
+				continue;
+			}
 			loop2 = &loopSounds[j];
 			if ( !loop2->active || loop2->doppler || loop2->sfx != loop->sfx) {
 				continue;

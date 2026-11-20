@@ -23,6 +23,9 @@ int ps2_listdir(const char *dir, void (*fn)(const char *name, int is_dir, void *
 int ps2_ren_screenshot(const char *path);
 void ps2_ren_report(void);
 int ps2_demo_frame(void);
+void ps2_load_start(unsigned hz);
+void ps2_load_frame(unsigned demo_frame, unsigned raw_at);
+void ps2_load_report(void);
 static void ps2_run_report(void);
 
 /* frames to run before the program ends by itself (0: never), and the
@@ -470,10 +473,10 @@ static void ps2_beam_report(void) {
 	int len = 0;
 	for (u32 k = 0; k < mx_hires_passes(); k++)
 		len += sprintf(longest + len, "%s%u", k ? "/" : "", mx_hires_stats.pass_us[k]);
-	mx_printf("ps2: beam: fields %u, passes %u, left out %u, still drawn when the beam came %u, records shown %u, "
+	mx_printf("ps2: beam: fields %u, passes %u, left out %u (%u of them ahead), still drawn when the beam came %u, records shown %u (%u from a pass within a field), "
 	          "held %u; a field's passes together %u us, longest pass %s us; largest record %u KB, a strip's %u "
 	          "KB, %u frames cut off (too large)\n", mx_hires_stats.fields, mx_hires_stats.passes, mx_hires_stats.late,
-	          mx_hires_stats.over, mx_hires_stats.shown, mx_hires_stats.held, sum / mx_hires_stats.fields, longest,
+	          mx_hires_stats.skipped, mx_hires_stats.over, mx_hires_stats.shown, mx_hires_stats.shown_mid, mx_hires_stats.held, sum / mx_hires_stats.fields, longest,
 	          mx_hires_stats.rec_max / 1024, mx_hires_stats.strip_max / 1024, mx_hires_stats.rec_full);
 }
 
@@ -576,6 +579,7 @@ static void ps2_run_report(void) {
 	if (done)
 		return;
 	done = 1;
+	ps2_load_report();
 	if (prof_on) {
 		mx_prof_stop();
 		mx_vm_trace_mark(2);
@@ -759,6 +763,8 @@ int main(int argc, char **argv) {
 			mx_vm_trace_restart();
 		if (window && !measuring) {
 			measuring = 1;
+			/* ps2_load <hz>: the units' load over the demo (ps2_load.c) */
+			ps2_load_start((unsigned)Cvar_VariableIntegerValue("ps2_load"));
 			mx_vm_stats(&vm_at);
 			if (Q3_VM_HIST)
 				mx_vm_refill_hist(NULL, 0);
@@ -780,6 +786,8 @@ int main(int argc, char **argv) {
 		extern unsigned ps2_ren_wait;
 		ps2_ren_wait = 0;
 #endif
+		if (measuring)
+			ps2_load_frame((unsigned)df0, (unsigned)Cvar_VariableIntegerValue("ps2_loadraw"));
 		u32 c0 = mx_count();
 		Com_Frame();
 		u32 cyc = mx_count() - c0;

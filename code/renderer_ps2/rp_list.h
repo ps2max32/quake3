@@ -39,6 +39,9 @@ struct rp_view {
 	struct rp_plane sb_lo[15], sb_hi[15];
 	u8 sb_near[15][3], sb_far[15][3]; /* a box's numbers (mins at 0, maxs at 4) nearest and farthest along them */
 	float strip_inv;            /* 1 / strip_h */
+	/* the same lines for a point's F . d and fy U . d (d from the eye): below
+	   line j when sb_klo[j] * F . d - fy U . d > 0, above when sb_khi[j]'s is < 0 */
+	float sb_klo[15], sb_khi[15];
 };
 extern struct rp_view rp_view;
 
@@ -179,7 +182,17 @@ void rp_list_end(void);
    twice, the GS once: whether they wait for each other), 262144 no late
    lightmap (a script's $lightmap after two stages: the map's own pass),
    524288 no sky, 1048576 every texture sent into the stream area waits for VU1 first (a FLUSH), 67108864 a model's
-   pieces in all the strips the model is in (not each by its own box) */
+   pieces each in the strips of its own box (not in all the model is in),
+   134217728 a chunk of the world in all the strips its group is in */
+/* The guard band: how far from the GS's centre (2048, the picture's) a vertex
+   may be, in pixels each way; a triangle with a vertex outside is cut there
+   on VU1 (the programs that cut). The GS's own range is 2047. r_ps2guardx,
+   r_ps2guardy. */
+extern float rp_guard_x, rp_guard_y;
 extern unsigned rp_debug;
+/* 1: the world's and the models' textures between two of their levels
+   (TEX1's MMIN 5), not from the nearest one (4): no line on a floor where
+   the level changes. The GS reads eight texels a pixel for four. */
+extern int rp_trilinear;
 
 #endif

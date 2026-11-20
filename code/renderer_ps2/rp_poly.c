@@ -172,7 +172,7 @@ void rp_poly(const struct rp_vert *v, u32 n) {
 	float txl = (vw->cx - 2048.0f + (float)mx_gs.w * 0.5f) / vw->fx, txr = (2048.0f + (float)mx_gs.w * 0.5f - vw->cx) / vw->fx;
 	float tyt = (vw->cy - 2048.0f + (float)mx_gs.h * 0.5f) / vw->fy, tyb = (2048.0f + (float)mx_gs.h * 0.5f - vw->cy) / vw->fy;
 	float ox = vw->cx - 2048.0f, oy = vw->cy - 2048.0f;
-	float gx = (2040.0f - (ox < 0 ? -ox : ox)) / vw->fx, gy = (2040.0f - (oy < 0 ? -oy : oy)) / vw->fy;
+	float gx = (rp_guard_x - (ox < 0 ? -ox : ox)) / vw->fx, gy = (rp_guard_y - (oy < 0 ? -oy : oy)) / vw->fy;
 	u32 out = 31, cut = 0;
 	float big = 0, lo = 1e9f, hi = -1e9f, top = vw->cy - 2048.0f + (float)mx_gs.h * 0.5f;
 	for (u32 i = 0; i < n; i++) {

@@ -32,13 +32,15 @@
 #include "vu/q3vu.h"
 
 unsigned rp_debug;
+int rp_trilinear;
 struct rp_view rp_view;
 struct rp_list_stats rp_list_stats;
 
 #define ZNEAR 4.0f
 #define ZFAR 65536.0f
 #define ZMAX 65280.0f   /* 16-bit Z, with room for a cut vertex's rounding at the near plane */
-#define GUARD 2040.0f   /* pixels from the GS's centre that a vertex may be */
+/* pixels from the GS's centre that a vertex may be, each way (rp_list.h) */
+float rp_guard_x = 2040.0f, rp_guard_y = 2040.0f;
 
 static inline float dot3(const float *a, const float *b) { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; }
 
@@ -126,8 +128,8 @@ void rp_view_rect(const struct rp_cam *cam, float x, float y, float w, float h) 
 	v->cy = 2048.0f + y + h * 0.5f - (float)mx_gs.h * 0.5f;
 	/* the planes of the guard band, as tangents from the view's centre: the
 	   nearer of the band's two sides each way */
-	float gl = v->cx - (2048.0f - GUARD), gr = 2048.0f + GUARD - v->cx;
-	float gt = v->cy - (2048.0f - GUARD), gbm = 2048.0f + GUARD - v->cy;
+	float gl = v->cx - (2048.0f - rp_guard_x), gr = 2048.0f + rp_guard_x - v->cx;
+	float gt = v->cy - (2048.0f - rp_guard_y), gbm = 2048.0f + rp_guard_y - v->cy;
 	float gx = (gl < gr ? gl : gr) / v->fx, gy = (gt < gbm ? gt : gbm) / v->fy;
 	for (int k = 0; k < 3; k++) {
 		float F = cam->axis[0][k], L = cam->axis[1][k], U = cam->axis[2][k];
@@ -167,6 +169,7 @@ void rp_view_rect(const struct rp_cam *cam, float x, float y, float w, float h) 
 			v->sb_far[j - 1][k] = (u8)(v->sb_hi[j - 1].n[k] >= 0 ? 4 + k : k);
 		}
 		v->sb_lo[j - 1].d = dot3(v->sb_lo[j - 1].n, v->org), v->sb_hi[j - 1].d = dot3(v->sb_hi[j - 1].n, v->org);
+		v->sb_klo[j - 1] = top - (B + 1.5f), v->sb_khi[j - 1] = top - (B - 1.5f);
 	}
 }
 
@@ -189,8 +192,11 @@ u32 rp_strip_lines(float lo, float hi) {
 	if (hi < 0 || lo > (float)mx_gs.h)
 		return 0;
 	s32 k0 = lo < 1.5f ? 0 : (s32)((lo - 1.5f) * v->strip_inv), k1 = (s32)((hi + 1.5f) * v->strip_inv);
+	/* the last strip is the picture's rest (it may be higher than the others) */
 	if (k1 >= (s32)v->nstrip)
 		k1 = (s32)v->nstrip - 1;
+	if (k0 >= (s32)v->nstrip)
+		k0 = (s32)v->nstrip - 1;
 	return k1 < k0 ? 0 : ((2u << k1) - 1) & ~((1u << k0) - 1);
 }
 
@@ -221,17 +227,32 @@ u32 rp_strip_points(const float (*p)[3], u32 n) {
 	if (!v->nstrip)
 		return 1;
 	u32 mask = v->all;
+	if (n > 16)
+		return mask;
+	/* a line's plane is (top - B) F - fy U: each point's F . d and fy U . d
+	   once, then a product a line */
+	float a[16], b[16];
+	int front = 1;
+	for (u32 i = 0; i < n; i++) {
+		float d[3] = {p[i][0] - v->org[0], p[i][1] - v->org[1], p[i][2] - v->org[2]};
+		a[i] = dot3(v->F, d), b[i] = v->fy * dot3(v->U, d);
+		front &= a[i] > 0;
+	}
 	for (u32 j = 0; j + 1 < v->nstrip; j++) {
-		const struct rp_plane *lo = &v->sb_lo[j], *hi = &v->sb_hi[j];
+		float klo = v->sb_klo[j], khi = v->sb_khi[j];
 		int below = 1, above = 1;
 		for (u32 i = 0; i < n; i++) {
-			below &= dot3(lo->n, p[i]) > lo->d;
-			above &= dot3(hi->n, p[i]) < hi->d;
+			below &= klo * a[i] - b[i] > 0;
+			above &= khi * a[i] - b[i] < 0;
 		}
 		if (below)
 			mask &= ~((2u << j) - 1);
-		if (above)
+		if (above) {
 			mask &= (2u << j) - 1;
+			/* before the eye, what is above a line is above those below it */
+			if (front)
+				break;
+		}
 	}
 	return mask;
 }
@@ -263,8 +284,8 @@ const void *rp_matrix(float scale, const float *origin, const float (*axis)[3]) 
 	c = mx_e_cnt(c, 6, mx_vif_nop(), mx_vif_unpack(MX_UNPACK_V4_32, Q3VU_CTX_C0, 6, 0));
 	for (int k = 0; k < 4; k++)
 		c = mx_e_w4(c, fbits(m[k][0]), fbits(m[k][1]), fbits(m[k][2]), fbits(m[k][3]));
-	c = mx_e_w4(c, fbits(1.0f / GUARD), fbits(1.0f / GUARD), fbits(zd / m[3][2]), 0);
-	c = mx_e_w4(c, fbits(-2048.0f / GUARD), fbits(-2048.0f / GUARD), fbits(zc), 0);
+	c = mx_e_w4(c, fbits(1.0f / rp_guard_x), fbits(1.0f / rp_guard_y), fbits(zd / m[3][2]), 0);
+	c = mx_e_w4(c, fbits(-2048.0f / rp_guard_x), fbits(-2048.0f / rp_guard_y), fbits(zc), 0);
 	mx_e_ret(c, 0, 0, 0);
 	return c0;
 }
@@ -280,6 +301,7 @@ static struct run {
 	const void *setup[2][2]; /* [the programs that cut][with the state] */
 	const void *ghost[2];    /* rp_debug 131072: the same, drawing nothing */
 	u16 first, n;
+	u16 mask;                /* the strips its draws are in */
 } run[MAX_RUN];
 static struct draw {
 	const void *chain;
@@ -298,7 +320,7 @@ int rp_run(const void *matrix, const struct rp_state *s) {
 	__builtin_memcpy(&r->s, s, s->prog == RP_PROG_MODEL || s->prog == RP_PROG_DLIGHT ? sizeof *s : RP_STATE_HEAD);
 	r->setup[0][0] = r->setup[0][1] = r->setup[1][0] = r->setup[1][1] = 0;
 	r->ghost[0] = r->ghost[1] = 0;
-	r->first = (u16)ndraw, r->n = 0;
+	r->first = (u16)ndraw, r->n = 0, r->mask = 0;
 	return (int)nrun++;
 }
 
@@ -313,7 +335,7 @@ void rp_draw(const void *chain, u32 mask, int clip, u32 verts, u32 batches) {
 		clip = rp_debug >> 3 & 1;
 	struct draw *d = &draw[ndraw++];
 	d->chain = chain, d->mask = (u16)mask, d->verts = (u16)verts, d->clip = (u8)clip, d->batches = (u8)batches;
-	run[nrun - 1].n++;
+	run[nrun - 1].n++, run[nrun - 1].mask |= (u16)mask;
 }
 
 /* The set-up of a run's program (cut 1: the one that cuts): the GIF tags of
@@ -453,7 +475,7 @@ static const void *setup_chain(const struct rp_state *s, int cut, int state) {
 			const struct mx_tex *t = &s->tex;
 			s32 k = lod_k(s->texels, rp_view.flod);
 			u64 t1 = (rp_debug & 1) || s->nomip ? mx_gs_tex1(1, 0, 1, 1, 0, 0, 0)
-			                                    : mx_tex_tex1(t, 1, t->levels > 1 ? 4 : 1, 0, k);
+			                                    : mx_tex_tex1(t, 1, t->levels > 1 ? (rp_trilinear ? 5 : 4) : 1, 0, k);
 			/* a texture without alpha of its own: its CLUT's alpha is the
 			   lightmaps' (tools/ps2map.py, gs_texture), not read here (TCC 0) */
 			u64 t0 = mx_tex_tex0(t, s->tcc, 0);
@@ -646,8 +668,10 @@ void rp_list_end(void) {
 		   line and a half more each way: the lower field is drawn half a line
 		   lower) */
 		float top = 2048.0f - (float)mx_gs.h * 0.5f, t = top - 1.5f, b = top + (float)mx_gs.h + 1.5f;
-		if (nstrip)
+		if (nstrip && k + 1 < nstrip)
 			t = top + (float)(k * rp_view.strip_h) - 1.5f, b = top + (float)((k + 1) * rp_view.strip_h) + 1.5f;
+		else if (nstrip) /* the last: to the picture's end */
+			t = top + (float)(k * rp_view.strip_h) - 1.5f;
 		float l = 2048.0f - (float)mx_gs.w * 0.5f - 1.0f, r = 2048.0f + (float)mx_gs.w * 0.5f + 1.0f;
 		if (rp_debug & 32768) /* a test of the window: the strip's middle third alone */
 			t += (b - t) / 3, b -= (b - t) / 2;
@@ -675,8 +699,12 @@ void rp_list_end(void) {
 			rp_tex_stream_strip(k == 0);
 		for (u32 r = 0; r < nrun; r++) {
 			struct run *rn = &run[r];
+			/* none of its draws in this strip */
+			if (!(rn->mask & bit))
+				continue;
 			const struct draw *d = &draw[rn->first];
 			u32 n[2] = {0, 0};
+			u32 r_verts = 0, r_batches = 0, r_clip = 0;
 			int set = 0;
 			for (u32 i = 0; i <= rn->n; i++) {
 				/* a list full, or the run over: sent */
@@ -738,12 +766,14 @@ void rp_list_end(void) {
 				if (d[i].mask & bit) {
 					list[d[i].clip][n[d[i].clip]++] = d[i].chain;
 					ndr++;
-					rp_list_stats.sent += d[i].verts, rp_list_stats.batches += d[i].batches;
-					rp_list_stats.p_sent[rn->s.prog] += d[i].verts, rp_list_stats.p_batches[rn->s.prog] += d[i].batches;
+					r_verts += d[i].verts, r_batches += d[i].batches;
 					if (d[i].clip)
-						rp_list_stats.p_clip[rn->s.prog] += d[i].verts;
+						r_clip += d[i].verts;
 				}
 			}
+			rp_list_stats.sent += r_verts, rp_list_stats.batches += r_batches;
+			rp_list_stats.p_sent[rn->s.prog] += r_verts, rp_list_stats.p_batches[rn->s.prog] += r_batches;
+			rp_list_stats.p_clip[rn->s.prog] += r_clip;
 		}
 		rp_list_stats.k_sent[k] = rp_list_stats.sent - at_sent;
 		rp_list_stats.k_batches[k] = rp_list_stats.batches - at_batches;

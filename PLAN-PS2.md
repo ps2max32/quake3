@@ -1021,6 +1021,174 @@ PS2 renderer follows. The same place by `+devmap`, `+setviewpos`,
   texture level chosen for a surface 16,000 units away, the smallest. They
   are drawn with the first level (a cloud's texel is pixels wide).
 
+### The units' load, frames by the strip, the Z in the picture (2026-11-20)
+
+`ps2_load <hz>` (`code/ps2/ps2_load.c`) samples, over a timedemo, what the EE
+runs (the game, the renderer, the kernel, or the kernel's idle loop: asleep)
+and what the drawing units do (VIF1's DMA, VU1 running or waiting at an
+XGKICK, the GS's FIFO, VU0), each sample with the beam's line; the run
+writes `quake3.load`, which `tools/ps2load.py` prints. Timedemo four, the
+full game with sound, 1080i at 1920 wide, a SCPH-90006:
+
+| | The EE busy | of it the renderer, the game, the kernel | A pass being sent | VU1 runs | VU1 waits for the GS | The GS's FIFO not empty | VU0 |
+|---|---|---|---|---|---|---|---|
+| Before (a Z strip, a frame a field, textures 256 and the stream area) | 85 % | 59, 19, 8 | 74 % | 14 % | 47 % | 60 % | 0 |
+| Now, textures 128 (`r_ps2mode 0`) | 96 % | 60, 27, 9 | 71 % | 17 % | 48 % | 56 % | 0 |
+| Now, textures 256 (`r_ps2mode 1`) | 93 % | 60, 24, 9 | 72 % | 17 % | 49 % | 57 % | 0 |
+
+- At 1920 wide the EE and the GS are both loaded: the EE is full, a pass is
+  on its way for seven tenths of the time. At 960 wide (`r_ps2width 960`)
+  the drawing units are idle for 55 % of it (a pass 44 %, the GS 31 %).
+  VU1 mostly waits at an XGKICK for the GS; VU0 runs nothing.
+- What is left on the EE is not work another unit can take: of its time
+  17 % is FPU arithmetic, the rest the lists, the textures' cache, the 2D
+  pictures and the game.
+- A field's passes together, from the log of the passes (`r_ps2passes`): at
+  1920 the median is 11.9 ms, 90 % 15.1 ms, 99 % 17.0 ms, the longest 18.5
+  ms, of a field's 16.7; at 960 7.4, 10.3, 13.0 and 14.4 ms. A fit to what a
+  field held: 6.5 ms and 1.8 ms a million pixels of quads and 14 us a
+  set-up (300 set-ups a field); the vertices do not show. Without the
+  lightmap's layer (`r_ps2debug 2`) 2 ms less.
+- The sampler costs 5 % of the frame rate at 2000 samples a second, and a
+  timer that calls a function which returns at once 3.4 %: a timer's call
+  into the program takes the kernel about 17 us.
+
+What was changed, each measured with the same timedemo at 1920 wide (frames
+a second; passes still drawn when the beam came, of about 9200):
+
+| | | |
+|---|---|---|
+| This morning: a Z strip of the passes' own, a frame from a field's first pass, textures 256, stream area 48 (the numbers on the screen on) | 40.1 | 0 |
+| Those settings with the code of now | 42.8 | 0 |
+| The Z in the picture (`r_ps2ownz 0`), a frame from the next strip's pass (`r_ps2swap 1`), textures 128, three strips | 62.2 | 166 |
+| Four strips, the last two as one: `r_ps2mode 0` (two runs) | 62.2 | 4, 8 |
+| The same with textures 256: `r_ps2mode 1` (two runs) | 55.1, 55.4 | 34, 21 |
+| For comparison at 960 wide: `r_ps2mode 0` | 63.5 | 0 |
+| and `r_ps2mode 1` | 58.6 | 0 |
+
+- **A frame from the next strip** (maxsdk's `mx_hires_swap_strips`): a
+  record that waits is played from the next pass on, not from a field's
+  first. The EE never waits for a field (four fifths of the demo's frames
+  begin within one), at the price of the two frames' difference at a
+  strip's edge.
+- **The Z in the picture**: at 1920 wide the textures have 242 pages (1.9
+  MB) for 104 and a stream area of 48. A pass then has the time the beam is
+  in the strips that are neither its own nor its Z. Of three strips that is
+  one strip's, without borrowing. Five strips of 128 lines borrow but cost
+  the EE 0.6 ms a frame (the draws' strips, the lists a strip), and the
+  fifth is the picture's last 28 lines. So the last two are one
+  (`mx_hires_merge_last`): four strips, the last of 156 lines with its Z in
+  strip 0 and the first 28 lines of strip 1, a pass with two strips' time
+  and what the others leave. At 960 wide no pass is overtaken (thirteen
+  runs); at 1920 a few in the demo's heaviest moments, where the passes of
+  a field take more than a field.
+- **Textures of 256 at 1920**: 1.9 MB does not hold a frame's images at
+  their full size (2.0 MB in the mean, 3.9 at most): in 1146 of 1258 frames
+  some are placed coarser (2346 without their finest level, 172 found no
+  room). At 960 wide they fit.
+- **From the EE to VU1**: a model's pieces were each tested against the
+  strips' lines (0.7 ms a frame) to spare VU1 a fourteenth of the models'
+  vertices; the programs leave out the triangles outside the pass's strip
+  anyway. Now a model's surface is drawn in every strip the model is in
+  (`r_ps2debug 67108864`: as before).
+- **The sound** took 1.5 ms a frame: a level's sounds are 2.7 MB for SPU
+  RAM's 1.8, so sounds leave it and are copied again while the game plays,
+  the EE asleep for the IOP's 3 ms a 4 KB (a second a run); and two loops a
+  frame over all 1024 entities' looping sounds. A thread makes the copies
+  now (`s_ps2async`; the sound starts when its copy is there), the loops
+  look at the live entries.
+- Tried and not kept:
+  - The quads' and the strip tests' camera transforms as vector code on VU0
+    (`-mvu0`: one multiply-add chain for three dot products): 61.5 frames a
+    second for 63.5 (at 960). Bringing the numbers from the FPU to VU0 and
+    back costs more than the products.
+  - A set-up's GS registers kicked by the run's first batch, after its
+    vertices, not by the set-up before them (`tools/ps2vu.py`: the packet
+    copied before the batch's own; a second program a set-up, for the turn
+    of VIF1's buffers that the set-up's kick had kept safe): the passes as
+    long as before. A set-up's 14 us is VIF1's and VU1's own work, not the
+    wait for the GS.
+  - The world's runs and chunks nearest first: the passes as long as before.
+  - A lit run's chunks all through the program that cuts where one of them
+    is: 7 set-ups a field less of 163. A margin of 4 lines for 8. The
+    world's chunks in their group's strips (`r_ps2debug 134217728`). None
+    changes the passes overtaken.
+  - The textures between two levels (`r_ps2trilinear 1`, at 960): the GS's
+    alone, a fifth to a third more of a pass; `2`: only while the passes
+    are short. Off by default.
+- A profile of the frame now (16.9 ms with the profiler): the renderer 8.1
+  ms (the lists 1.9, the quads 1.4, the world 1.3, the models 1.3), the
+  textures' cache 1.3, the game 2.3, collision 1.0, memcpy and memset 1.0
+  (95 KB a frame in 600 copies: a run's state 37 KB, the scene's polygons
+  18, its entities 13), the kernel 1.5, asleep 0.7. With the passes not
+  played (a broken build) the EE's frame was 12.8 ms for 16.1: what the
+  passes cost the EE itself (their interrupts, the DMA on the bus).
+- **Large triangles are no load for the GS.** Standing with the nose against
+  a wall (q3dm6, the wall over the whole picture, 1920 wide): the passes
+  take 5.9 ms a field, for 8.5 ms with a pillar over half the picture and
+  the room behind it: two layers of 1 million pixels at 0.5 EE cycles a
+  pixel, the GS's best. And what of a triangle lies outside the picture
+  costs nothing: with the guard band at the picture's edge (`r_ps2guardx
+  1000`, `r_ps2guardy 300`: VU1 cuts every triangle there) the passes are
+  as long (8.6 ms for 8.5) and the picture the same. So cutting large
+  triangles up on VU1 would gain nothing. (The strips seen flickering at a
+  wall on 2026-11-18 were, by this, the beam's line of that day: each pass
+  started 22 lines early and cleared its strip's last lines under the
+  beam, which shows most on a wall: docs/beam.md in maxsdk.)
+- The passes' clear of the Z alone (FRAME's mask over the colour): as long
+  as with the colour. Without the lightmap's layer the mean field is 9.8 ms
+  for 11.9, but the heaviest are 16 to 17.6 ms all the same: those are
+  fields of many models and sprites, not of the world's two layers.
+- Leaving out more while the passes are near a field (over 80 %: the marks
+  with the sprites, a quarter of the screen for the quads' least; over 90 %
+  or after a pass overtaken: a tenth, and the models' first stage alone):
+  the second level was on in four fifths of the timedemo's frames, for 3
+  and 4 passes overtaken where there were 4 and 8 (textures 256: 16 and 18
+  for 21 and 34). The heavy fields are heavy of the scene itself. Not kept.
+- Six minutes of play (q3dm1 and q3dm2 with bots, 1920 wide,
+  textures 256; the EE at 60 to 140 frames a second): the passes 10.3 ms a
+  field in the mean, 2197 of 87,918 still drawn when the beam came and 88
+  left out. More than the timedemo's 0.3 %.
+- Open at 1920: the passes overtaken in the heaviest moments (the GS at its
+  limit: what is left to take away there is the work itself, as the quads'
+  fill limit and the lights' do already).
+
+- Two remedies for them, built as settings and tried by the user on the TV
+  (2026-11-20, evening; maxsdk `mx_hires_skip_late`, and `mx_hires_widths`
+  without a Z strip of the passes' own). Timedemo four, the .11, textures
+  128 and 256:
+
+  | Setting | fps | Passes overtaken | Left out | Textures' memory |
+  |---|---|---|---|---|
+  | as it was | 61.9 / 55.5 | 6 / 16 to 24 | 0 | 1936 KB |
+  | `r_ps2ownz 1` (five strips, `r_ps2skip 1`) | 59.9 / 51.7 | 0 / 0 | 3 / 2, all ahead | 1456 KB |
+  | `r_ps2width 0` (half the width for a time) | 62.4 / 55.9 | 0 / 5 | 0 | 1920 KB |
+
+  - `r_ps2skip`: a pass that would still be drawn when the beam comes (by
+    its strip's last pass and an eighth more) is left out; never twice in a
+    row for a strip. The frame rate lost is the fifth pass's and the smaller
+    cache's (1755 textures evicted for 1319).
+  - `r_ps2width 0` with the Z in the picture: the half width is drawn into
+    the same buffer (the left half of its lines), so GS memory does not
+    change and any width follows any other; the passes still queued when
+    the width changes play the record they were for. Half at a pass
+    overtaken or left out, or when the passes take over 95 % of a field
+    (`r_ps2halfat`); a second at least; back when the whole width would
+    take under 80 %. In the timedemo 44 % of the frames at half, 18 changes
+    in 21 s. Per frame the passes take 8 to 15 ms of a field at the whole
+    width (textures 256; up to 18) and 5 to 9 at half: 1.65 times.
+  - The user played both on the TV: both look good, both stay in the
+    code, and `r_ps2width 0` is the default since (the timedemo with the
+    defaults: 61.1 fps and 1 pass overtaken, textures 256: 54.8 fps and 2).
+  - Open from those two play sessions: with `r_ps2ownz 1` the game hung
+    after ten minutes (no crash report, no stuck pass in the log; on a
+    kernel tried from RAM, so the cause is open: the new code or the
+    kernel). With `r_ps2width 0` the console's lines stopped reaching the
+    host after 105 s, a second level had no bots, and then the PS2 no
+    longer answered for some minutes. Neither was seen in the timedemos,
+    which are a minute long: a longer run without a player is the next
+    test.
+
 ## 3. Why the earlier attempts stalled
 
 | Attempt | Result | Why |

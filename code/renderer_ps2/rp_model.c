@@ -676,7 +676,11 @@ static const void *surf_chain(struct msurf *sf, int frame, int oldframe, const r
 	u64 *c0 = rp_dyn((u32)sf->npiece * 7 + 1), *c = c0;
 	if (!c)
 		return 0;
-	int split = rp_view.nstrip > 1 && sf->npiece > 1 && e && !(rp_debug & 67108864);
+	/* rp_debug 67108864: the pieces in runs by their strips. Not by default: a
+	   piece's box against the strips' lines cost the EE 0.7 ms a frame to
+	   spare VU1 a fourteenth of the models' vertices (the programs leave out
+	   the triangles outside the pass's strip), 62 frames a second for 65 */
+	int split = rp_view.nstrip > 1 && sf->npiece > 1 && e && (rp_debug & 67108864);
 	u32 run_mask = ~0u;
 	*nrun = 0;
 	for (int i = 0; i < sf->npiece; i++) {

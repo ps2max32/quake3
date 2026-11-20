@@ -390,7 +390,7 @@ static void sky_box(const struct rp_view *v, const float *b) {
 	u32 n = v->nstrip ? v->nstrip : 1;
 	float sh = v->nstrip ? (float)v->strip_h : h0;
 	for (u32 k = 0; k < n && k < 16; k++) {
-		float t = (float)k * sh, e = t + sh;
+		float t = (float)k * sh, e = k + 1 < n ? t + sh : h0; /* the last strip: the picture's rest */
 		if (y1 <= t || y0 >= e)
 			continue;
 		float a = y0 > t ? y0 : t, c = y1 < e ? y1 : e;
@@ -594,7 +594,8 @@ void rp_world_cull(struct rp_world_stats *st) {
 						for (int p = 0; p < 5 && !cut; p++)
 							cut = sel_near(&gb[p], ch->mins) < 0;
 					}
-					u32 mask = one || gr->nchunk == 1 ? gmask : rp_strip_mask(ch->mins);
+					/* rp_debug 134217728: a chunk in its group's strips, not its own */
+					u32 mask = one || gr->nchunk == 1 || (rp_debug & 134217728) ? gmask : rp_strip_mask(ch->mins);
 					if (!mask)
 						continue;
 					st->drawn++;
