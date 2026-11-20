@@ -810,6 +810,7 @@ void rp_tex_stream(u32 pages, u32 kb) {
 }
 
 u32 rp_tex_stream_pages(void) { return s_pages; }
+u32 rp_tex_stream_budget(void) { return s_pages ? s_kb_budget : 0; }
 
 /* im from level from into the stream area this frame (an instance), or 0:
    no area, not an image for it, over the frame's KB, or a level not in

@@ -91,6 +91,11 @@ static void screen_init(void) {
 	u32 width = wcfg == 960 ? 960 : 1920;
 	dyn_width = wcfg == 0;
 	mx_hires_widths(dyn_width);
+	/* r_ps2margin: lines the beam is past a strip before that strip's pass may
+	   start. 8 was too few at 960 wide: a pass clears its strip first, there
+	   twice as fast, and reached the strip's last lines before the beam had
+	   shown them (black lines at the strips' edges, surfaces not drawn yet) */
+	mx_hires_margin((u32)ri.Cvar_Get("r_ps2margin", "32", CVAR_LATCH)->integer);
 	if (dyn_width)
 		mx_hires_own_z(1);
 	if (mx_hires_init(&mx_video_1080i, width, 540, MX_GS_PSM_CT16S, rec, sizeof rec, (void *)0x70002000, 0x2000) < 0)
@@ -1116,6 +1121,12 @@ static void RP_DrawStretchPic(float x, float y, float w, float h, float s1, floa
    whole width's GS memory (85 %) and the passes (twice the pixels) would
    take under 60 % of a field. */
 static void width_choose(void) {
+	if (r_ps2widthflip && r_ps2widthflip->integer < 0) {
+		/* a test: the whole width, -2 half, always */
+		width_asked = r_ps2widthflip->integer == -2 ? 960 : 1920;
+		mx_hires_width(width_asked);
+		return;
+	}
 	if (r_ps2widthflip && r_ps2widthflip->integer > 0) {
 		static u32 n;
 		width_asked = (n++ / (u32)r_ps2widthflip->integer) & 1 ? 1920 : 960;
@@ -1240,8 +1251,82 @@ static void passes_report(void) {
 	Com_Printf("ps2: renderer: quake3.pass: %u passes%s\n", n - first, fo ? "" : " (not written)");
 }
 
+/* r_ps2hud 1: the renderer's numbers on the screen, at the top right, the
+   averages of the last half second */
+static cvar_t *r_ps2hud;
+static struct hud_at {
+	u32 t, frames, half, late, over, uploads, upload_kb, full, coarse, paged, stream_kb, sent_kb, clut_slot, clut_cache,
+	    lost;
+} hud_was;
+static char hud_line[10][64];
+static u32 hud_n;
+
+static void hud_text(float x, float y, const char *t, qhandle_t font) {
+	static const float white[4] = {1, 1, 1, 1}, black[4] = {0, 0, 0, 1};
+	for (int pass = 0; pass < 2; pass++) {
+		RP_SetColor(pass ? white : black);
+		float cx = x + (pass ? 0 : 2), cy = y + (pass ? 0 : 2);
+		for (const char *c = t; *c; c++, cx += 14) {
+			u32 ch = (u8)*c;
+			if (ch == ' ')
+				continue;
+			float s = (float)(ch & 15) * 0.0625f, tt = (float)(ch >> 4) * 0.0625f;
+			RP_DrawStretchPic(cx, cy, 14, 24, s, tt, s + 0.0625f, tt + 0.0625f, font);
+		}
+	}
+	RP_SetColor(NULL);
+}
+
+static void hud_draw(void) {
+	static qhandle_t font;
+	if (!font)
+		font = rp_shader_register("gfx/2d/bigchars", -4, 0);
+	struct hud_at now = {mx_count(), rp_tex_stats.frames, half_frames, mx_hires_stats.late, mx_hires_stats.over,
+	                     rp_tex_stats.uploads, rp_tex_stats.upload_kb, rp_tex_stats.full, rp_tex_stats.coarse,
+	                     rp_tex_stats.paged, rp_tex_stats.stream_kb, rp_tex_stats.stream_sent_kb,
+	                     rp_tex_stats.clut_slot, rp_tex_stats.clut_cache, rp_list_stats.lost};
+	struct hud_at *w = &hud_was;
+	/* the counts were set back (a timedemo's start): from there */
+	if (now.frames < w->frames)
+		*w = now, w->frames = 0, w->uploads = w->upload_kb = w->full = w->coarse = w->paged = 0,
+		w->stream_kb = w->sent_kb = w->clut_slot = w->clut_cache = 0;
+	u32 fr = now.frames - w->frames;
+	u32 us = (now.t - w->t) / (MX_EE_HZ / 1000000);
+	if (fr && us >= 500000) {
+		struct mx_vcache_stats vs;
+		mx_vcache_stats(&vs);
+		u32 n = 0;
+		Com_sprintf(hud_line[n++], 64, "%4u x 540 %s  %4.1f fps %5.1f ms", mx_gs.w,
+		            dyn_width ? "dyn" : "   ", fr * 1e6f / us, us / 1000.0f / fr);
+		if (dyn_width)
+			Com_sprintf(hud_line[n++], 64, "half width %3u%% of frames", (now.half - w->half) * 100 / fr);
+		Com_sprintf(hud_line[n++], 64, "passes %4.1f ms/field late %u over %u", field_passes_us() / 1000.0f,
+		            now.late - w->late, now.over - w->over);
+		Com_sprintf(hud_line[n++], 64, "cache %4u KB used %4u wants %4u", vs.pages * 8, vs.used_blocks / 4,
+		            rp_tex_want_blocks() / 4);
+		Com_sprintf(hud_line[n++], 64, "tight %d far bias %.2f no room %u/s", rp_tex_tight(), rp_tex_far_bias(),
+		            (u32)((now.full - w->full) * 1e6f / us));
+		Com_sprintf(hud_line[n++], 64, "sent %3u KB/fr %2u tex  coarser %u/s", (now.upload_kb - w->upload_kb) / fr,
+		            (now.uploads - w->uploads) / fr, (u32)((now.coarse - w->coarse) * 1e6f / us));
+		Com_sprintf(hud_line[n++], 64, "stream %3u pg budget %4u KB", rp_tex_stream_pages(), rp_tex_stream_budget());
+		Com_sprintf(hud_line[n++], 64, "streamed %4u KB/fr sent %4u", (now.stream_kb - w->stream_kb) / fr,
+		            (now.sent_kb - w->sent_kb) / fr);
+		Com_sprintf(hud_line[n++], 64, "CLUT slots %3u: %3u/fr cache %u/fr", rp_tex_clut_slots(),
+		            (now.clut_slot - w->clut_slot) / fr, (now.clut_cache - w->clut_cache) / fr);
+		Com_sprintf(hud_line[n++], 64, "paged in %u/s pinned %u KB lost %u", (u32)((now.paged - w->paged) * 1e6f / us),
+		            rp_tex_pinned_kb, now.lost - w->lost);
+		hud_n = n;
+		*w = now;
+	} else if (!w->t)
+		*w = now;
+	for (u32 i = 0; i < hud_n; i++)
+		hud_text(1920 - 14 * 40 - 24, 24 + 28 * (float)i, hud_line[i], font);
+}
+
 static void RP_EndFrame(int *frontEndMsec, int *backEndMsec) {
 	int shot = in_frame && r_ps2shot->integer && ps2_demo_frame() == r_ps2shot->integer;
+	if (in_frame && r_ps2hud && r_ps2hud->integer)
+		hud_draw();
 	if (in_frame) {
 		rp_poly_flush();
 		rp_list_end();
@@ -1735,8 +1820,10 @@ int ps2_ren_screenshot(const char *path) {
 	          t->stream_sent_kb, t->stream_over);
 	ri.Printf(PRINT_ALL, "ps2: renderer: CLUTs at the picture: %u slots below it, %u drawn from them, %u from the cache\n",
 	          rp_tex_clut_slots(), t->clut_slot, t->clut_cache);
-	/* r_ps2debug 4096 also: the frame's images of the world and the models,
-	   each with the level it was placed from and the one its distance wanted */
+	/* the picture first: it stops the passes at the record played */
+	int saved = mx_hires_save_tga(path);
+	/* r_ps2debug 4096 also: the frame's images, each with the level it was
+	   placed from, the one its distance wanted and its place */
 	if (rp_debug & 4096) {
 		u32 f = mx_frame_number();
 		FILE *out = fopen("quake3.images", "w");
@@ -1747,17 +1834,22 @@ int ps2_ren_screenshot(const char *path) {
 					break;
 				continue;
 			}
-			if (im->frame + 1 < f || (im->kind != RP_IMAGE_WORLD && im->kind != RP_IMAGE_MODEL))
+			if (im->frame + 1 < f)
 				continue;
+			/* where it is in GS memory, or that it had no room there */
+			char v[64] = " (not placed)";
+			if (im->ok)
+				Com_sprintf(v, sizeof v, " at page %u..%u, CLUT page %u", (im->t.tbp[0] & 0xFFFF) / 32,
+				            ((im->t.tbp[0] & 0xFFFF) + im->t.blocks - 1) / 32, (im->t.cbp & 0xFFFF) / 32);
 			if (out)
-				fprintf(out, "%s %ux%u %s levels %u from %u want %d%s\n", im->name, im->w, im->h,
+				fprintf(out, "%s %ux%u %s levels %u from %u want %d%s%s\n", im->name, im->w, im->h,
 				        im->psm == MX_GS_PSM_T4 ? "T4" : "T8", im->levels, im->from,
-				        im->want_frame + 1 >= f ? im->want : -1, im->kind == RP_IMAGE_MODEL ? " (model)" : "");
+				        im->want_frame + 1 >= f ? im->want : -1, im->kind == RP_IMAGE_MODEL ? " (model)" : "", v);
 		}
 		if (out)
 			fclose(out);
 	}
-	return mx_hires_save_tga(path);
+	return saved;
 }
 
 /* ---- the rest of the interface -------------------------------------------------------- */
@@ -1778,6 +1870,7 @@ static void RP_BeginRegistration(glconfig_t *config) {
 	r_ps2shot = ri.Cvar_Get("r_ps2shot", "0", 0);
 	r_ps2passes = ri.Cvar_Get("r_ps2passes", "0", 0);
 	r_ps2widthflip = ri.Cvar_Get("r_ps2widthflip", "0", 0);
+	r_ps2hud = ri.Cvar_Get("r_ps2hud", "0", CVAR_ARCHIVE);
 	r_ps2beamat = ri.Cvar_Get("r_ps2beamat", "0", 0);
 	r_ps2fill = ri.Cvar_Get("r_ps2fill", "1", CVAR_ARCHIVE);
 	r_ps2marks = ri.Cvar_Get("r_ps2marks", "1", CVAR_ARCHIVE);

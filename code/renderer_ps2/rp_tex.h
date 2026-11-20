@@ -180,6 +180,8 @@ void rp_tex_stream(u32 pages, u32 kb);
    while. */
 void rp_tex_stream_room(float us, int late);
 u32 rp_tex_stream_pages(void);
+/* the KB this frame may stream (rp_tex_stream_room) */
+u32 rp_tex_stream_budget(void);
 int rp_tex_stream_id(const struct mx_tex *t);
 void rp_tex_stream_plan(const s16 *id, s16 *seg, u32 n);
 void rp_tex_stream_fix(u32 seg, struct mx_tex *t, u32 *lm_cbp);

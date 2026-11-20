@@ -760,6 +760,28 @@ PS2 renderer follows. The same place by `+devmap`, `+setviewpos`,
     in garbage and the passes stopped. VU1 left running by a program is
     not reset by the kernel for the next one (asked of MXOS): mx_hires_init
     resets it.
+  - *The numbers on the screen* (`r_ps2hud 1`): width, frames a second,
+    the share of frames at half the width, the passes' time and the ones
+    late, the cache's memory used and wanted, the governor's bias, what a
+    frame sends and streams, the CLUT slots, pages read in.
+  - *The beam's margin* (`r_ps2margin`, maxsdk's `mx_hires_margin`, 32
+    lines): a pass starts that many lines after the beam left its strip.
+    With 8, at 960 wide, the strips' last lines showed black and surfaces
+    not drawn yet: a pass clears its strip first, and at half the width
+    twice as fast, so it reached lines the beam had still to show. The
+    last strip's pass waits the same lines after the vblank's start (it
+    started at once). Why 8 lines are too few is open: the beam seems to
+    be later than the display's DY says.
+  - Found on the way: at the width from frame to frame, textures in the
+    cache's first pages turned black and the view weapon flickered. The
+    frame's layout was chosen when its record opened (the stream's first
+    half), not at `mx_frame_begin_n`: until then `mx_hires_frame` gave the
+    whole width's FRAME, which the Z clear before the view weapon and the
+    HUD's models writes (for its mask), so the clear and all after it in
+    the strip went through a buffer twice as wide: Z over the cache, the
+    colour nowhere seen. maxsdk now chooses the layout when the frame
+    begins. Found by reading back all of GS memory at a screenshot and
+    looking at it as a picture.
 - **Fog** (15 of the maps have fog volumes: pits, mostly). The map file
   (version 11) has the volumes: colour, the depth at which the fog is
   opaque, the plane of its top. A volume's surfaces are drawn once more
