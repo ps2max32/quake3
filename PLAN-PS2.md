@@ -764,14 +764,34 @@ PS2 renderer follows. The same place by `+devmap`, `+setviewpos`,
     the share of frames at half the width, the passes' time and the ones
     late, the cache's memory used and wanted, the governor's bias, what a
     frame sends and streams, the CLUT slots, pages read in.
-  - *The beam's margin* (`r_ps2margin`, maxsdk's `mx_hires_margin`, 32
+  - *The beam's margin* (`r_ps2margin`, maxsdk's `mx_hires_margin`, 8
     lines): a pass starts that many lines after the beam left its strip.
-    With 8, at 960 wide, the strips' last lines showed black and surfaces
-    not drawn yet: a pass clears its strip first, and at half the width
-    twice as fast, so it reached lines the beam had still to show. The
-    last strip's pass waits the same lines after the vblank's start (it
-    started at once). Why 8 lines are too few is open: the beam seems to
-    be later than the display's DY says.
+    At 960 wide the strips' last lines showed black and surfaces not
+    drawn yet, and the picture's bottom was cut off: maxsdk reckoned
+    every strip's line 22 lines too early (it read the picture's place
+    from the registers of the display while off, since the display stays
+    off until the first frame), and a pass clears its strip first, at
+    half the width in 6 lines of the beam. 1920 hid it: the clear takes
+    twice as long. Measured on the TV with maxsdk's `examples/beam` (the
+    passes start early on purpose, a magenta band on a scale of lines
+    shows where the beam was) in every TV mode; maxsdk's `docs/beam.md`.
+  - *Every texture at its level, through the stream area* (a test,
+    `r_ps2texforce 1`: none coarser for want of room; what the cache has
+    no room for is sent in the passes whatever their time, or not
+    drawn), at 1920 with the levels of 256, timedemo four: the frames
+    are no slower (median 21.8 ms for 22.8) and no image is left out,
+    but a frame draws with 1.8 MB (3.2 MB at most) for a cache of 0.8
+    MB, so 1.1 MB a frame goes through the area, 1.7 MB a field; the
+    passes take 9.5 ms a field in the mean and more than a field where
+    it is busy: 989 of 8422 passes were still drawing when the beam
+    came, 164 left out. A larger area takes the cache's pages and makes
+    it worse. With the Z in the framebuffer (`r_ps2ownz 0`: 720 KB more
+    for the cache, half the streaming) a pass has one strip's time
+    only: 470 passes overtaken even without the test, 1242 with it. So
+    1920 with the levels of 256 does not fit a field; 960 with 256 or
+    1920 with 128 do. For comparison, same demo: 960, levels of 128, no
+    area: median 18.5 ms, 1069 of 1258 frames in one field. Open: the
+    test with a Z strip of its own hung at the screenshot.
   - Found on the way: at the width from frame to frame, textures in the
     cache's first pages turned black and the view weapon flickered. The
     frame's layout was chosen when its record opened (the stream's first

@@ -95,7 +95,7 @@ static void screen_init(void) {
 	   start. 8 was too few at 960 wide: a pass clears its strip first, there
 	   twice as fast, and reached the strip's last lines before the beam had
 	   shown them (black lines at the strips' edges, surfaces not drawn yet) */
-	mx_hires_margin((u32)ri.Cvar_Get("r_ps2margin", "32", CVAR_LATCH)->integer);
+	mx_hires_margin(ri.Cvar_Get("r_ps2margin", "8", CVAR_LATCH)->integer);
 	if (dyn_width)
 		mx_hires_own_z(1);
 	if (mx_hires_init(&mx_video_1080i, width, 540, MX_GS_PSM_CT16S, rec, sizeof rec, (void *)0x70002000, 0x2000) < 0)
@@ -112,6 +112,7 @@ static void screen_init(void) {
 	rp_tex_init();
 	rp_tex_room((u32)ri.Cvar_Get("r_ps2texroom", "100", 0)->integer);
 	rp_tex_max((u32)ri.Cvar_Get("r_ps2texmax", "128", 0)->integer);
+	rp_tex_force(ri.Cvar_Get("r_ps2texforce", "0", 0)->integer);
 	/* the stream area: GS memory (pages of 8 KB, taken from the cache) for the
 	   images the cache has no room for, sent in the passes (0: none: such an
 	   image is placed coarser, or not drawn); the most a frame sends there */

@@ -162,6 +162,12 @@ void rp_tex_room(u32 pct) { room_pct = pct < 10 ? 10 : pct; }
    image from its level of 256 through the cache) */
 static u32 tex_max = 128;
 void rp_tex_max(u32 texels) { tex_max = texels < 128 ? 128 : texels; }
+/* r_ps2texforce (a test): no image coarser for want of room: none sooner
+   than its distance asks, none without its finest levels; what the cache has
+   no room for goes through the stream area, as many KB a frame as it is set
+   to whatever the passes' time, and is not drawn when that is full too */
+static int force;
+void rp_tex_force(int on) { force = on; }
 static u32 full_at, coarse_at; /* rp_tex_stats.full and coarse at the frame before */
 static u32 lower_blocks, lower_calm, lowered_at, floor_want;
 #define LOWER_WAIT 30
@@ -251,6 +257,8 @@ void rp_tex_frame(void) {
 				far_bias -= 0.25f, lower_calm = 0, lowered_at = frame;
 		} else
 			lower_calm = 0;
+		if (force)
+			far_bias = 0, far_floor = 0;
 		lower_blocks = 0;
 		full_at = rp_tex_stats.full, coarse_at = rp_tex_stats.coarse;
 		if (far_bias > rp_tex_stats.far_bias_max)
@@ -787,7 +795,7 @@ void rp_tex_stream_room(float us, int late) {
 	if (hold)
 		hold--, b = 0;
 	b = b < 64.0f ? 64.0f : b;
-	s_kb_budget = b > (float)s_kb_cfg ? s_kb_cfg : (u32)b;
+	s_kb_budget = force || b > (float)s_kb_cfg ? s_kb_cfg : (u32)b;
 }
 static u16 s_cont[STREAM_PAGES_MAX]; /* the piece + 1 each page holds in the strip being written; 0: not known */
 static u8 s_drawn[STREAM_PAGES_MAX];  /* a run of the strip being written drew from the page */
@@ -1062,7 +1070,7 @@ const struct mx_tex *rp_image_place(struct rp_image *im) {
 	im->frame = frame + 1, im->ok = 0;
 	/* a frame's images do not fit: this one without its finest level, when it
 	   is a model's or an effect's */
-	u32 f0 = tight && !rp_tex_full && (im->kind == RP_IMAGE_MODEL || im->kind == RP_IMAGE_OTHER) && im->levels > 2 && im->w >= 64;
+	u32 f0 = tight && !force && !rp_tex_full && (im->kind == RP_IMAGE_MODEL || im->kind == RP_IMAGE_OTHER) && im->levels > 2 && im->w >= 64;
 	if (f0 && im->split && f0 > im->m.tail)
 		f0 = 0;
 	/* an image of the file larger than 128 texels a side: the cache has it
@@ -1124,12 +1132,12 @@ const struct mx_tex *rp_image_place(struct rp_image *im) {
 	/* no room for all of it: without its finest level, or its two finest (a
 	   quarter, a sixteenth of the memory): less sharp while the frame's images
 	   are more than GS memory holds, in place of not drawn */
-	for (u32 need = f0 + 1; r == MX_VCACHE_FULL && im->split && need <= im->m.tail; need++) {
+	for (u32 need = f0 + 1; r == MX_VCACHE_FULL && !force && im->split && need <= im->m.tail; need++) {
 		r = mx_vcache_tex_mem(im->key, &im->m, im->psm, tw, th, cpsm, need, 0, &im->t, &from);
 		if (r != MX_VCACHE_FULL)
 			rp_tex_stats.coarse++;
 	}
-	for (u32 f = f0 + 1; r == MX_VCACHE_FULL && !im->split && f <= 2 && f + 1 < (u32)im->levels; f++) {
+	for (u32 f = f0 + 1; r == MX_VCACHE_FULL && !force && !im->split && f <= 2 && f + 1 < (u32)im->levels; f++) {
 		r = mx_vcache_tex(mx_vcache_tex_key(im->key, f), im->psm, tw - f, th - f, im->levels - f, cpsm, &im->t);
 		if (r != MX_VCACHE_FULL)
 			from = f, rp_tex_stats.coarse++;

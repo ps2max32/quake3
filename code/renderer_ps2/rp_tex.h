@@ -142,6 +142,9 @@ int rp_tex_tight(void);
 void rp_tex_room(u32 pct);
 /* the largest level the cache places itself (128) */
 void rp_tex_max(u32 texels);
+/* a test (r_ps2texforce): no image coarser for want of room; the stream area
+   takes what the cache has no room for, or it is not drawn */
+void rp_tex_force(int on);
 float rp_tex_far_bias(void);
 /* the frame before's images at their full size, and what the cache had at
    the start (GS memory beside the whole width's picture), 256-byte blocks */
