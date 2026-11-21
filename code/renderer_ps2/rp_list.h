@@ -49,6 +49,8 @@ extern struct rp_view rp_view;
    picture, mx_gs.w x mx_gs.h): over that part of it. */
 void rp_view_set(const struct rp_cam *cam);
 void rp_view_rect(const struct rp_cam *cam, float x, float y, float w, float h);
+/* rp_poly.c: what a picture takes from the view, when a view is set */
+void rp_pic_view(void);
 
 /* the corner of a box farthest along a plane's normal (far 1) or least far
    (0): its distance from the plane */
@@ -175,7 +177,9 @@ void rp_list_end(void);
    128 a picture of the overdraw: every triangle adds 1/31 of its colour,
    without texture, lightmap or depth test (with a black clear: a pixel's
    largest channel times 31 / 255 is about the triangles drawn over it),
-   256 no strip records (everything in every pass), 1024 no CLUT is loaded
+   256 no strip records (everything in every pass), 512 every image asked
+   of the cache each frame (none taken as the frame before had it), 1024 no
+   CLUT is loaded
    (TEX0.CLD 0: wrong colours), 2048 none for the lightmap, 65536 the runs'
    GS registers left out (wrong textures and blends: what they cost), 131072
    every list sent twice, the second time not drawn (VIF1 and VU1 work
@@ -185,7 +189,10 @@ void rp_list_end(void);
    pieces each in the strips of its own box (not in all the model is in),
    134217728 a chunk of the world in all the strips its group is in,
    268435456 the world's boxes tested by the FPU, not by VU0, 536870912 by
-   both, and the boxes where they differ counted (the run's report) */
+   both, and the boxes where they differ counted (the run's report),
+   8388608 the polygons' vertices to the eye's coordinates by the FPU, not
+   by VU0 (rp_poly_area),
+   8192 and again at every stage's draw, not kept from the first time */
 /* The guard band: how far from the GS's centre (2048, the picture's) a vertex
    may be, in pixels each way; a triangle with a vertex outside is cut there
    on VU1 (the programs that cut). The GS's own range is 2047. r_ps2guardx,

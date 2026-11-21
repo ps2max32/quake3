@@ -36,6 +36,38 @@ Q_EXPORT void dllEntry( intptr_t (QDECL  *syscallptr)( intptr_t arg,... ) ) {
 }
 
 
+#ifdef __PS2__
+/* The calls a frame makes most, straight into the engine (cl_cgame.c): cgame
+   is linked into the program here, and a system call copies sixteen
+   arguments and goes through the engine's switch. */
+void ps2_cg_DrawStretchPic( float x, float y, float w, float h, float s1, float t1, float s2, float t2, qhandle_t hShader );
+void ps2_cg_AddRefEntityToScene( const refEntity_t *re );
+void ps2_cg_AddPolyToScene( qhandle_t hShader, int numVerts, const polyVert_t *verts, int num );
+void ps2_cg_SetColor( const float *rgba );
+void ps2_cg_AddLightToScene( const vec3_t org, float intensity, float r, float g, float b );
+int ps2_cg_LerpTag( orientation_t *tag, clipHandle_t mod, int startFrame, int endFrame, float frac, const char *tagName );
+void ps2_cg_BoxTrace( trace_t *results, const vec3_t start, const vec3_t end, const vec3_t mins, const vec3_t maxs,
+                      clipHandle_t model, int brushmask );
+void ps2_cg_TransformedBoxTrace( trace_t *results, const vec3_t start, const vec3_t end, const vec3_t mins,
+                                 const vec3_t maxs, clipHandle_t model, int brushmask, const vec3_t origin,
+                                 const vec3_t angles );
+int ps2_cg_PointContents( const vec3_t p, clipHandle_t model );
+void ps2_cg_StartSound( vec3_t origin, int entityNum, int entchannel, sfxHandle_t sfx );
+void ps2_cg_AddLoopingSound( int entityNum, const vec3_t origin, const vec3_t velocity, sfxHandle_t sfx );
+void ps2_cg_AddRealLoopingSound( int entityNum, const vec3_t origin, const vec3_t velocity, sfxHandle_t sfx );
+void ps2_cg_UpdateEntityPosition( int entityNum, const vec3_t origin );
+int ps2_cg_Milliseconds( void );
+void ps2_cg_Cvar_Update( vmCvar_t *vmCvar );
+clipHandle_t ps2_cg_TempBoxModel( const vec3_t mins, const vec3_t maxs );
+/* 0: through the system call all the same (ps2_nodirect 1: for comparing) */
+extern int ps2_cg_direct;
+#define PS2_DIRECT( call, sys ) ( ps2_cg_direct ? (intptr_t)( call ) : (intptr_t)( sys ) )
+#define PS2_DIRECT_V( call, sys ) ( ps2_cg_direct ? ( ( call ), (intptr_t)0 ) : (intptr_t)( sys ) )
+#else
+#define PS2_DIRECT( call, sys ) sys
+#define PS2_DIRECT_V( call, sys ) sys
+#endif
+
 int PASSFLOAT( float x ) {
 	floatint_t fi;
 	fi.f = x;
@@ -54,7 +86,7 @@ void trap_Error(const char *fmt)
 }
 
 int		trap_Milliseconds( void ) {
-	return syscall( CG_MILLISECONDS ); 
+	return PS2_DIRECT( ps2_cg_Milliseconds(), syscall( CG_MILLISECONDS ) );
 }
 
 void	trap_Cvar_Register( vmCvar_t *vmCvar, const char *varName, const char *defaultValue, int flags ) {
@@ -62,7 +94,7 @@ void	trap_Cvar_Register( vmCvar_t *vmCvar, const char *varName, const char *defa
 }
 
 void	trap_Cvar_Update( vmCvar_t *vmCvar ) {
-	syscall( CG_CVAR_UPDATE, vmCvar );
+	PS2_DIRECT_V( ps2_cg_Cvar_Update( vmCvar ), syscall( CG_CVAR_UPDATE, vmCvar ) );
 }
 
 void	trap_Cvar_Set( const char *var_name, const char *value ) {
@@ -138,7 +170,7 @@ clipHandle_t trap_CM_InlineModel( int index ) {
 }
 
 clipHandle_t trap_CM_TempBoxModel( const vec3_t mins, const vec3_t maxs ) {
-	return syscall( CG_CM_TEMPBOXMODEL, mins, maxs );
+	return PS2_DIRECT( ps2_cg_TempBoxModel( mins, maxs ), syscall( CG_CM_TEMPBOXMODEL, mins, maxs ) );
 }
 
 clipHandle_t trap_CM_TempCapsuleModel( const vec3_t mins, const vec3_t maxs ) {
@@ -146,7 +178,7 @@ clipHandle_t trap_CM_TempCapsuleModel( const vec3_t mins, const vec3_t maxs ) {
 }
 
 int		trap_CM_PointContents( const vec3_t p, clipHandle_t model ) {
-	return syscall( CG_CM_POINTCONTENTS, p, model );
+	return PS2_DIRECT( ps2_cg_PointContents( p, model ), syscall( CG_CM_POINTCONTENTS, p, model ) );
 }
 
 int		trap_CM_TransformedPointContents( const vec3_t p, clipHandle_t model, const vec3_t origin, const vec3_t angles ) {
@@ -156,7 +188,8 @@ int		trap_CM_TransformedPointContents( const vec3_t p, clipHandle_t model, const
 void	trap_CM_BoxTrace( trace_t *results, const vec3_t start, const vec3_t end,
 						  const vec3_t mins, const vec3_t maxs,
 						  clipHandle_t model, int brushmask ) {
-	syscall( CG_CM_BOXTRACE, results, start, end, mins, maxs, model, brushmask );
+	PS2_DIRECT_V( ps2_cg_BoxTrace( results, start, end, mins, maxs, model, brushmask ),
+	            syscall( CG_CM_BOXTRACE, results, start, end, mins, maxs, model, brushmask ) );
 }
 
 void	trap_CM_CapsuleTrace( trace_t *results, const vec3_t start, const vec3_t end,
@@ -169,7 +202,8 @@ void	trap_CM_TransformedBoxTrace( trace_t *results, const vec3_t start, const ve
 						  const vec3_t mins, const vec3_t maxs,
 						  clipHandle_t model, int brushmask,
 						  const vec3_t origin, const vec3_t angles ) {
-	syscall( CG_CM_TRANSFORMEDBOXTRACE, results, start, end, mins, maxs, model, brushmask, origin, angles );
+	PS2_DIRECT_V( ps2_cg_TransformedBoxTrace( results, start, end, mins, maxs, model, brushmask, origin, angles ),
+	            syscall( CG_CM_TRANSFORMEDBOXTRACE, results, start, end, mins, maxs, model, brushmask, origin, angles ) );
 }
 
 void	trap_CM_TransformedCapsuleTrace( trace_t *results, const vec3_t start, const vec3_t end,
@@ -187,7 +221,7 @@ int		trap_CM_MarkFragments( int numPoints, const vec3_t *points,
 }
 
 void	trap_S_StartSound( vec3_t origin, int entityNum, int entchannel, sfxHandle_t sfx ) {
-	syscall( CG_S_STARTSOUND, origin, entityNum, entchannel, sfx );
+	PS2_DIRECT_V( ps2_cg_StartSound( origin, entityNum, entchannel, sfx ), syscall( CG_S_STARTSOUND, origin, entityNum, entchannel, sfx ) );
 }
 
 void	trap_S_StartLocalSound( sfxHandle_t sfx, int channelNum ) {
@@ -199,11 +233,11 @@ void	trap_S_ClearLoopingSounds( qboolean killall ) {
 }
 
 void	trap_S_AddLoopingSound( int entityNum, const vec3_t origin, const vec3_t velocity, sfxHandle_t sfx ) {
-	syscall( CG_S_ADDLOOPINGSOUND, entityNum, origin, velocity, sfx );
+	PS2_DIRECT_V( ps2_cg_AddLoopingSound( entityNum, origin, velocity, sfx ), syscall( CG_S_ADDLOOPINGSOUND, entityNum, origin, velocity, sfx ) );
 }
 
 void	trap_S_AddRealLoopingSound( int entityNum, const vec3_t origin, const vec3_t velocity, sfxHandle_t sfx ) {
-	syscall( CG_S_ADDREALLOOPINGSOUND, entityNum, origin, velocity, sfx );
+	PS2_DIRECT_V( ps2_cg_AddRealLoopingSound( entityNum, origin, velocity, sfx ), syscall( CG_S_ADDREALLOOPINGSOUND, entityNum, origin, velocity, sfx ) );
 }
 
 void	trap_S_StopLoopingSound( int entityNum ) {
@@ -211,7 +245,7 @@ void	trap_S_StopLoopingSound( int entityNum ) {
 }
 
 void	trap_S_UpdateEntityPosition( int entityNum, const vec3_t origin ) {
-	syscall( CG_S_UPDATEENTITYPOSITION, entityNum, origin );
+	PS2_DIRECT_V( ps2_cg_UpdateEntityPosition( entityNum, origin ), syscall( CG_S_UPDATEENTITYPOSITION, entityNum, origin ) );
 }
 
 void	trap_S_Respatialize( int entityNum, const vec3_t origin, vec3_t axis[3], int inwater ) {
@@ -255,15 +289,15 @@ void	trap_R_ClearScene( void ) {
 }
 
 void	trap_R_AddRefEntityToScene( const refEntity_t *re ) {
-	syscall( CG_R_ADDREFENTITYTOSCENE, re );
+	PS2_DIRECT_V( ps2_cg_AddRefEntityToScene( re ), syscall( CG_R_ADDREFENTITYTOSCENE, re ) );
 }
 
 void	trap_R_AddPolyToScene( qhandle_t hShader , int numVerts, const polyVert_t *verts ) {
-	syscall( CG_R_ADDPOLYTOSCENE, hShader, numVerts, verts );
+	PS2_DIRECT_V( ps2_cg_AddPolyToScene( hShader, numVerts, verts, 1 ), syscall( CG_R_ADDPOLYTOSCENE, hShader, numVerts, verts ) );
 }
 
 void	trap_R_AddPolysToScene( qhandle_t hShader , int numVerts, const polyVert_t *verts, int num ) {
-	syscall( CG_R_ADDPOLYSTOSCENE, hShader, numVerts, verts, num );
+	PS2_DIRECT_V( ps2_cg_AddPolyToScene( hShader, numVerts, verts, num ), syscall( CG_R_ADDPOLYSTOSCENE, hShader, numVerts, verts, num ) );
 }
 
 int		trap_R_LightForPoint( vec3_t point, vec3_t ambientLight, vec3_t directedLight, vec3_t lightDir ) {
@@ -271,7 +305,8 @@ int		trap_R_LightForPoint( vec3_t point, vec3_t ambientLight, vec3_t directedLig
 }
 
 void	trap_R_AddLightToScene( const vec3_t org, float intensity, float r, float g, float b ) {
-	syscall( CG_R_ADDLIGHTTOSCENE, org, PASSFLOAT(intensity), PASSFLOAT(r), PASSFLOAT(g), PASSFLOAT(b) );
+	PS2_DIRECT_V( ps2_cg_AddLightToScene( org, intensity, r, g, b ),
+	            syscall( CG_R_ADDLIGHTTOSCENE, org, PASSFLOAT(intensity), PASSFLOAT(r), PASSFLOAT(g), PASSFLOAT(b) ) );
 }
 
 void	trap_R_AddAdditiveLightToScene( const vec3_t org, float intensity, float r, float g, float b ) {
@@ -283,12 +318,13 @@ void	trap_R_RenderScene( const refdef_t *fd ) {
 }
 
 void	trap_R_SetColor( const float *rgba ) {
-	syscall( CG_R_SETCOLOR, rgba );
+	PS2_DIRECT_V( ps2_cg_SetColor( rgba ), syscall( CG_R_SETCOLOR, rgba ) );
 }
 
 void	trap_R_DrawStretchPic( float x, float y, float w, float h, 
 							   float s1, float t1, float s2, float t2, qhandle_t hShader ) {
-	syscall( CG_R_DRAWSTRETCHPIC, PASSFLOAT(x), PASSFLOAT(y), PASSFLOAT(w), PASSFLOAT(h), PASSFLOAT(s1), PASSFLOAT(t1), PASSFLOAT(s2), PASSFLOAT(t2), hShader );
+	PS2_DIRECT_V( ps2_cg_DrawStretchPic( x, y, w, h, s1, t1, s2, t2, hShader ),
+	            syscall( CG_R_DRAWSTRETCHPIC, PASSFLOAT(x), PASSFLOAT(y), PASSFLOAT(w), PASSFLOAT(h), PASSFLOAT(s1), PASSFLOAT(t1), PASSFLOAT(s2), PASSFLOAT(t2), hShader ) );
 }
 
 void	trap_R_ModelBounds( clipHandle_t model, vec3_t mins, vec3_t maxs ) {
@@ -297,7 +333,8 @@ void	trap_R_ModelBounds( clipHandle_t model, vec3_t mins, vec3_t maxs ) {
 
 int		trap_R_LerpTag( orientation_t *tag, clipHandle_t mod, int startFrame, int endFrame, 
 					   float frac, const char *tagName ) {
-	return syscall( CG_R_LERPTAG, tag, mod, startFrame, endFrame, PASSFLOAT(frac), tagName );
+	return PS2_DIRECT( ps2_cg_LerpTag( tag, mod, startFrame, endFrame, frac, tagName ),
+	                   syscall( CG_R_LERPTAG, tag, mod, startFrame, endFrame, PASSFLOAT(frac), tagName ) );
 }
 
 void	trap_R_RemapShader( const char *oldShader, const char *newShader, const char *timeOffset ) {

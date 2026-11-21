@@ -1047,6 +1047,20 @@ const struct mx_tex *rp_image_place(struct rp_image *im) {
 	int again = im->frame == frame + 1 && rp_tex_full && im->ok && im->from;
 	if (im->frame == frame + 1 && !again)
 		return im->ok ? &im->t : 0;
+	/* placed the plain way in the frame before, and nothing has changed
+	   since: its entries again, as they are (rp_debug 512: asked for as if new) */
+	if (im->frame == frame && im->ok && im->plain && !tight && !force && !rp_tex_full && !cs_n && im->plain_max == tex_max &&
+	    !(im->fine && im->fine_frame == frame + 1) && !(rp_debug & 512) &&
+	    mx_vcache_again(im->ent, mx_vcache_tex_key(im->key, im->from), im->t.tbp[0]) &&
+	    (!im->plain_clut || mx_vcache_again(im->clut_ent, im->clut_key, im->t.cbp))) {
+		im->frame = frame + 1;
+		frame_blocks += im->plain_blocks, rp_tex_stats.kind_blocks[im->kind] += im->plain_blocks;
+		want_blocks += im->plain_blocks;
+		im->uses++;
+		rp_tex_stats.again++;
+		rp_tex_stats.clut_cache += im->plain_clut;
+		return &im->t;
+	}
 	struct mx_tex was = im->t;
 	u32 was_from = im->from, was_there = im->frame == frame && im->ok;
 	u32 tw = log2u(im->w), th = log2u(im->h), from = 0;
@@ -1169,6 +1183,12 @@ const struct mx_tex *rp_image_place(struct rp_image *im) {
 	frame_blocks += blocks, rp_tex_stats.kind_blocks[im->kind] += blocks;
 	want_blocks += blocks << (2 * (from > base ? from - base : 0));
 	im->uses++;
+	im->plain = !tight && !force && !rp_tex_full && !cs_n && !im->split && !fine && !again && from == base;
+	if (im->plain) {
+		im->plain_max = tex_max, im->plain_blocks = blocks, im->plain_clut = (u8)own_clut;
+		im->ent = mx_vcache_entry(mx_vcache_tex_key(im->key, from));
+		im->clut_ent = own_clut ? mx_vcache_entry(im->clut_key) : -1;
+	}
 	if (r == MX_VCACHE_HIT && rc == MX_VCACHE_HIT) {
 		if (fine && from == 1)
 			fine_join(im);

@@ -171,6 +171,7 @@ void rp_view_rect(const struct rp_cam *cam, float x, float y, float w, float h) 
 		v->sb_lo[j - 1].d = dot3(v->sb_lo[j - 1].n, v->org), v->sb_hi[j - 1].d = dot3(v->sb_hi[j - 1].n, v->org);
 		v->sb_klo[j - 1] = top - (B + 1.5f), v->sb_khi[j - 1] = top - (B - 1.5f);
 	}
+	rp_pic_view();
 }
 
 void rp_view_set(const struct rp_cam *cam) {

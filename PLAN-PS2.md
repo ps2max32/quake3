@@ -1241,6 +1241,130 @@ a second; passes still drawn when the beam came, of about 9200):
   or 1. The idle time is the beam's: a pass waits for its strip, and where
   the passes are long the GS has nothing to spare. Trilinear stays off.
 
+- Which units work at the same time (the same samples, counted together;
+  textures 128 / 256, of the run's time): the EE alone, no pass on its way
+  38 / 39 %; the EE and the GS, VU1 waiting at an XGKICK 36 / 33 %; the EE
+  and VU1, the GS's FIFO empty 14 / 13 %; the EE and the GS, VU1 free (2D,
+  textures) 4 / 4 %; all three 3 / 3 %; VU1 or the GS with the EE asleep 3
+  / 4 %; nothing 2 / 3 %. So the EE works through 95 % of the passes' time,
+  but VU1 and the GS take turns: within a pass the GS is busy 73 % of the
+  time and VU1 computes 30 %, both at once 6 %. The world is few vertices
+  and large faces (5,300 vertices a frame over the strips), where VU1 is
+  done at once and waits for the GS; the models are many vertices and
+  small triangles (14,900, 65 % of what VU1 takes), where VU1 computes and
+  the GS has next to nothing. Measured at 1920 wide (`r_ps2width 1920`):
+  with everything VU1 computes with the GS's FIFO empty 14.0 % of the time
+  and waits for the GS 48.3 %; without the models (`r_ps2draw 5`) 4.0 and
+  45.9 %; without the world (`r_ps2draw 3`) 10.0 and 15.3 % (the game's
+  quads and the view weapon fill too). So what there is to gain where the
+  models' vertices could be computed beside the fill is 10 of a pass's 71
+  % of the time. VU1 can be one packet ahead of the GS and
+  no more (a second XGKICK waits for the first to have left), so a model's
+  vertices beside a wall's fill would need walls and models in turns batch
+  by batch, and a change of program and texture costs VIF1 and VU1 14 us
+  for a model batch's 10 us of computing. Tried run by run (a switch, taken
+  out again: the first scene's models that write depth, 22 runs a frame,
+  each between two of the world's runs, not after them all; 42 waits
+  between the programs' families a frame for 10), two runs each way at
+  1920 wide: a field's passes 7.35 ms for 7.35, VU1 computing with the
+  GS's FIFO empty 13.7 % for 13.7, both at once 3.6 % for 3.4. The order
+  changes nothing: a run's set-up kicks its registers, and that XGKICK
+  waits for the packet before it.
+- VU0 runs no micro program and has none to run here: all work a vertex is
+  VU1's, and what the EE has left of vector arithmetic is work an object
+  (the culling, the polygons, matrices, the models' light: a good tenth of
+  its time), which VU0 does as macro instructions inside the EE's code.
+  Nor can it take VU1's work (the models, where the GS waits for VU1):
+  what VU0 computes leaves it through the EE alone, the unit that is full
+  (a frame's models are some 700 KB of GS packets; by reckoning, not
+  measured).
+- **A build's frame rate moves by up to 5 % with where its code and data
+  come to lie.** The same source with a few lines more or less: 64.0, 63.3,
+  62.5, 61.9 and 60.7 fps (each the same in every run). So two builds are
+  only compared where the difference is far larger; everything below is
+  measured in one build, by a switch at run time, the two ways in turns.
+- The game's polygons once to the eye's coordinates: `rp_poly_area` (the
+  pixels a quad fills, for the frame's limit) leaves each vertex's place
+  from the eye, and every stage's draw takes it from there (`rp_poly_cam`;
+  a mark's step towards the eye is a factor on it), where `rp_poly` worked
+  it out again a stage; the view's numbers for the tests once a view. And
+  by VU0, four vertices at a time (the compiler's vectors, the numbers in
+  and out through memory). One build, three runs each: 16.46 ms a frame
+  with VU0, 16.57 by the FPU (`r_ps2debug 8388608`), 16.64 by the FPU
+  twice as before (`8396800`): 0.5 % for the once, 0.6 % more for VU0.
+- The processor's counters (`ps2_perf 1`: at run time, the same program;
+  a part of the frame each, `ps2_perf_region`), timedemo four, a frame of
+  4.8 M cycles: 2.7 M instructions, 19,600 misses of the instruction cache,
+  57,400 of the data cache, 840 TLB refills. By part (cycles, instructions,
+  instruction and data cache misses):
+
+  | | | | | |
+  |---|---|---|---|---|
+  | the game and the rest | 1,478,000 | 801,000 | 5,600 | 18,900 |
+  | the models | 883,000 | 439,000 | 6,500 | 8,600 |
+  | the strips' records (`rp_list_end`) | 512,000 | 429,000 | 700 | 4,200 |
+  | the world's runs | 460,000 | 190,000 | 2,200 | 6,600 |
+  | the pictures (421 a frame) | 404,000 | 199,000 | 800 | 5,700 |
+  | the quads' draws | 313,000 | 178,000 | 1,700 | 2,700 |
+  | the world's cull | 272,000 | 203,000 | 200 | 2,800 |
+  | the quads' areas | 168,000 | 110,000 | 200 | 2,500 |
+  | entities and polygons taken | 124,000 | 62,000 | 300 | 2,900 |
+  | marks | 102,000 | 41,000 | 300 | 1,300 |
+
+  The cycles over the instructions are about 25 a miss: two fifths of the
+  EE's frame is waiting for its caches (16 KB of instructions, 8 KB of
+  data).
+- **cgame's calls straight into the engine.** cgame is linked into the
+  program, but each of its calls went through `VM_DllSyscall` (sixteen
+  arguments copied from the variable list) and the engine's switch: 421
+  pictures, 180 polygons, 69 entities, the traces, the sounds' positions
+  and 85 cvar updates a frame. The traps of the seventeen calls made most
+  call the engine's functions (`ps2_cg_*` in cl_cgame.c; `ps2_nodirect 1`:
+  through the system call, for comparing). One build, in turns: 15.55 and
+  15.56 ms a frame for 16.59, 16.55 and 16.53: 6 %. What still goes
+  through the switch is 5 calls a frame and less each (the run's report
+  counts them). qagame's calls (the bots, a game played) are as they were.
+- The hottest functions first in the fast text, next to each other (`make
+  ORDER=<file>`: a function a section, `ld.lld --symbol-ordering-file`;
+  the list from a profile's samples): 63.8 fps three times for 60.8 without
+  it, of the same source; but another source's ordered build 62.5 for 63.3
+  without. Within what a build's place does anyway: not the default.
+- The models' runs between the world's, a trial that is out of the code
+  again: see above (the passes as long, VU1 and the GS as little at once).
+- Textures 256 (`r_ps2mode 1`) with the direct calls, the same build in
+  turns: 56.6 and 56.8 fps (17.67 and 17.58 ms a frame) for 54.1 (18.46
+  ms) through the system call: 4.6 %.
+- What the models cost the EE (the timedemo with `r_ps2draw 5`, no models:
+  82 fps for 64): their part of a frame is 831 thousand of 4.76 million
+  cycles for 27 models drawn (35 surfaces, 159 pieces), spread evenly over
+  `rp_model_draw` and what it calls: no one place to take it from. With
+  them the EE also sleeps 153 thousand cycles a frame more, waiting for the
+  passes, and the picture is at half width in 433 to 553 of the 1258 frames
+  for 180 without.
+- No program of VU0's own for the cull: the box test is 1.5 % of the EE's
+  time, the walk over groups and chunks around it the rest. `memcpy` and
+  `memset` are 549 and 593 calls a frame (101 and 86 KB): the cache's
+  misses, not the calls.
+- The screen's pictures (421 a frame, 7 % of the EE's time): the profile's
+  hot instructions were the first loads of the renderer's own variables,
+  each a cache miss after the game's code between two letters. What a
+  picture reads lies in one cache line of the core's fast part (`h2d` in
+  rp_main.c, `pc` in rp_poly.c), a picture is written straight into the
+  frame's memory (no copy, no line fetched for it), a line of text takes
+  its strips once, and the entry points leave out the counters' and the
+  sampler's marks when no run measures (`ps2_inst`). One build, in turns
+  (the old way behind a switch, taken out again): 15.12 and 15.17 ms a
+  frame for 15.82 and 15.78: 4.3 %. The scene's counters in one line too
+  (`scn`): within what a build's place does.
+- An image placed in the frame before is taken as it was
+  (`rp_image_place`'s first lines; maxsdk's `mx_vcache_entry` and
+  `mx_vcache_again`: a use by the entry kept, without the lookup and
+  without its places written again): 64 images a frame. Placing was 9 % of
+  the EE's time. `r_ps2debug 512`: every image asked of the cache each
+  frame. One build, in turns: 14.55 and 14.64 ms a frame for 15.24: 4.6 %.
+  The timedemo with both: 68.7 and 68.3 fps in that build, 70.3 in the
+  one without the old ways' code; textures 256 (`r_ps2mode 1`): 60.0 fps.
+
 ## 3. Why the earlier attempts stalled
 
 | Attempt | Result | Why |

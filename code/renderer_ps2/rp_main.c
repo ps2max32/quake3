@@ -63,7 +63,30 @@ static cvar_t *r_ps2draw, *r_ps2shot, *r_ps2passes, *r_ps2beamat, *r_ps2fill, *r
    rp_tex.c's a frame) fit the frame's own record. */
 static u8 rec[4 * 64 * 1024] MX_FAST_BSS MX_ALIGNED(64);
 static u8 srec[4 * 3 * 32 * 1024] MX_FAST_BSS MX_ALIGNED(64);
-static int screen_on, in_frame;
+static int screen_on;
+/* What the game's calls during a frame read and count (an entity, a polygon,
+   a picture: hundreds a frame, the game's own data in the cache between
+   them): together in a cache line of the core's fast part. */
+static struct {
+	int in_frame;
+	int inst;                                               /* the entry points mark the EE's state and the counters' parts (sys_ps2.c) */
+	unsigned cur_ents, cur_polys, cur_polyverts, cur_lights; /* since ClearScene */
+	u32 nment, first_ment;
+	u32 nsprite, npoly, npolyvert;                          /* in the frame */
+	u32 first_sprite, first_poly;                           /* of the scene */
+} scn MX_FAST_BSS MX_ALIGNED(64);
+#define in_frame scn.in_frame
+#define cur_ents scn.cur_ents
+#define cur_polys scn.cur_polys
+#define cur_polyverts scn.cur_polyverts
+#define cur_lights scn.cur_lights
+#define nment scn.nment
+#define first_ment scn.first_ment
+#define nsprite scn.nsprite
+#define npoly scn.npoly
+#define npolyvert scn.npolyvert
+#define first_sprite scn.first_sprite
+#define first_poly scn.first_poly
 /* cycles a frame waited for a free record: not the frame's work (sys_ps2.c) */
 unsigned ps2_ren_wait;
 /* r_ps2width 0: the width from frame to frame (width_choose) */
@@ -225,9 +248,8 @@ int ps2_demo_frame(void); /* sys_ps2.c: the timedemo's frame, 0: none */
 static struct {
 	unsigned scenes, views, small; /* RenderScene: all, with the world, without (HUD models) */
 	unsigned ents[RT_MAX_REF_ENTITY_TYPE], polys, polyverts, lights, pics, marks;
-} st, st_at; /* st_at: at the timedemo's first frame */
+} st MX_FAST_BSS MX_ALIGNED(64), st_at; /* st_at: at the timedemo's first frame */
 static unsigned st_frames; /* the timedemo's frames counted */
-static unsigned cur_ents, cur_polys, cur_polyverts, cur_lights; /* since ClearScene */
 
 /* a main view's camera, quake3.cam: a head, then one of these a view */
 struct cam {
@@ -250,7 +272,6 @@ static int ncams;
 #define MAX_POLYVERT 12288
 #define MAX_MODEL 1024
 static refEntity_t sprites[MAX_SPRITE], ments[MAX_MODEL];
-static u32 nment, first_ment;
 /* the scene's portal surfaces (the game's misc_portal_surface): where, and
    where its camera is (the same place: a mirror) */
 #define MAX_PORTAL 8
@@ -265,8 +286,6 @@ static struct {
 	u16 first, n;
 } polys[MAX_POLY];
 static struct rp_vert polyverts[MAX_POLYVERT];
-static u32 nsprite, npoly, npolyvert;          /* in the frame */
-static u32 first_sprite, first_poly;           /* of the scene */
 static unsigned st_nostage, st_quads;
 static unsigned long long poly_px_sum, poly_px_max;
 static float quad_px; /* the frame's quads: the pixels they fill, every stage */
@@ -339,12 +358,25 @@ struct quad {
 	const struct rp_vert *v;
 	u32 n;
 	float px;            /* the pixels it fills, about, over its stages */
+	rp_cam4 *cam;        /* its vertices from the eye, of the view quad_cam_view (0: not kept) */
 	float score;         /* a sprite's: px by how little of it shows (0: never left out) */
 };
 #define MAX_BEAM_QUAD 512
 #define MAX_QUAD (MAX_SPRITE + MAX_POLY + MAX_BEAM_QUAD)
 static struct quad quad[MAX_QUAD];
 static u16 quad_order[MAX_QUAD];
+/* the quads' vertices from the eye, as rp_poly_area left them: the draws of
+   every stage take them from here (rp_poly_cam) */
+#define MAX_QUAD_CAM 1024 /* fours of vertices */
+static rp_cam4 quad_cam[MAX_QUAD_CAM];
+static u32 nquad_cam, quad_cam_view;
+static rp_cam4 *cam_take(u32 n) {
+	u32 g = (n + 3) >> 2;
+	if (nquad_cam + g > MAX_QUAD_CAM)
+		return 0;
+	nquad_cam += g;
+	return &quad_cam[nquad_cam - g];
+}
 static struct rp_vert sprite_vert[MAX_SPRITE][4];
 
 float rp_sin1(float turns);
@@ -372,7 +404,8 @@ static void beam_quad(u32 *n, const refEntity_t *e, const struct rp_shader *sh, 
 	q->v = v, q->n = 4;
 	/* a beam is never left out for its fill, nor as off the screen by this
 	   count (a band from beside the eye into the distance) */
-	q->px = rp_poly_area(v, 4) * (float)sh->nstage + 1.0f, q->score = 0;
+	q->cam = cam_take(4);
+	q->px = rp_poly_area(v, 4, q->cam) * (float)sh->nstage + 1.0f, q->score = 0;
 }
 
 /* a band from start to end, span each way along up; its texture repeats
@@ -551,6 +584,7 @@ static u32 scene_quads(const refdef_t *fd, int world) {
 	u32 n = 0;
 	float now = fd->time * 0.001f;
 	nbeam = 0;
+	nquad_cam = 0, quad_cam_view = rp_view.serial;
 	for (u32 i = first_poly; i < npoly; i++) {
 		struct rp_shader *sh = rp_shader_get(polys[i].shader);
 		if (!sh || !sh->nstage)
@@ -559,7 +593,8 @@ static u32 scene_quads(const refdef_t *fd, int world) {
 		q->shader = polys[i].shader, q->sort = sh->sort, q->time = now;
 		q->ent[0] = q->ent[1] = q->ent[2] = q->ent[3] = 255;
 		q->v = &polyverts[polys[i].first], q->n = polys[i].n;
-		q->px = rp_poly_area(q->v, q->n) * (float)sh->nstage, q->score = 0;
+		q->cam = cam_take(q->n);
+		q->px = rp_poly_area(q->v, q->n, q->cam) * (float)sh->nstage, q->score = 0;
 	}
 	for (u32 i = first_sprite; i < nsprite; i++) {
 		const refEntity_t *e = &sprites[i];
@@ -598,7 +633,8 @@ static u32 scene_quads(const refdef_t *fd, int world) {
 		u32 c = e->shaderRGBA[0] > e->shaderRGBA[1] ? e->shaderRGBA[0] : e->shaderRGBA[1];
 		c = c > e->shaderRGBA[2] ? c : e->shaderRGBA[2];
 		c = c < e->shaderRGBA[3] ? c : e->shaderRGBA[3];
-		q->px = rp_poly_area(v, 4) * (float)sh->nstage;
+		q->cam = cam_take(4);
+		q->px = rp_poly_area(v, 4, q->cam) * (float)sh->nstage;
 		q->score = q->px / (float)(c + 8) + 1e-6f;
 	}
 	/* the world's quads that turn to the eye (lamps' glows) */
@@ -641,7 +677,8 @@ static u32 scene_quads(const refdef_t *fd, int world) {
 				q->shader = hs, q->sort = sh->sort, q->time = now;
 				q->ent[0] = q->ent[1] = q->ent[2] = q->ent[3] = 255;
 				q->v = v, q->n = 4;
-				q->px = rp_poly_area(v, 4) * (float)sh->nstage, q->score = 0;
+				q->cam = cam_take(4);
+				q->px = rp_poly_area(v, 4, q->cam) * (float)sh->nstage, q->score = 0;
 			}
 		}
 	}
@@ -713,8 +750,17 @@ static void quads_draw(u32 from, u32 to) {
 			for (u32 k = i; k < end; k++) {
 				const struct quad *q = &quad[quad_order[k]];
 				struct rp_vert v[16];
+				rp_cam4 cam[4];
+				/* its vertices from the eye, when the view is still the one they are of */
+				const rp_cam4 *qc = quad_cam_view == rp_view.serial && !(rp_debug & 8192) ? q->cam : 0;
 				int moved = rp_stage_tcmod(stg, q->time, m);
-				if (sh->polygon_offset) {
+				if (sh->polygon_offset && qc) {
+					int at_eye = 0;
+					for (u32 a = 0; a < q->n; a++)
+						at_eye |= RP_CAM(qc, a, 2) < 16.0f;
+					if (at_eye)
+						continue;
+				} else if (sh->polygon_offset) {
 					/* a mark at the eye (the shadow under the player's own feet, a burn
 					   he stands on) is not drawn: across the eye's plane it would be
 					   cut, and what a cut leaves wrong of a mark darkens the picture */
@@ -732,7 +778,11 @@ static void quads_draw(u32 from, u32 to) {
 						memcpy(v[a].rgba, v[0].rgba, 4);
 					else
 						rp_stage_colour(stg, q->time, q->v[a].rgba, q->ent, v[a].rgba);
-					if (sh->polygon_offset) {
+					if (sh->polygon_offset && qc) {
+						/* the same (below) on its place from the eye */
+						float w = RP_CAM(qc, a, 2), f = w > 8.0f ? 1.0f - (w * (2.0f / 262140.0f) + 0.25f / w) : 1.0f;
+						RP_CAM(cam, a, 0) = RP_CAM(qc, a, 0) * f, RP_CAM(cam, a, 1) = RP_CAM(qc, a, 1) * f, RP_CAM(cam, a, 2) = w * f;
+					} else if (sh->polygon_offset) {
 						/* on a surface (a mark): towards the eye along its ray by two steps
 						   of the depth buffer there (16 bits, 262140 / w), so it is in
 						   front of its wall wherever both are rounded */
@@ -750,7 +800,10 @@ static void quads_draw(u32 from, u32 to) {
 						v[a].st[0] = m[0] * ss + m[1] * tt + m[2], v[a].st[1] = m[3] * ss + m[4] * tt + m[5];
 					}
 				}
-				rp_poly(v, q->n);
+				if (qc)
+					rp_poly_cam(v, sh->polygon_offset ? cam : qc, q->n);
+				else
+					rp_poly(v, q->n);
 				st_quads++;
 				if (s == 0)
 					quad_px += q->px;
@@ -763,13 +816,25 @@ static void quads_draw(u32 from, u32 to) {
 	st_quad_cycles += mx_count() - t0;
 }
 
+/* What a picture of the screen reads before it is one (RP_DrawStretchPic),
+   in one cache line of the core's fast part: the game draws its text a
+   letter a call, with its own data in the cache between them. */
 static struct {
-	qhandle_t shader;
-	int stage;
-	u32 rgba;   /* the last picture's colour as the GS takes it, for colour */
-	u32 colour; /* color2d as one word */
-	int plain;  /* one stage, its texture coordinates as given */
-} last2d;
+	struct {
+		qhandle_t shader;
+		int stage;
+		u32 rgba;   /* the last picture's colour as the GS takes it, for colour */
+		u32 colour; /* the colour set, as one word */
+		int plain;  /* one stage, its texture coordinates as given */
+	} last;
+	u8 color[4];    /* RP_SetColor's */
+	u32 col;        /* the same as one word */
+	u32 on;         /* in a frame, and the pictures are drawn (r_ps2draw) */
+	float xs, ys;   /* the game's 1920 x 1080 to the picture's */
+	u32 pics;
+} h2d MX_FAST_DATA MX_ALIGNED(64) = {.color = {255, 255, 255, 255}, .col = 0xFFFFFFFFu};
+#define last2d h2d.last
+#define color2d h2d.color
 
 /* A mirror in the view (a chunk of the world whose script is a portal's, at
    a misc_portal_surface without a camera): the scene once more from the eye
@@ -857,7 +922,7 @@ static int mirror_view(const refdef_t *fd, const struct rp_cam *cam, float ys, f
 		memset(q, 0, sizeof q);
 		for (int c = 0; c < 4; c++)
 			VectorCopy(cn[c], q[c].xyz);
-		if (rp_poly_area(q, 4) > 0.25f * (float)mx_gs.w * (float)mx_gs.h)
+		if (rp_poly_area(q, 4, 0) > 0.25f * (float)mx_gs.w * (float)mx_gs.h)
 			return 0;
 	}
 	struct portal_or o;
@@ -965,6 +1030,11 @@ static int mirror_view(const refdef_t *fd, const struct rp_cam *cam, float ys, f
 static cvar_t *r_ps2shotload;
 static u32 load_views, loads;
 
+/* the part of a frame the processor's counters are being added to (ps2_perf, sys_ps2.c) */
+void ps2_perf_region(unsigned id);
+enum { PR_GAME, PR_SCENE, PR_CULL, PR_WORLD, PR_AREAS, PR_MODELS, PR_SKY, PR_QUADS, PR_PICS, PR_LIST, PR_FRAME_END,
+       PR_BEGIN, PR_ADD, PR_MARKS };
+
 static void RP_RenderScene(const refdef_t *fd) {
 	st.scenes++;
 	int world = !(fd->rdflags & RDF_NOWORLDMODEL);
@@ -1001,8 +1071,10 @@ static void RP_RenderScene(const refdef_t *fd) {
 		int skip = r_ps2draw->integer;
 		int draw_world = world && world_ok && !(skip & 2);
 		if (draw_world) {
+			ps2_perf_region(PR_CULL);
 			rp_world_areas(fd->areamask);
 			rp_world_cull(&world_st);
+			ps2_perf_region(PR_WORLD);
 			float mpl[4];
 			portal_drawn = 0;
 			if ((r_ps2mirror->integer & 5) && mirror_view(fd, &cam, ys, now, mpl)) {
@@ -1029,7 +1101,9 @@ static void RP_RenderScene(const refdef_t *fd) {
 #undef ACC
 		}
 		/* the scene's quads (after the cull: the world's own are of this view) */
+		ps2_perf_region(PR_AREAS);
 		u32 nq = scene_quads(fd, draw_world), decals = 0;
+		ps2_perf_region(PR_MODELS);
 		while (decals < nq && quad[quad_order[decals]].sort <= SORT_DECAL)
 			decals++;
 		/* a scene of its own on the screen (the HUD's models): no depth is there yet */
@@ -1065,6 +1139,7 @@ static void RP_RenderScene(const refdef_t *fd) {
 		/* the sky, behind what was drawn, where the view sees the map's sky
 		   surfaces: after all that writes depth (a pixel that fails the
 		   depth test costs the GS less than one drawn and blended) */
+		ps2_perf_region(PR_SKY);
 		if (draw_world) {
 			u32 sky_strips = sky_shader ? rp_world_sky() : 0;
 			const struct rp_shader *sky = sky_strips ? rp_shader_get(sky_shader) : NULL;
@@ -1073,17 +1148,22 @@ static void RP_RenderScene(const refdef_t *fd) {
 		}
 		if (skip & 8)
 			nq = decals = 0;
+		ps2_perf_region(PR_QUADS);
 		quads_draw(0, decals);
+		ps2_perf_region(PR_WORLD);
 		if (draw_world) {
 			rp_world_add(1);
 			for (u32 i = first_ment; i < nment; i++)
 				if (kind[i] == 8)
 					rp_world_bmodel((u32)rp_model_brush(ments[i].hModel), ments[i].origin, ments[i].axis, 1);
 		}
+		ps2_perf_region(PR_MODELS);
 		for (u32 i = first_ment; i < nment; i++)
 			if (kind[i] == 1)
 				rp_model_draw(&ments[i], now - ments[i].shaderTime);
+		ps2_perf_region(PR_QUADS);
 		quads_draw(decals, nq);
+		ps2_perf_region(PR_MODELS);
 		if (hack) {
 			float rc[4] = {1e9f, 1e9f, -1e9f, -1e9f}, r1[4];
 			for (u32 i = first_ment; i < nment; i++)
@@ -1124,7 +1204,6 @@ static void RP_RenderScene(const refdef_t *fd) {
 
 /* ---- the screen's pictures ------------------------------------------------------------- */
 
-static u8 color2d[4] = {255, 255, 255, 255};
 static float frame_time; /* the frame's, for the pictures' shaders */
 
 static void RP_SetColor(const float *rgba) {
@@ -1132,21 +1211,23 @@ static void RP_SetColor(const float *rgba) {
 		float v = rgba ? rgba[k] * 255.0f : 255.0f;
 		color2d[k] = (u8)(v < 0 ? 0 : v > 255 ? 255 : v);
 	}
+	h2d.col = (u32)color2d[0] | (u32)color2d[1] << 8 | (u32)color2d[2] << 16 | (u32)color2d[3] << 24;
 }
 
 /* x, y, w, h in the game's 1920 x 1080 */
 static void RP_DrawStretchPic(float x, float y, float w, float h, float s1, float t1, float s2, float t2,
                               qhandle_t shader) {
-	st.pics++;
-	if (!in_frame || !r_ps2draw->integer || (r_ps2draw->integer & 32))
+	h2d.pics++;
+	if (!h2d.on)
 		return;
-	float now = frame_time, ys = (float)mx_gs.h / 1080.0f;
-	u32 col = (u32)color2d[0] | (u32)color2d[1] << 8 | (u32)color2d[2] << 16 | (u32)color2d[3] << 24;
+	float xs = h2d.xs, ys = h2d.ys;
+	u32 col = h2d.col;
 	/* as the picture before (a line of text): nothing to look up */
 	if (shader == last2d.shader && last2d.plain && col == last2d.colour) {
-		rp_pic(x * XS, y * ys, w * XS, h * ys, s1, t1, s2, t2, last2d.rgba);
+		rp_pic(x * xs, y * ys, w * xs, h * ys, s1, t1, s2, t2, last2d.rgba);
 		return;
 	}
+	float now = frame_time;
 	struct rp_shader *sh = rp_shader_get(shader);
 	if (!sh)
 		return;
@@ -1172,7 +1253,7 @@ static void RP_DrawStretchPic(float x, float y, float w, float h, float s1, floa
 			a2 = m[0] * s2 + m[1] * t2 + m[2], b2 = m[3] * s2 + m[4] * t2 + m[5];
 		}
 		u32 rgba = (u32)c[0] | (u32)c[1] << 8 | (u32)c[2] << 16 | (u32)c[3] << 24;
-		rp_pic(x * XS, y * ys, w * XS, h * ys, a1, b1, a2, b2, rgba);
+		rp_pic(x * xs, y * ys, w * xs, h * ys, a1, b1, a2, b2, rgba);
 		last2d.rgba = rgba, last2d.colour = col;
 		last2d.plain = sh->nstage == 1 && stg->nimg == 1 && !stg->ntcmod && last2d.shader == shader &&
 		               stg->rgbgen != RGB_WAVE && stg->alphagen != A_WAVE;
@@ -1286,6 +1367,12 @@ static void RP_BeginFrame(stereoFrame_t stereoFrame) {
 	mx_frame_begin_n();
 	ps2_ren_wait += mx_count() - t0;
 	in_frame = 1;
+	h2d.on = r_ps2draw->integer && !(r_ps2draw->integer & 32);
+	h2d.xs = XS, h2d.ys = (float)mx_gs.h / 1080.0f;
+	{
+		extern int ps2_inst;
+		scn.inst = ps2_inst;
+	}
 	if (dyn_width) {
 		int half = mx_gs.w < 1920;
 		width_changes += half != half_now;
@@ -1461,10 +1548,13 @@ static void RP_EndFrame(int *frontEndMsec, int *backEndMsec) {
 		hud_draw();
 	if (in_frame) {
 		rp_poly_flush();
+		ps2_perf_region(PR_LIST);
 		rp_list_end();
 		u32 f = mx_frame_number();
+		ps2_perf_region(PR_FRAME_END);
 		mx_frame_end();
 		in_frame = 0;
+		h2d.on = 0, st.pics += h2d.pics, h2d.pics = 0;
 		if (shot) {
 			/* the frame's picture: when it is the one played, and a field more */
 			while (mx_frame_done() < f)
@@ -1921,10 +2011,10 @@ void ps2_ren_report(void) {
 	if (st_frames)
 		Com_Printf("ps2: renderer: a frame: %u runs, %u draws; over the strips %u vertices in %u batches, %u set-ups, %u "
 		           "quadwords of records, %u of chains; %u draws left out (no memory); textures sent %u (%u KB), %u "
-		           "found no room (%u placed without their finest levels for want of room, %u as their distance needs no more (%u hundredths of a level sooner, up to %u, %u times too low); %u frames with more images than fit: at full size %u KB a frame, %u at most), %u waited a frame\n", rp_list_stats.runs / st_frames, rp_list_stats.draws / st_frames,
+		           "found no room (%u placed without their finest levels for want of room, %u as their distance needs no more (%u hundredths of a level sooner, up to %u, %u times too low); %u frames with more images than fit: at full size %u KB a frame, %u at most), %u waited a frame, %u a frame taken as the frame before had them\n", rp_list_stats.runs / st_frames, rp_list_stats.draws / st_frames,
 		           rp_list_stats.sent / st_frames, rp_list_stats.batches / st_frames, rp_list_stats.setups / st_frames,
 		           rp_list_stats.qw / st_frames, rp_list_stats.dyn_qw / st_frames, rp_list_stats.lost,
-		           rp_tex_stats.uploads, rp_tex_stats.upload_kb, rp_tex_stats.full, rp_tex_stats.coarse, rp_tex_stats.far, (unsigned)(rp_tex_stats.far_bias_sum * 100 / (rp_tex_stats.tight ? rp_tex_stats.tight : 1)), (unsigned)(rp_tex_stats.far_bias_max * 100), rp_tex_stats.far_floors, rp_tex_stats.tight, rp_tex_stats.frames ? rp_tex_stats.want_sum / rp_tex_stats.frames : 0, rp_tex_stats.want_max / 4, rp_tex_stats.later);
+		           rp_tex_stats.uploads, rp_tex_stats.upload_kb, rp_tex_stats.full, rp_tex_stats.coarse, rp_tex_stats.far, (unsigned)(rp_tex_stats.far_bias_sum * 100 / (rp_tex_stats.tight ? rp_tex_stats.tight : 1)), (unsigned)(rp_tex_stats.far_bias_max * 100), rp_tex_stats.far_floors, rp_tex_stats.tight, rp_tex_stats.frames ? rp_tex_stats.want_sum / rp_tex_stats.frames : 0, rp_tex_stats.want_max / 4, rp_tex_stats.later, rp_tex_stats.again / st_frames);
 	if (st_frames) {
 		static const char *const prog[RP_PROGS] = {"the world's", "GS packets", "the models'", "the stages'", "the lights'"};
 		for (int k = 0; k < RP_PROGS; k++)
@@ -2256,28 +2346,60 @@ static void RP_TakeVideoFrame(int h, int w, byte *captureBuffer, byte *encodeBuf
 extern volatile unsigned char ps2_load_state;
 static void load_RenderScene(const refdef_t *fd) {
 	ps2_load_state = 1;
+	ps2_perf_region(PR_SCENE);
 	RP_RenderScene(fd);
+	ps2_perf_region(PR_GAME);
 	ps2_load_state = 0;
 }
 static void load_BeginFrame(stereoFrame_t stereoFrame) {
 	ps2_load_state = 1;
+	ps2_perf_region(PR_BEGIN);
 	RP_BeginFrame(stereoFrame);
+	ps2_perf_region(PR_GAME);
 	ps2_load_state = 0;
 }
 static void load_EndFrame(int *frontEndMsec, int *backEndMsec) {
 	ps2_load_state = 1;
+	ps2_perf_region(PR_PICS);
 	RP_EndFrame(frontEndMsec, backEndMsec);
+	ps2_perf_region(PR_GAME);
 	ps2_load_state = 0;
 }
 static void load_DrawStretchPic(float x, float y, float w, float h, float s1, float t1, float s2, float t2, qhandle_t hShader) {
+	if (!scn.inst) {
+		RP_DrawStretchPic(x, y, w, h, s1, t1, s2, t2, hShader);
+		return;
+	}
 	ps2_load_state = 1;
+	ps2_perf_region(PR_PICS);
 	RP_DrawStretchPic(x, y, w, h, s1, t1, s2, t2, hShader);
+	ps2_perf_region(PR_GAME);
 	ps2_load_state = 0;
+}
+static void load_AddRefEntityToScene(const refEntity_t *e) {
+	if (!scn.inst) {
+		RP_AddRefEntityToScene(e);
+		return;
+	}
+	ps2_perf_region(PR_ADD);
+	RP_AddRefEntityToScene(e);
+	ps2_perf_region(PR_GAME);
+}
+static void load_AddPolyToScene(qhandle_t shader, int numVerts, const polyVert_t *verts, int num) {
+	if (!scn.inst) {
+		RP_AddPolyToScene(shader, numVerts, verts, num);
+		return;
+	}
+	ps2_perf_region(PR_ADD);
+	RP_AddPolyToScene(shader, numVerts, verts, num);
+	ps2_perf_region(PR_GAME);
 }
 static int load_MarkFragments(int numPoints, const vec3_t *points, const vec3_t projection, int maxPoints,
                               vec3_t pointBuffer, int maxFragments, markFragment_t *fragmentBuffer) {
 	ps2_load_state = 1;
+	ps2_perf_region(PR_MARKS);
 	int r = RP_MarkFragments(numPoints, points, projection, maxPoints, pointBuffer, maxFragments, fragmentBuffer);
+	ps2_perf_region(PR_GAME);
 	ps2_load_state = 0;
 	return r;
 }
@@ -2300,8 +2422,8 @@ refexport_t *GetRefAPI(int apiVersion, refimport_t *rimp) {
 	re.SetWorldVisData = RP_SetWorldVisData;
 	re.EndRegistration = RP_EndRegistration;
 	re.ClearScene = RP_ClearScene;
-	re.AddRefEntityToScene = RP_AddRefEntityToScene;
-	re.AddPolyToScene = RP_AddPolyToScene;
+	re.AddRefEntityToScene = load_AddRefEntityToScene;
+	re.AddPolyToScene = load_AddPolyToScene;
 	re.LightForPoint = RP_LightForPoint;
 	re.AddLightToScene = RP_AddLightToScene;
 	re.AddAdditiveLightToScene = RP_AddLightToScene;

@@ -35,6 +35,13 @@ struct rp_image {
 	                           are not in memory yet) */
 	u8 ok;
 	u32 uses;               /* frames that drew with it */
+	/* placed the plain way (whole, from the cache, no choice of level made
+	   for it): the next frame takes its entries again without asking
+	   (rp_image_place) while nothing has changed */
+	u8 plain, plain_clut;   /* plain_clut: with a CLUT of its own in the cache */
+	int ent, clut_ent;      /* the cache's entries (mx_vcache_entry) */
+	u32 plain_max;          /* the largest level's size it was placed for */
+	u32 plain_blocks;       /* what it counts for in the frame's memory */
 	u8 want, want_lo;       /* the level it is wanted from in want_frame (rp_image_want), and half a level finer */
 	u8 want_less;           /* and with the levels a quarter of a level less soon */
 	u32 want_frame;         /* that frame, + 1 */
@@ -71,6 +78,7 @@ struct rp_tex_stats {
 	u32 tight;              /* frames whose images did not fit GS memory at their full size */
 	u32 want_max, want_sum; /* a frame's images at their full size: the most (blocks), the sum (KB) */
 	u32 later;              /* not placed in a frame that had sent its share of images */
+	u32 again;              /* taken as the frame before had them, without asking the cache (frames summed) */
 	u32 frames, used_kb;    /* frames counted; GS memory of the images they drew with, summed (KB) */
 	u32 used_max_kb;        /* the most a frame drew with */
 	u32 kind_blocks[RP_IMAGE_KINDS]; /* of used_kb, by kind (256-byte blocks) */

@@ -41,7 +41,15 @@ struct rp_poly_stats {
 };
 extern struct rp_poly_stats rp_poly_stats;
 
-/* The pixels of the screen a polygon covers in the view, about. */
-float rp_poly_area(const struct rp_vert *v, u32 n);
+/* A polygon's vertices from the eye, four at a time, as VU0 leaves them:
+   [i / 4][0 left, 1 up, 2 forward][i % 4]. */
+typedef float rp_cam4[3][4] __attribute__((aligned(16)));
+#define RP_CAM(c, i, k) ((c)[(i) >> 2][k][(i) & 3])
+/* The pixels of the screen a polygon covers in the view, about. keep (0:
+   none; room for (n + 3) / 4): its vertices from the eye are left there,
+   for rp_poly_cam while the view is the same. */
+float rp_poly_area(const struct rp_vert *v, u32 n, rp_cam4 *keep);
+/* rp_poly with the vertices' places from the eye given: v's xyz is not read. */
+void rp_poly_cam(const struct rp_vert *v, const rp_cam4 *cam, u32 n);
 
 #endif

@@ -90,6 +90,14 @@ Q3CFLAGS  = $(filter-out -ffreestanding -Wall -Wextra -Wno-unused-parameter -std
             -DUSE_INTERNAL_SDL_HEADERS $(Q3_MEM) \
             -I$(JPEG) -I$(ZLIB) -I$(SDLINC) -I$(C)/ps2 -I$(OUT)/ps2 $(REN_CFLAGS) -include $(C)/ps2/ps2_stdio.h -include $(C)/ps2/ps2_math.h
 
+# ORDER=<file>: the functions named there come first in the fast text, in
+# that order (a function a section; ld.lld --symbol-ordering-file): the ones
+# a frame runs most next to each other, whatever else the program holds
+ifneq ($(ORDER),)
+Q3CFLAGS += -ffunction-sections
+Q3_ORDER := --symbol-ordering-file=$(ORDER) --no-warn-symbol-ordering
+endif
+
 QCOMMON  := cm_load cm_patch cm_polylib cm_test cm_trace cmd common cvar files md4 md5 msg \
             net_chan huffman q_math q_shared unzip ioapi vm vm_interpreted
 SERVER   := sv_bot sv_client sv_ccmds sv_game sv_init sv_main sv_net_chan sv_snapshot sv_world
@@ -212,8 +220,8 @@ $(shell mkdir -p $(OUT)/ps2; printf '#define PS2_FRAMES %s\n#define PS2_ARGS "%s
   cmp -s $(RUNCFG).new $(RUNCFG) || mv $(RUNCFG).new $(RUNCFG); rm -f $(RUNCFG).new)
 
 REN_VU := $(if $(filter-out gl1,$(REN)),$(VU_OBJS))
-$(OUT)/quake3.elf: $(ENGINE_OBJS) $(MODULES) $(MXGL_OBJS) $(REN_VU) $(HLSL_OBJS) $(MX_LIB) $(MX_CRT0) $(MX_LD) $(LIBC_LIBS)
-	$(call link,$@,--defsym=__mx_stack_size=0x100000 $(MX_CRT0) $(ENGINE_OBJS) $(MODULES) $(MXGL_OBJS) $(REN_VU) $(HLSL_OBJS) $(LIBC_LIBS))
+$(OUT)/quake3.elf: $(ENGINE_OBJS) $(MODULES) $(MXGL_OBJS) $(REN_VU) $(HLSL_OBJS) $(MX_LIB) $(MX_CRT0) $(MX_LD) $(LIBC_LIBS) $(ORDER)
+	$(call link,$@,$(Q3_ORDER) --defsym=__mx_stack_size=0x100000 $(MX_CRT0) $(ENGINE_OBJS) $(MODULES) $(MXGL_OBJS) $(REN_VU) $(HLSL_OBJS) $(LIBC_LIBS))
 
 # ---- running --------------------------------------------------------------------
 Q3DATA   ?= /mnt/truenas_data_exthdd/spellen/PC/Quake III Arena/baseq3

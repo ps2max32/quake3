@@ -400,6 +400,55 @@ static int	FloatAsInt( float f ) {
 	return fi.i;
 }
 
+#ifdef __PS2__
+/* The calls cgame makes most a frame, straight from its traps
+   (cg_syscalls.c): cgame is linked into the program, and a system call
+   copies sixteen arguments and goes through the switch below. */
+int ps2_cg_direct = 1;
+/* cgame's system calls by their number: the ones still made a frame (the run's report) */
+unsigned ps2_cg_calls[128];
+void ps2_cg_DrawStretchPic( float x, float y, float w, float h, float s1, float t1, float s2, float t2, qhandle_t hShader ) {
+	re.DrawStretchPic( x, y, w, h, s1, t1, s2, t2, hShader );
+}
+void ps2_cg_AddRefEntityToScene( const refEntity_t *e ) { re.AddRefEntityToScene( e ); }
+void ps2_cg_AddPolyToScene( qhandle_t hShader, int numVerts, const polyVert_t *verts, int num ) {
+	re.AddPolyToScene( hShader, numVerts, verts, num );
+}
+void ps2_cg_SetColor( const float *rgba ) { re.SetColor( rgba ); }
+void ps2_cg_AddLightToScene( const vec3_t org, float intensity, float r, float g, float b ) {
+	re.AddLightToScene( org, intensity, r, g, b );
+}
+int ps2_cg_LerpTag( orientation_t *tag, clipHandle_t mod, int startFrame, int endFrame, float frac, const char *tagName ) {
+	return re.LerpTag( tag, mod, startFrame, endFrame, frac, tagName );
+}
+void ps2_cg_BoxTrace( trace_t *results, const vec3_t start, const vec3_t end, const vec3_t mins, const vec3_t maxs,
+                      clipHandle_t model, int brushmask ) {
+	CM_BoxTrace( results, start, end, (float *)mins, (float *)maxs, model, brushmask, /*int capsule*/ qfalse );
+}
+void ps2_cg_TransformedBoxTrace( trace_t *results, const vec3_t start, const vec3_t end, const vec3_t mins,
+                                 const vec3_t maxs, clipHandle_t model, int brushmask, const vec3_t origin,
+                                 const vec3_t angles ) {
+	CM_TransformedBoxTrace( results, start, end, (float *)mins, (float *)maxs, model, brushmask, origin, angles,
+	                        /*int capsule*/ qfalse );
+}
+int ps2_cg_PointContents( const vec3_t p, clipHandle_t model ) { return CM_PointContents( p, model ); }
+void ps2_cg_StartSound( vec3_t origin, int entityNum, int entchannel, sfxHandle_t sfx ) {
+	S_StartSound( origin, entityNum, entchannel, sfx );
+}
+void ps2_cg_AddLoopingSound( int entityNum, const vec3_t origin, const vec3_t velocity, sfxHandle_t sfx ) {
+	S_AddLoopingSound( entityNum, origin, velocity, sfx );
+}
+void ps2_cg_AddRealLoopingSound( int entityNum, const vec3_t origin, const vec3_t velocity, sfxHandle_t sfx ) {
+	S_AddRealLoopingSound( entityNum, origin, velocity, sfx );
+}
+void ps2_cg_UpdateEntityPosition( int entityNum, const vec3_t origin ) { S_UpdateEntityPosition( entityNum, origin ); }
+int ps2_cg_Milliseconds( void ) { return Sys_Milliseconds(); }
+void ps2_cg_Cvar_Update( vmCvar_t *vmCvar ) { Cvar_Update( vmCvar ); }
+clipHandle_t ps2_cg_TempBoxModel( const vec3_t mins, const vec3_t maxs ) {
+	return CM_TempBoxModel( mins, maxs, /*int capsule*/ qfalse );
+}
+#endif
+
 /*
 ====================
 CL_CgameSystemCalls
@@ -408,6 +457,10 @@ The cgame module is making a system call
 ====================
 */
 intptr_t CL_CgameSystemCalls( intptr_t *args ) {
+#ifdef __PS2__
+	if ( (unsigned)args[0] < 128 )
+		ps2_cg_calls[args[0]]++;
+#endif
 	switch( args[0] ) {
 	case CG_PRINT:
 		Com_Printf( "%s", (const char*)VMA(1) );

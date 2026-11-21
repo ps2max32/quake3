@@ -110,39 +110,125 @@ void rp_poly_state(const struct rp_state *s) {
 
 void rp_poly_strips(u32 mask) { pstrips = mask; }
 
-float rp_poly_area(const struct rp_vert *v, u32 n) {
+/* what the tests of a polygon take from the view: once a view. The
+   vectors: the same numbers in every lane, for four vertices at a time on
+   VU0 (the compiler's vectors are its registers, -mvu0). */
+typedef float v4f __attribute__((vector_size(16), aligned(16)));
+typedef float v4fa __attribute__((vector_size(16), aligned(16), may_alias));
+typedef int v4i __attribute__((vector_size(16), aligned(16)));
+typedef u32 u32a __attribute__((may_alias));
+static struct {
+	u32 serial, w, h;
+	float left, top;          /* the picture's corner from the view's centre */
+	float txl, txr, tyt, tyb; /* the frustum's sides: x and y a unit of depth */
+	float gx, gy;             /* the guard band's */
+	v4f o[3], l[3], u[3], f[3];
+	v4f vtxl, vtxr, vtyt, vtyb, vnear, vone, vfx, vfy, vleft, vtop;
+} pv = {.serial = ~0u};
+
+static inline v4f all4(float a) { return (v4f){a, a, a, a}; }
+
+static void pv_set(void) {
 	const struct rp_view *vw = &rp_view;
-	float left = vw->cx - 2048.0f + (float)mx_gs.w * 0.5f, top = vw->cy - 2048.0f + (float)mx_gs.h * 0.5f;
+	if (pv.serial == vw->serial && pv.w == mx_gs.w && pv.h == mx_gs.h)
+		return;
 	float W = (float)mx_gs.w, H = (float)mx_gs.h;
-	float x0 = 1e9f, x1 = -1e9f, y0 = 1e9f, y1 = -1e9f, px[17], py[17], cam[16][3];
-	u32 m = 0, out = 31;
+	pv.serial = vw->serial, pv.w = mx_gs.w, pv.h = mx_gs.h;
+	pv.left = vw->cx - 2048.0f + W * 0.5f, pv.top = vw->cy - 2048.0f + H * 0.5f;
+	pv.txl = pv.left / vw->fx, pv.txr = (W - pv.left) / vw->fx, pv.tyt = pv.top / vw->fy, pv.tyb = (H - pv.top) / vw->fy;
+	float ox = vw->cx - 2048.0f, oy = vw->cy - 2048.0f;
+	pv.gx = (rp_guard_x - (ox < 0 ? -ox : ox)) / vw->fx, pv.gy = (rp_guard_y - (oy < 0 ? -oy : oy)) / vw->fy;
+	for (int a = 0; a < 3; a++)
+		pv.o[a] = all4(vw->org[a]), pv.l[a] = all4(vw->L[a]), pv.u[a] = all4(vw->U[a]), pv.f[a] = all4(vw->F[a]);
+	pv.vtxl = all4(pv.txl), pv.vtxr = all4(pv.txr), pv.vtyt = all4(pv.tyt), pv.vtyb = all4(pv.tyb);
+	pv.vnear = all4(4.5f), pv.vone = all4(1.0f), pv.vfx = all4(vw->fx), pv.vfy = all4(vw->fy);
+	pv.vleft = all4(pv.left), pv.vtop = all4(pv.top);
+}
+
+/* a bit a lane: the number is below 0 */
+static inline u32 signs(v4f x) {
+	v4i i = (v4i)x;
+	return (u32)i[0] >> 31 | (u32)i[1] >> 31 << 1 | (u32)i[2] >> 31 << 2 | (u32)i[3] >> 31 << 3;
+}
+
+float rp_poly_area(const struct rp_vert *v, u32 n, rp_cam4 *keep) {
+	const struct rp_view *vw = &rp_view;
+	float W = (float)mx_gs.w, H = (float)mx_gs.h;
+	float x0 = 1e9f, x1 = -1e9f, y0 = 1e9f, y1 = -1e9f;
+	rp_cam4 own[4];
+	rp_cam4 *cam = keep ? keep : own;
+	/* the vertices on the screen (17: one more where the eye's plane cuts) */
+	float pxy[2][20] __attribute__((aligned(16)));
+	float *px = pxy[0], *py = pxy[1];
+	u32 m = 0, out = 31, behind = 0;
 	if (n < 3 || n > 16)
 		return 0;
-	/* all of it outside one side of the view: none (most of a level's marks) */
-	float txl = left / vw->fx, txr = (W - left) / vw->fx, tyt = top / vw->fy, tyb = (H - top) / vw->fy;
-	for (u32 i = 0; i < n; i++) {
-		float d[3] = {v[i].xyz[0] - vw->org[0], v[i].xyz[1] - vw->org[1], v[i].xyz[2] - vw->org[2]};
-		float x = dot3(vw->L, d), y = dot3(vw->U, d), w = dot3(vw->F, d);
-		cam[i][0] = x, cam[i][1] = y, cam[i][2] = w;
-		out &= (u32)(w < 4.5f) | (u32)(x > txl * w) << 1 | (u32)(-x > txr * w) << 2 | (u32)(y > tyt * w) << 3 |
-		       (u32)(-y > tyb * w) << 4;
+	pv_set();
+	/* Four vertices at a time (the last ones again where n is no multiple of
+	   four): from the eye, against the view's sides (all of it outside one:
+	   none, most of a level's marks), and onto the screen. The numbers go to
+	   VU0 and back through memory, never through the FPU. */
+	if (rp_debug & 8388608) {
+		/* the same by the FPU, a vertex at a time (for comparing) */
+		for (u32 i = 0; i < n; i++) {
+			float d[3] = {v[i].xyz[0] - vw->org[0], v[i].xyz[1] - vw->org[1], v[i].xyz[2] - vw->org[2]};
+			float x = dot3(vw->L, d), y = dot3(vw->U, d), w = dot3(vw->F, d);
+			RP_CAM(cam, i, 0) = x, RP_CAM(cam, i, 1) = y, RP_CAM(cam, i, 2) = w;
+			out &= (u32)(w < 4.5f) | (u32)(x > pv.txl * w) << 1 | (u32)(-x > pv.txr * w) << 2 | (u32)(y > pv.tyt * w) << 3 |
+			       (u32)(-y > pv.tyb * w) << 4;
+			behind |= w < 4.5f;
+			if (!behind) {
+				float iw = 1.0f / w;
+				px[i] = pv.left - vw->fx * x * iw, py[i] = pv.top - vw->fy * y * iw;
+			}
+		}
+	} else
+	for (u32 k = 0; 4 * k < n; k++) {
+		float in[3][4] __attribute__((aligned(16)));
+		for (u32 j = 0; j < 4; j++) {
+			u32 i = 4 * k + j < n ? 4 * k + j : n - 1;
+			const u32a *p = (const u32a *)v[i].xyz;
+			((u32a *)in[0])[j] = p[0], ((u32a *)in[1])[j] = p[1], ((u32a *)in[2])[j] = p[2];
+		}
+		v4f dx = *(const v4fa *)in[0] - pv.o[0], dy = *(const v4fa *)in[1] - pv.o[1], dz = *(const v4fa *)in[2] - pv.o[2];
+		v4f x = dx * pv.l[0] + dy * pv.l[1] + dz * pv.l[2];
+		v4f y = dx * pv.u[0] + dy * pv.u[1] + dz * pv.u[2];
+		v4f w = dx * pv.f[0] + dy * pv.f[1] + dz * pv.f[2];
+		*(v4fa *)cam[k][0] = x, *(v4fa *)cam[k][1] = y, *(v4fa *)cam[k][2] = w;
+		u32 sw = signs(w - pv.vnear);
+		out &= (u32)(sw == 15) | (u32)(signs(pv.vtxl * w - x) == 15) << 1 | (u32)(signs(pv.vtxr * w + x) == 15) << 2 |
+		       (u32)(signs(pv.vtyt * w - y) == 15) << 3 | (u32)(signs(pv.vtyb * w + y) == 15) << 4;
+		behind |= sw;
+		if (!behind) {
+			v4f iw = pv.vone / w;
+			*(v4fa *)&pxy[0][4 * k] = pv.vleft - pv.vfx * x * iw;
+			*(v4fa *)&pxy[1][4 * k] = pv.vtop - pv.vfy * y * iw;
+		}
 	}
 	if (out)
 		return 0;
-	/* the part of it before the eye's plane, on the screen */
-	for (u32 i = 0, j = n - 1; i < n; j = i++) {
-		const float *a = cam[j], *b = cam[i];
-		int ain = a[2] >= 4.5f, bin = b[2] >= 4.5f;
-		if (ain != bin) {
-			float t = (4.5f - a[2]) / (b[2] - a[2]), iw = 1.0f / 4.5f;
-			px[m] = left - vw->fx * (a[0] + t * (b[0] - a[0])) * iw, py[m] = top - vw->fy * (a[1] + t * (b[1] - a[1])) * iw;
-			m++;
+	if (!behind)
+		m = n;
+	else {
+		/* across the eye's plane (few): the part of it before the plane, on the screen */
+		float left = pv.left, top = pv.top;
+		for (u32 i = 0, j = n - 1; i < n; j = i++) {
+			float a[3] = {RP_CAM(cam, j, 0), RP_CAM(cam, j, 1), RP_CAM(cam, j, 2)};
+			float b[3] = {RP_CAM(cam, i, 0), RP_CAM(cam, i, 1), RP_CAM(cam, i, 2)};
+			int ain = a[2] >= 4.5f, bin = b[2] >= 4.5f;
+			if (ain != bin) {
+				float t = (4.5f - a[2]) / (b[2] - a[2]), iw = 1.0f / 4.5f;
+				px[m] = left - vw->fx * (a[0] + t * (b[0] - a[0])) * iw, py[m] = top - vw->fy * (a[1] + t * (b[1] - a[1])) * iw;
+				m++;
+			}
+			if (bin) {
+				float iw = 1.0f / b[2];
+				px[m] = left - vw->fx * b[0] * iw, py[m] = top - vw->fy * b[1] * iw;
+				m++;
+			}
 		}
-		if (bin) {
-			float iw = 1.0f / b[2];
-			px[m] = left - vw->fx * b[0] * iw, py[m] = top - vw->fy * b[1] * iw;
-			m++;
-		}
+		if (m < 3)
+			return 0;
 	}
 	float a = 0;
 	for (u32 i = 0, j = m - 1; i < m; j = i++) {
@@ -163,22 +249,29 @@ float rp_poly_area(const struct rp_vert *v, u32 n) {
 
 void rp_poly(const struct rp_vert *v, u32 n) {
 	const struct rp_view *vw = &rp_view;
-	float cam[16][3];
+	rp_cam4 cam[4];
 	if (n < 3 || n > 16)
 		return;
-	/* the vertices from the eye: left, up, forward; where they are against
-	   the frustum (all outside one plane: not seen) and the guard band (one
-	   outside: the programs that cut); the lines it covers */
-	float txl = (vw->cx - 2048.0f + (float)mx_gs.w * 0.5f) / vw->fx, txr = (2048.0f + (float)mx_gs.w * 0.5f - vw->cx) / vw->fx;
-	float tyt = (vw->cy - 2048.0f + (float)mx_gs.h * 0.5f) / vw->fy, tyb = (2048.0f + (float)mx_gs.h * 0.5f - vw->cy) / vw->fy;
-	float ox = vw->cx - 2048.0f, oy = vw->cy - 2048.0f;
-	float gx = (rp_guard_x - (ox < 0 ? -ox : ox)) / vw->fx, gy = (rp_guard_y - (oy < 0 ? -oy : oy)) / vw->fy;
-	u32 out = 31, cut = 0;
-	float big = 0, lo = 1e9f, hi = -1e9f, top = vw->cy - 2048.0f + (float)mx_gs.h * 0.5f;
 	for (u32 i = 0; i < n; i++) {
 		float d[3] = {v[i].xyz[0] - vw->org[0], v[i].xyz[1] - vw->org[1], v[i].xyz[2] - vw->org[2]};
-		float x = dot3(vw->L, d), y = dot3(vw->U, d), w = dot3(vw->F, d);
-		cam[i][0] = x, cam[i][1] = y, cam[i][2] = w;
+		RP_CAM(cam, i, 0) = dot3(vw->L, d), RP_CAM(cam, i, 1) = dot3(vw->U, d), RP_CAM(cam, i, 2) = dot3(vw->F, d);
+	}
+	rp_poly_cam(v, cam, n);
+}
+
+void rp_poly_cam(const struct rp_vert *v, const rp_cam4 *cam, u32 n) {
+	const struct rp_view *vw = &rp_view;
+	if (n < 3 || n > 16)
+		return;
+	pv_set();
+	/* the vertices from the eye (left, up, forward): where they are against
+	   the frustum (all outside one plane: not seen) and the guard band (one
+	   outside: the programs that cut); the lines it covers */
+	float txl = pv.txl, txr = pv.txr, tyt = pv.tyt, tyb = pv.tyb, gx = pv.gx, gy = pv.gy, top = pv.top;
+	u32 out = 31, cut = 0;
+	float big = 0, lo = 1e9f, hi = -1e9f;
+	for (u32 i = 0; i < n; i++) {
+		float x = RP_CAM(cam, i, 0), y = RP_CAM(cam, i, 1), w = RP_CAM(cam, i, 2);
 		out &= (u32)(w < 4.0f) | (u32)(x > txl * w) << 1 | (u32)(-x > txr * w) << 2 | (u32)(y > tyt * w) << 3 |
 		       (u32)(-y > tyb * w) << 4;
 		float ax = x < 0 ? -x : x, ay = y < 0 ? -y : y, aw = w < 0 ? -w : w;
@@ -214,7 +307,8 @@ void rp_poly(const struct rp_vert *v, u32 n) {
 		t = t > 32767.0f ? 32767.0f : t < -32767.0f ? -32767.0f : t;
 		pb.st[j][0] = (s16)s, pb.st[j][1] = (s16)t, pb.st[j][2] = 4096;
 		pb.col[j] = (u32)v[i].rgba[0] | (u32)v[i].rgba[1] << 8 | (u32)v[i].rgba[2] << 16 | (u32)v[i].rgba[3] << 24;
-		pb.pos[j][0] = (s16)(cam[i][0] * unit), pb.pos[j][1] = (s16)(cam[i][1] * unit), pb.pos[j][2] = (s16)(cam[i][2] * unit);
+		pb.pos[j][0] = (s16)(RP_CAM(cam, i, 0) * unit), pb.pos[j][1] = (s16)(RP_CAM(cam, i, 1) * unit),
+		pb.pos[j][2] = (s16)(RP_CAM(cam, i, 2) * unit);
 		pb.pos[j][3] = k < 2 ? (s16)W_NONE : 0;
 	}
 }
@@ -224,31 +318,44 @@ void rp_poly(const struct rp_vert *v, u32 n) {
 #define PIC_MAX 64
 static struct rp_state cstate;
 static int crun = -1;
+/* The batch being written and what a picture takes from the view, in one
+   cache line of the core's fast part: between two pictures the game's own
+   data has had the cache, and each line of the renderer's that a picture
+   reads is fetched again. A picture goes straight into the frame's memory
+   (written, not read: no line is fetched for it). */
 static struct {
-	u64 qw[PIC_MAX * 6][2];
+	u64 *c0, *c;        /* the batch's chain; the next picture's place */
 	u32 n, mask;
-} cb;
+	float ly, lh;       /* the last picture's lines and their strips (a line of text) */
+	u32 lmask;
+	float x0, y0, W, H; /* the picture's corner in the GS's coordinates; its size */
+	float strip_inv;
+	s32 nstrip;
+} pc MX_FAST_BSS MX_ALIGNED(64);
+
+void rp_pic_view(void) {
+	pc.W = (float)mx_gs.w, pc.H = (float)mx_gs.h;
+	pc.x0 = 2048.0f - pc.W * 0.5f, pc.y0 = 2048.0f - pc.H * 0.5f;
+	pc.strip_inv = rp_view.strip_inv, pc.nstrip = (s32)rp_view.nstrip;
+	pc.lh = -1.0f;
+}
 
 static void pic_batch(void) {
-	u32 n = cb.n;
+	u32 n = pc.n;
 	if (!n)
 		return;
-	cb.n = 0;
-	if (crun < 0 || crun != rp_run_last()) {
-		crun = rp_run(0, &cstate);
-		if (crun < 0)
-			return;
-	}
-	u64 *c0 = rp_dyn(n * 6 + 3), *c = c0;
-	if (!c)
-		return;
-	c = mx_e_cnt(c, n * 6 + 1, mx_vif_nop(), mx_vif_direct(n * 6 + 1));
+	pc.n = 0;
+	u64 *c0 = pc.c0, *end = pc.c;
+	mx_e_cnt(c0, n * 6 + 1, mx_vif_nop(), mx_vif_direct(n * 6 + 1));
 	/* PRIM is the state's (PRE 0) */
-	c = mx_e_qw(c, mx_giftag(n * 2, 1, -1, MX_GIF_FLG_PACKED, 3), 0x512);
-	for (u32 i = 0; i < n * 6; i++)
-		c = mx_e_qw(c, cb.qw[i][0], cb.qw[i][1]);
-	mx_e_ret(c, 0, 0, 0);
-	rp_draw(c0, cb.mask, 0, 0, 0);
+	mx_e_qw(c0 + 2, mx_giftag(n * 2, 1, -1, MX_GIF_FLG_PACKED, 3), 0x512);
+	/* what the batch did not take goes back, if nothing else took memory since */
+	rp_dyn_end(mx_e_ret(end, 0, 0, 0));
+	rp_poly_stats.pics += n;
+	if (crun < 0 || crun != rp_run_last())
+		crun = rp_run(0, &cstate);
+	if (crun >= 0)
+		rp_draw(c0, pc.mask, 0, 0, 0);
 }
 
 void rp_pic_state(const struct rp_state *s) {
@@ -267,24 +374,43 @@ static u32 fbits(float f) {
 }
 
 void rp_pic(float x, float y, float w, float h, float s1, float t1, float s2, float t2, u32 rgba) {
-	u32 mask = rp_strip_lines(y, y + h);
-	float W = (float)mx_gs.w, H = (float)mx_gs.h;
-	if (!mask || x >= W || y >= H || x + w <= 0 || y + h <= 0)
+	/* the strips of its lines (rp_strip_lines), as the picture before when it is on the same */
+	u32 mask = pc.lmask;
+	if (y != pc.ly || h != pc.lh) {
+		float lo = y, hi = y + h;
+		if (!pc.nstrip)
+			mask = 1;
+		else if (hi < 0 || lo > pc.H)
+			mask = 0;
+		else {
+			s32 k0 = lo < 1.5f ? 0 : (s32)((lo - 1.5f) * pc.strip_inv), k1 = (s32)((hi + 1.5f) * pc.strip_inv);
+			k1 = k1 >= pc.nstrip ? pc.nstrip - 1 : k1, k0 = k0 >= pc.nstrip ? pc.nstrip - 1 : k0;
+			mask = k1 < k0 ? 0 : ((2u << k1) - 1) & ~((1u << k0) - 1);
+		}
+		pc.ly = y, pc.lh = h, pc.lmask = mask;
+	}
+	if (!mask || x >= pc.W || y >= pc.H || x + w <= 0 || y + h <= 0)
 		return;
-	if (cb.n && (cb.mask != mask || cb.n == PIC_MAX))
+	if (pc.n && (pc.mask != mask || pc.n == PIC_MAX))
 		pic_batch();
-	cb.mask = mask;
-	u64 (*q)[2] = &cb.qw[cb.n++ * 6];
-	u32 one = fbits(1.0f);
+	if (!pc.n) {
+		/* a batch's memory at most; what it leaves is given back at its end */
+		pc.c0 = rp_dyn(PIC_MAX * 6 + 3);
+		if (!pc.c0)
+			return;
+		pc.c = pc.c0 + 4, pc.mask = mask;
+	}
+	u64 *q = pc.c;
+	u64 one = fbits(1.0f);
 	u64 col = (u64)(rgba & 0xFF) | (u64)(rgba >> 8 & 0xFF) << 32, col2 = (u64)(rgba >> 16 & 0xFF) | (u64)(rgba >> 24) << 32;
-	float x0 = 2048.0f - W * 0.5f + x, y0 = 2048.0f - H * 0.5f + y;
-	q[0][0] = (u64)fbits(s1) | (u64)fbits(t1) << 32, q[0][1] = one;
-	q[1][0] = col, q[1][1] = col2;
-	q[2][0] = (u64)(u32)(s32)(x0 * 16.0f) | (u64)(u32)(s32)(y0 * 16.0f) << 32, q[2][1] = 0;
-	q[3][0] = (u64)fbits(s2) | (u64)fbits(t2) << 32, q[3][1] = one;
-	q[4][0] = col, q[4][1] = col2;
-	q[5][0] = (u64)(u32)(s32)((x0 + w) * 16.0f) | (u64)(u32)(s32)((y0 + h) * 16.0f) << 32, q[5][1] = 0;
-	rp_poly_stats.pics++;
+	float x0 = pc.x0 + x, y0 = pc.y0 + y;
+	q[0] = (u64)fbits(s1) | (u64)fbits(t1) << 32, q[1] = one;
+	q[2] = col, q[3] = col2;
+	q[4] = (u64)(u32)(s32)(x0 * 16.0f) | (u64)(u32)(s32)(y0 * 16.0f) << 32, q[5] = 0;
+	q[6] = (u64)fbits(s2) | (u64)fbits(t2) << 32, q[7] = one;
+	q[8] = col, q[9] = col2;
+	q[10] = (u64)(u32)(s32)((x0 + w) * 16.0f) | (u64)(u32)(s32)((y0 + h) * 16.0f) << 32, q[11] = 0;
+	pc.c = q + 12, pc.n++;
 }
 
 void rp_poly_flush(void) {

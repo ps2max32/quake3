@@ -470,6 +470,11 @@ const struct mx_vm_config mx_vm_config = {
 #undef PS2_PERF
 #define PS2_PERF 1
 #endif
+/* the processor's counters over the measured frames (PERF=1, or ps2_perf 1
+   at run time: the same program with and without) */
+static int perf_on = PS2_PERF;
+#undef PS2_PERF
+#define PS2_PERF perf_on
 #define DEMO_MAX 4096
 #define FIELD_60 4920116u /* cycles of a 59.94 Hz field (maxsdk's docs/gif-gs.md) */
 #define FIELD_50 (MX_EE_HZ / 50)
@@ -480,6 +485,29 @@ static struct mx_vm_stats vm_at;
 static const u8 perf_ev[3][2] = {{6, 6}, {12, 4}, {5, 5}};
 static u64 perf_sum[3][2], perf_cyc[3];
 static u32 perf_nf[3];
+
+/* The counters by the part of the frame (the renderer says which it is in:
+   ps2_perf_region; rp_main.c's PR_*): cycles, and the two events of the
+   frame's set. */
+#define PERF_REGIONS 14
+static const char *const perf_region_name[PERF_REGIONS] = {
+    "the game and the rest", "a scene's start", "the world's cull", "the world's runs", "the quads' areas", "the models",
+    "the sky", "the quads' draws", "the pictures", "the strips' records", "the frame's end", "the frame's start",
+    "entities and polygons taken", "marks"};
+static u64 perf_reg[3][3][PERF_REGIONS]; /* [the events' set][cycles, event 0, event 1] */
+static u32 perf_at[3], perf_region_now, perf_set;
+static int perf_live;
+/* the renderer's entry points mark the EE's state (ps2_load.c) and the counters' parts: while a run measures */
+int ps2_inst;
+
+void ps2_perf_region(unsigned id) {
+	if (!perf_live)
+		return;
+	u32 now[3] = {mx_count(), mx_pcr0(), mx_pcr1()};
+	for (int k = 0; k < 3; k++)
+		perf_reg[perf_set][k][perf_region_now] += now[k] - perf_at[k], perf_at[k] = now[k];
+	perf_region_now = id < PERF_REGIONS ? id : 0;
+}
 
 static int cmp_u32(const void *a, const void *b) {
 	u32 x = *(const u32 *)a, y = *(const u32 *)b;
@@ -688,6 +716,33 @@ static void ps2_run_report(void) {
 		          (u32)(perf_cyc[0] / perf_nf[0]), (u32)(perf_sum[1][0] / perf_nf[1]),
 		          (u32)(perf_sum[1][1] / perf_nf[1]), (u32)(perf_cyc[1] / perf_nf[1]),
 		          (u32)(perf_sum[2][0] / perf_nf[2]), (u32)(perf_sum[2][1] / perf_nf[2]));
+	if (PS2_PERF && perf_nf[0] && perf_nf[1] && perf_nf[2])
+		for (int r = 0; r < PERF_REGIONS; r++) {
+			u32 cyc = (u32)((perf_reg[0][0][r] + perf_reg[1][0][r] + perf_reg[2][0][r]) / (perf_nf[0] + perf_nf[1] + perf_nf[2]));
+			if (!cyc)
+				continue;
+			mx_printf("perf: %-28s %7u cycles, %7u instructions, I-cache misses %5u, D-cache misses %5u, TLB misses %4u\n",
+			          perf_region_name[r], cyc, (u32)(perf_reg[1][1][r] / perf_nf[1]), (u32)(perf_reg[0][1][r] / perf_nf[0]),
+			          (u32)(perf_reg[0][2][r] / perf_nf[0]), (u32)(perf_reg[1][2][r] / perf_nf[1]));
+		}
+	{
+		/* cgame's system calls that went through the engine's switch, the most made first */
+		extern unsigned ps2_cg_calls[128];
+		char line[256];
+		int len = 0;
+		for (int k = 0; k < 10; k++) {
+			int best = 0;
+			for (int i = 1; i < 128; i++)
+				if (ps2_cg_calls[i] > ps2_cg_calls[best])
+					best = i;
+			if (!ps2_cg_calls[best])
+				break;
+			len += snprintf(line + len, sizeof line - (size_t)len, " %d: %u", best, ps2_cg_calls[best]);
+			ps2_cg_calls[best] = 0;
+		}
+		if (len)
+			mx_printf("ps2: cgame's system calls, by number, the most made:%s\n", line);
+	}
 	ps2_ren_report();
 #ifdef Q3_VM_CENSUS
 	{
@@ -791,6 +846,12 @@ int main(int argc, char **argv) {
 			measuring = 1;
 			/* ps2_load <hz>: the units' load over the demo (ps2_load.c) */
 			ps2_load_start((unsigned)Cvar_VariableIntegerValue("ps2_load"));
+			perf_on |= Cvar_VariableIntegerValue("ps2_perf") != 0;
+			ps2_inst = perf_on || Cvar_VariableIntegerValue("ps2_load") != 0;
+			{
+				extern int ps2_cg_direct;
+				ps2_cg_direct = !Cvar_VariableIntegerValue("ps2_nodirect");
+			}
 			mx_vm_stats(&vm_at);
 			if (Q3_VM_HIST)
 				mx_vm_refill_hist(NULL, 0);
@@ -806,6 +867,9 @@ int main(int argc, char **argv) {
 			mx_pcr0_write(0), mx_pcr1_write(0);
 			mx_pccr_write(0x80000000u | (u32)perf_ev[frame % 3][0] << 5 | 0x1Eu |
 			              (u32)perf_ev[frame % 3][1] << 15 | 0x7800u);
+			perf_set = (u32)frame % 3, perf_region_now = 0;
+			perf_at[0] = mx_count(), perf_at[1] = perf_at[2] = 0;
+			perf_live = 1;
 		}
 #ifdef PS2_REN_PS2
 		/* the wait for a free record of beam racing is not the frame's work */
@@ -821,6 +885,8 @@ int main(int argc, char **argv) {
 		cyc -= ps2_ren_wait;
 #endif
 		if (PS2_PERF && window) {
+			ps2_perf_region(0);
+			perf_live = 0;
 			mx_pccr_write(0);
 			perf_sum[frame % 3][0] += mx_pcr0(), perf_sum[frame % 3][1] += mx_pcr1();
 			perf_cyc[frame % 3] += cyc, perf_nf[frame % 3]++;
