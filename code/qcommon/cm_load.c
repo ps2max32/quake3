@@ -39,7 +39,31 @@ void SetPlaneSignbits (cplane_t *out) {
 	}
 	out->signbits = bits;
 }
-#endif //BSPC
+#endif 
+#ifdef __PS2__
+/* The collision data a frame's traces read (brushes, planes, nodes, leafs,
+   patches) in a pinned heap: reached through one TLB entry, not through
+   the hunk's pages (some 75 TLB refills a frame of them). The entities'
+   text and the PVS stay in the hunk. */
+#include <mx/mem.h>
+static struct mx_heap *cm_heap;
+void *CM_PS2_Alloc( int size ) {
+	void *p;
+	if ( !cm_heap )
+		cm_heap = mx_heap_create( "q3.cm", MX_MEM_PINNED, 0 );
+	p = cm_heap && size > 0 ? mx_heap_alloc( cm_heap, (u32)size, 16 ) : NULL;
+	if ( !p )
+		return (Hunk_Alloc)( size, h_high );
+	Com_Memset( p, 0, size );
+	return p;
+}
+static void CM_PS2_Free( void ) {
+	if ( cm_heap )
+		mx_heap_reset( cm_heap );
+}
+#define Hunk_Alloc( size, pref ) CM_PS2_Alloc( size )
+#endif
+//BSPC
 
 // to allow boxes to be treated as brush models, we allocate
 // some extra indexes along with those needed by the map
@@ -441,7 +465,7 @@ CMod_LoadEntityString
 =================
 */
 void CMod_LoadEntityString( lump_t *l ) {
-	cm.entityString = Hunk_Alloc( l->filelen, h_high );
+	cm.entityString = (Hunk_Alloc)( l->filelen, h_high );
 	cm.numEntityChars = l->filelen;
 	Com_Memcpy (cm.entityString, cmod_base + l->fileofs, l->filelen);
 }
@@ -459,14 +483,14 @@ void CMod_LoadVisibility( lump_t *l ) {
     len = l->filelen;
 	if ( !len ) {
 		cm.clusterBytes = ( cm.numClusters + 31 ) & ~31;
-		cm.visibility = Hunk_Alloc( cm.clusterBytes, h_high );
+		cm.visibility = (Hunk_Alloc)( cm.clusterBytes, h_high );
 		Com_Memset( cm.visibility, 255, cm.clusterBytes );
 		return;
 	}
 	buf = cmod_base + l->fileofs;
 
 	cm.vised = qtrue;
-	cm.visibility = Hunk_Alloc( len, h_high );
+	cm.visibility = (Hunk_Alloc)( len, h_high );
 	cm.numClusters = LittleLong( ((int *)buf)[0] );
 	cm.clusterBytes = LittleLong( ((int *)buf)[1] );
 	Com_Memcpy (cm.visibility, buf + VIS_HEADER, len - VIS_HEADER );
@@ -595,6 +619,9 @@ void CM_LoadMap( const char *name, qboolean clientload, int *checksum ) {
 	// free old stuff
 	Com_Memset( &cm, 0, sizeof( cm ) );
 	CM_ClearLevelPatches();
+#ifdef __PS2__
+	CM_PS2_Free();
+#endif
 
 	if ( !name[0] ) {
 		cm.numLeafs = 1;
@@ -668,6 +695,9 @@ CM_ClearMap
 void CM_ClearMap( void ) {
 	Com_Memset( &cm, 0, sizeof( cm ) );
 	CM_ClearLevelPatches();
+#ifdef __PS2__
+	CM_PS2_Free();
+#endif
 }
 
 /*

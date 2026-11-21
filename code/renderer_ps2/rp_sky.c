@@ -28,9 +28,9 @@
 #define BOX 16000.0f        /* behind all of a map: its depth is the farthest drawn */
 #define RADIUS_WORLD 4096.0f
 
-static float pts[6][SUB + 1][SUB + 1][3];
-static float box_st[6][SUB + 1][SUB + 1][2];
-static float cloud_st[6][SUB + 1][SUB + 1][2];
+static float pts[6][SUB + 1][SUB + 1][3] MX_FAST_BSS;
+static float box_st[6][SUB + 1][SUB + 1][2] MX_FAST_BSS;
+static float cloud_st[6][SUB + 1][SUB + 1][2] MX_FAST_BSS;
 static float made_for = -1;
 
 /* the engine's MakeSkyVec: side axis, s and t in -1 .. 1 */

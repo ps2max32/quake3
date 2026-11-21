@@ -1387,6 +1387,25 @@ a second; passes still drawn when the beam came, of about 9200):
   both sources: a candidate for a fixed order, not measured enough yet.
 - The whole: the timedemo 73.1 fps, textures 256 62.6 fps (kernel 46,
   without the VM's scan at each vblank: 2 % of a frame).
+- TLB refills, 751 a frame (about 196 cycles each), down to 334 by taking
+  the data a frame reads out of paged memory: the core's fast part and
+  pinned memory have large entries of their own (`Q3_VM_HIST` for which
+  pages). cgame's data and zeroed data whole (1.5 MB: cg, cgs,
+  cg_entities, its cvars; `CGAME_FAST` in the Makefile renames the
+  module's sections, its fresh data at each load works on them there):
+  190 a frame less. The collision data (brushes, planes, nodes, leafs,
+  patches; not the entities' text and the PVS) from a pinned heap instead
+  of the hunk (`CM_PS2_Alloc` in cm_load.c, reset with the map): 80 less.
+  The cvars, the looping sounds, the renderer's draws, mark samples, the
+  quads' eye coordinates, the sky's points and some smaller ones
+  (`MX_FAST_BSS`, 440 KB): 85 less. 64 frames more out of the pool, and
+  fewer swap ins (101 -> 70 in the timedemo): what is read every frame was
+  resident anyway. Two builds in turns: 73.5 -> 76.0 fps, textures 256
+  62.3 -> 64.0. The demo played twice in one run (the module and the
+  collision data loaded again): 76.7 and 77.9 fps by the engine's count.
+  What is left is spread over some 270 pages of 5 to 10 refills a frame
+  each (the renderer's run states and images, the scene's arrays, the
+  texture cache's tables in libmxk).
 - What the EE writes for DMA does not go through the D-cache already
   (`rp_dyn` is uncached accelerated, the records are built in the
   scratchpad); what is left cached is small (the polygons' batch before

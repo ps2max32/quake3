@@ -29,7 +29,13 @@ cvar_t		*cvar_cheats;
 int			cvar_modifiedFlags;
 
 #define	MAX_CVARS	2048
-cvar_t		cvar_indexes[MAX_CVARS];
+#ifdef __PS2__
+/* read every frame: in the core's fast part (large TLB pages, no refills) */
+#define PS2_FAST_BSS __attribute__((section(".bss.mx.fast")))
+#else
+#define PS2_FAST_BSS
+#endif
+cvar_t		cvar_indexes[MAX_CVARS] PS2_FAST_BSS;
 int			cvar_numIndexes;
 
 #define FILE_HASH_SIZE		256

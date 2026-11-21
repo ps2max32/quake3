@@ -22,6 +22,10 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 
 #include "cm_local.h"
 #include "cm_patch.h"
+#ifdef __PS2__
+void *CM_PS2_Alloc( int size ); /* cm_load.c: pinned, as the rest of the collision data */
+#define Hunk_Alloc( size, pref ) CM_PS2_Alloc( size )
+#endif
 
 /*
 

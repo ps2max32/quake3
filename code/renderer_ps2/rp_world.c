@@ -289,7 +289,7 @@ struct item {
 };
 #define MAX_ITEM 4096
 #define MAX_WRUN 1024
-static struct item item[MAX_ITEM];
+static struct item item[MAX_ITEM] MX_FAST_BSS;
 static struct {
 	u16 first, n;
 	u8 blended;

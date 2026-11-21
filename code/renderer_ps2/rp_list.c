@@ -33,8 +33,8 @@
 
 unsigned rp_debug;
 int rp_trilinear;
-struct rp_view rp_view;
-struct rp_list_stats rp_list_stats;
+struct rp_view rp_view MX_FAST_BSS;
+struct rp_list_stats rp_list_stats MX_FAST_BSS;
 
 #define ZNEAR 4.0f
 #define ZFAR 65536.0f
@@ -317,7 +317,7 @@ static struct draw {
 	const void *chain;
 	u16 mask, verts;
 	u8 clip, batches;
-} draw[MAX_DRAW];
+} draw[MAX_DRAW] MX_FAST_BSS;
 static u32 nrun, ndraw;
 
 int rp_run(const void *matrix, const struct rp_state *s) {
@@ -648,7 +648,7 @@ void rp_list_begin(void) {
    records: all of them into the frame's record, once). */
 void rp_list_end(void) {
 	static const void *list[2][LIST_MAX];
-	static s16 sid[MAX_RUN], sseg[MAX_RUN];
+	static s16 sid[MAX_RUN] MX_FAST_BSS, sseg[MAX_RUN] MX_FAST_BSS;
 	u32 nstrip = rp_view.nstrip;
 	rp_list_stats.runs += nrun, rp_list_stats.draws += ndraw;
 	/* the textures of the stream area: their places, by the runs that draw

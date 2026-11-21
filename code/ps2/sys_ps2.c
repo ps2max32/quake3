@@ -478,7 +478,7 @@ static int perf_on = PS2_PERF;
 #define DEMO_MAX 4096
 #define FIELD_60 4920116u /* cycles of a 59.94 Hz field (maxsdk's docs/gif-gs.md) */
 #define FIELD_50 (MX_EE_HZ / 50)
-static u32 demo_cyc[DEMO_MAX];
+static u32 demo_cyc[DEMO_MAX] MX_FAST_BSS; /* a word a frame: no TLB refill for it */
 static int demo_first, demo_last;
 static int prof_on, measuring;
 static struct mx_vm_stats vm_at;

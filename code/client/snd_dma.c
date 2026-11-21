@@ -81,7 +81,13 @@ cvar_t		*s_show;
 cvar_t		*s_mixahead;
 cvar_t		*s_mixPreStep;
 
-static loopSound_t		loopSounds[MAX_GENTITIES];
+#ifdef __PS2__
+/* read every frame: in the core's fast part (large TLB pages, no refills) */
+#define PS2_FAST_BSS __attribute__((section(".bss.mx.fast")))
+#else
+#define PS2_FAST_BSS
+#endif
+static loopSound_t		loopSounds[MAX_GENTITIES] PS2_FAST_BSS;
 // the entities whose loopSounds entry is active or to be killed: the frame's
 // loops over all MAX_GENTITIES entries (57 KB) look at these alone
 static unsigned		loopLive[MAX_GENTITIES / 32];

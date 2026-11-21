@@ -181,11 +181,19 @@ $(OUT)/$(1).o: $(patsubst %,$(OUT)/mod/$(1)/%.o,$(2))
 	  --add-symbol $(1)_bss_start=.bss:0,global \
 	  --add-symbol $(1)_bss_end=.bss:$$$$($(LLVM)/llvm-size -A $$@.l | awk '$$$$1 == ".bss" { print $$$$2 }'),global \
 	  $$@.l $$@
+	$(if $(3),$(LLVM)/llvm-objcopy $(3) $$@)
 	test "$$$$($(LLVM)/llvm-size -A $$@ | grep -c -E '^\.(data|bss|sdata|sbss)')" = 2
 	rm -f $$@.r $$@.l
 endef
 $(eval $(call module,qagame,$(GAME_SRC)))
-$(eval $(call module,cgame,$(CGAME_SRC)))
+# cgame's data and zeroed data (cg, cgs, cg_entities, its cvars: 1.5 MB,
+# read every frame) in the core's fast part, under its large TLB pages: no
+# refills (190 a frame of them in VM); the module's fresh data at each load
+# works on them where they are. CGAME_FAST= for VM.
+ifneq ($(REN),gl1)
+CGAME_FAST ?= --rename-section .bss=.bss.mx.fast --rename-section .data=.data.mx.fast
+endif
+$(eval $(call module,cgame,$(CGAME_SRC),$(CGAME_FAST)))
 $(eval $(call module,ui,$(UI_SRC)))
 
 MODULES := $(OUT)/qagame.o $(OUT)/cgame.o $(OUT)/ui.o

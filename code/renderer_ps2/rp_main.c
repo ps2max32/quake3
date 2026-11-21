@@ -284,7 +284,7 @@ static unsigned st_mirrors;
 static struct {
 	qhandle_t shader;
 	u16 first, n;
-} polys[MAX_POLY];
+} polys[MAX_POLY] MX_FAST_BSS;
 static struct rp_vert polyverts[MAX_POLYVERT];
 static unsigned st_nostage, st_quads;
 static unsigned long long poly_px_sum, poly_px_max;
@@ -364,11 +364,11 @@ struct quad {
 #define MAX_BEAM_QUAD 512
 #define MAX_QUAD (MAX_SPRITE + MAX_POLY + MAX_BEAM_QUAD)
 static struct quad quad[MAX_QUAD];
-static u16 quad_order[MAX_QUAD];
+static u16 quad_order[MAX_QUAD] MX_FAST_BSS;
 /* the quads' vertices from the eye, as rp_poly_area left them: the draws of
    every stage take them from here (rp_poly_cam) */
 #define MAX_QUAD_CAM 1024 /* fours of vertices */
-static rp_cam4 quad_cam[MAX_QUAD_CAM];
+static rp_cam4 quad_cam[MAX_QUAD_CAM] MX_FAST_BSS;
 static u32 nquad_cam, quad_cam_view;
 static rp_cam4 *cam_take(u32 n) {
 	u32 g = (n + 3) >> 2;
@@ -486,7 +486,7 @@ static void scene_beam(u32 *n, const refdef_t *fd, const refEntity_t *e, const s
 
 /* the shaders of the map's materials that are scripts (RP_LoadWorld) */
 #define MAX_WMAT 1024
-static qhandle_t wshader[MAX_WMAT];
+static qhandle_t wshader[MAX_WMAT] MX_FAST_BSS;
 
 /* The pixels the scene's quads may fill this frame. A cloud of blood before
    the eye is a hundred sprites, six times the screen: with the rest of a
@@ -1659,7 +1659,7 @@ static struct mark_sample {
 	u16 plane;
 	s16 u, v;
 	s8 off;
-} mark_sample[MARK_SAMPLES];
+} mark_sample[MARK_SAMPLES] MX_FAST_BSS;
 static u32 mark_planes; /* made since the map was loaded */
 static struct mark_plane *mark_last;
 

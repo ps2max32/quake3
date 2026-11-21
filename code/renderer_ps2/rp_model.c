@@ -56,7 +56,7 @@ static struct {
 	float origin[3], inv[3];
 	int bounds[3];
 } grid;
-static float sin_tab[256]; /* of n / 256 turns */
+static float sin_tab[256] MX_FAST_BSS; /* of n / 256 turns */
 
 /* twice as bright (the map's overbright range against the screen's), the
    hue kept */
