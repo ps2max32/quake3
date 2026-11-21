@@ -182,18 +182,19 @@ static void images_load(void) {
 
 /* The world's groups in runs of one material and lightmap page, as they lie
    in the file: a view walks these and looks at a group only when the
-   camera's cluster sees it. */
+   camera's cluster sees it. In the order of the passes (the opaque, then
+   the blended, each as in the file): a pass walks its own. */
 #define MAX_GRUN 4096
-static struct {
+static struct grun {
 	u16 first, n; /* groups */
 	u8 blended, sky;
-} grun[MAX_GRUN];
-static u32 ngrun;
+} grun[MAX_GRUN] MX_FAST_BSS MX_ALIGNED(64);
+static u32 ngrun, grun_pass[3]; /* where each pass's runs begin; [2]: the end */
 
 static void runs_make(void) {
 	const struct pm_model *world = &pm.model[0];
 	u32 g = world->first_group, end = world->first_group + world->ngroup;
-	ngrun = 0;
+	ngrun = 0, grun_pass[0] = grun_pass[1] = grun_pass[2] = 0;
 	if (!pm.h->nmodel)
 		return;
 	while (g < end && ngrun < MAX_GRUN) {
@@ -212,6 +213,17 @@ static void runs_make(void) {
 	/* a limit reached is named: what is left out is not drawn anywhere */
 	if (g < end)
 		mx_printf("rp: the map has more runs of groups than %d: %u groups of the world are not drawn\n", MAX_GRUN, end - g);
+	/* the opaque ones first: a stable sort by the pass */
+	static struct grun tmp[MAX_GRUN];
+	u32 k = 0;
+	for (int pass = 0; pass < 2; pass++) {
+		grun_pass[pass] = k;
+		for (u32 r = 0; r < ngrun; r++)
+			if (grun[r].blended == pass)
+				tmp[k++] = grun[r];
+	}
+	grun_pass[2] = k;
+	__builtin_memcpy(grun, tmp, k * sizeof *grun);
 }
 
 void rp_world_free(void) {
@@ -578,9 +590,7 @@ void rp_world_cull(struct rp_world_stats *st) {
 		crow = 0;
 	}
 	for (int pass = 0; pass < 2; pass++) {
-		for (u32 r = 0; r < ngrun; r++) {
-			if (grun[r].blended != pass)
-				continue;
+		for (u32 r = grun_pass[pass]; r < grun_pass[pass + 1]; r++) {
 			u32 first = nitem;
 			int sky = grun[r].sky;
 			for (u32 g = grun[r].first; g < (u32)grun[r].first + grun[r].n; g++) {

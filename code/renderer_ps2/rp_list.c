@@ -296,13 +296,22 @@ const void *rp_matrix(float scale, const float *origin, const float (*axis)[3]) 
 #define MAX_RUN 2048
 #define MAX_DRAW 6144
 #define LIST_MAX 256
-static struct run {
+/* A run: what each strip's walk over the runs reads, in a line of its own
+   in the core's fast part (32 bytes: no cache line of the state, no TLB
+   entry, for a run that has nothing in the strip), and its state, read
+   for its set-ups only */
+static struct run_head {
 	const void *matrix;
-	struct rp_state s;
 	const void *setup[2][2]; /* [the programs that cut][with the state] */
-	const void *ghost[2];    /* rp_debug 131072: the same, drawing nothing */
 	u16 first, n;
-	u16 mask;                /* the strips its draws are in */
+	u8 prog, spare[7];
+} rh[MAX_RUN] MX_FAST_BSS MX_ALIGNED(64);
+_Static_assert(sizeof(struct run_head) == 32, "a run's head: half a cache line");
+/* the strips each run's draws are in: all runs' in a few lines */
+static u16 rmask[MAX_RUN] MX_FAST_BSS MX_ALIGNED(64);
+static struct run {
+	struct rp_state s;
+	const void *ghost[2]; /* rp_debug 131072: the set-ups, drawing nothing */
 } run[MAX_RUN];
 static struct draw {
 	const void *chain;
@@ -317,11 +326,13 @@ int rp_run(const void *matrix, const struct rp_state *s) {
 		return -1;
 	}
 	struct run *r = &run[nrun];
-	r->matrix = matrix;
+	struct run_head *h = &rh[nrun];
 	__builtin_memcpy(&r->s, s, s->prog == RP_PROG_MODEL || s->prog == RP_PROG_DLIGHT ? sizeof *s : RP_STATE_HEAD);
-	r->setup[0][0] = r->setup[0][1] = r->setup[1][0] = r->setup[1][1] = 0;
 	r->ghost[0] = r->ghost[1] = 0;
-	r->first = (u16)ndraw, r->n = 0, r->mask = 0;
+	h->matrix = matrix;
+	h->setup[0][0] = h->setup[0][1] = h->setup[1][0] = h->setup[1][1] = 0;
+	h->first = (u16)ndraw, h->n = 0, h->prog = (u8)s->prog;
+	rmask[nrun] = 0;
 	return (int)nrun++;
 }
 
@@ -336,7 +347,7 @@ void rp_draw(const void *chain, u32 mask, int clip, u32 verts, u32 batches) {
 		clip = rp_debug >> 3 & 1;
 	struct draw *d = &draw[ndraw++];
 	d->chain = chain, d->mask = (u16)mask, d->verts = (u16)verts, d->clip = (u8)clip, d->batches = (u8)batches;
-	run[nrun - 1].n++, run[nrun - 1].mask |= (u16)mask;
+	rh[nrun - 1].n++, rmask[nrun - 1] |= (u16)mask;
 }
 
 /* The set-up of a run's program (cut 1: the one that cuts): the GIF tags of
@@ -699,24 +710,25 @@ void rp_list_end(void) {
 		if (streaming)
 			rp_tex_stream_strip(k == 0);
 		for (u32 r = 0; r < nrun; r++) {
-			struct run *rn = &run[r];
 			/* none of its draws in this strip */
-			if (!(rn->mask & bit))
+			if (!(rmask[r] & bit))
 				continue;
-			const struct draw *d = &draw[rn->first];
+			struct run_head *hd = &rh[r];
+			struct run *rn = &run[r];
+			const struct draw *d = &draw[hd->first];
 			u32 n[2] = {0, 0};
 			u32 r_verts = 0, r_batches = 0, r_clip = 0;
 			int set = 0;
-			for (u32 i = 0; i <= rn->n; i++) {
+			for (u32 i = 0; i <= hd->n; i++) {
 				/* a list full, or the run over: sent */
-				if (i == rn->n || n[0] == LIST_MAX || n[1] == LIST_MAX) {
+				if (i == hd->n || n[0] == LIST_MAX || n[1] == LIST_MAX) {
 					for (int v = 0; v < 2; v++) {
 						if (!n[v])
 							continue;
 						const void *pre[4];
 						u32 np = 0;
-						int fam = rn->s.prog == RP_PROG_MODEL;
-						if (rn->s.prog != RP_PROG_GS) {
+						int fam = hd->prog == RP_PROG_MODEL;
+						if (hd->prog != RP_PROG_GS) {
 							if (family >= 0 && family != fam && fl)
 								pre[np++] = fl;
 							family = fam;
@@ -726,25 +738,25 @@ void rp_list_end(void) {
 							calls(&w1, 1);
 							windowed = 1;
 						}
-						if (rn->matrix && matrix != rn->matrix)
-							pre[np++] = matrix = rn->matrix;
+						if (hd->matrix && matrix != hd->matrix)
+							pre[np++] = matrix = hd->matrix;
 						/* its texture into the stream area, when the strip has not sent it yet */
 						if (streaming && sid[r] >= 0 && sseg[r] >= 0) {
 							const void *up = rp_tex_stream_need((u32)sseg[r]);
 							if (up)
 								pre[np++] = up;
 						}
-						if (!rn->setup[v][!set])
-							rn->setup[v][!set] = setup_chain(&rn->s, v, !set);
-						if (!rn->setup[v][!set])
+						if (!hd->setup[v][!set])
+							hd->setup[v][!set] = setup_chain(&rn->s, v, !set);
+						if (!hd->setup[v][!set])
 							break; /* no memory: the run is left out */
-						pre[np++] = rn->setup[v][!set];
+						pre[np++] = hd->setup[v][!set];
 						calls(pre, np);
 						calls(list[v], n[v]);
 						/* rp_debug 131072: the list again, its vertices as XYZ3: VIF1 and VU1
 						   work twice, the GS draws once (do they wait for each other?) */
 						int again = 0;
-						if ((rp_debug & 131072) && rn->s.prog != RP_PROG_GS) {
+						if ((rp_debug & 131072) && hd->prog != RP_PROG_GS) {
 							if (!rn->ghost[v]) {
 								ghost = 1;
 								rn->ghost[v] = setup_chain(&rn->s, v, 1);
@@ -757,11 +769,11 @@ void rp_list_end(void) {
 							}
 						}
 						rp_list_stats.setups++;
-						rp_list_stats.p_setups[rn->s.prog]++;
+						rp_list_stats.p_setups[hd->prog]++;
 						set = !again, n[v] = 0;
 					}
 					n[0] = n[1] = 0;
-					if (i == rn->n)
+					if (i == hd->n)
 						break;
 				}
 				if (d[i].mask & bit) {
@@ -773,8 +785,8 @@ void rp_list_end(void) {
 				}
 			}
 			rp_list_stats.sent += r_verts, rp_list_stats.batches += r_batches;
-			rp_list_stats.p_sent[rn->s.prog] += r_verts, rp_list_stats.p_batches[rn->s.prog] += r_batches;
-			rp_list_stats.p_clip[rn->s.prog] += r_clip;
+			rp_list_stats.p_sent[hd->prog] += r_verts, rp_list_stats.p_batches[hd->prog] += r_batches;
+			rp_list_stats.p_clip[hd->prog] += r_clip;
 		}
 		rp_list_stats.k_sent[k] = rp_list_stats.sent - at_sent;
 		rp_list_stats.k_batches[k] = rp_list_stats.batches - at_batches;

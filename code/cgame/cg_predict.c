@@ -116,6 +116,22 @@ static void CG_ClipMoveToEntities ( const vec3_t start, const vec3_t mins, const
 			bmins[2] = -zd;
 			bmaxs[2] = zu;
 
+#ifdef __PS2__
+			// the box the trace sweeps (a unit more each way: the
+			// trace's epsilons) misses the entity's: the trace through
+			// it would end at 1, not in it, and change nothing
+			{
+				int k, miss = 0;
+				for ( k = 0 ; k < 3 && !miss ; k++ ) {
+					float lo = ( start[k] < end[k] ? start[k] : end[k] ) + ( mins ? mins[k] : 0 ) - 1;
+					float hi = ( start[k] > end[k] ? start[k] : end[k] ) + ( maxs ? maxs[k] : 0 ) + 1;
+					miss = lo > cent->lerpOrigin[k] + bmaxs[k] || hi < cent->lerpOrigin[k] + bmins[k];
+				}
+				if ( miss ) {
+					continue;
+				}
+			}
+#endif
 			cmodel = trap_CM_TempBoxModel( bmins, bmaxs );
 			VectorCopy( vec3_origin, angles );
 			VectorCopy( cent->lerpOrigin, origin );

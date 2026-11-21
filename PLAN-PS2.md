@@ -1364,6 +1364,34 @@ a second; passes still drawn when the beam came, of about 9200):
   frame. One build, in turns: 14.55 and 14.64 ms a frame for 15.24: 4.6 %.
   The timedemo with both: 68.7 and 68.3 fps in that build, 70.3 in the
   one without the old ways' code; textures 256 (`r_ps2mode 1`): 60.0 fps.
+- The kernel's look-ups of residency (`mx_mem_resident`, some 800 cycles
+  each): 165 a frame, 126 thousand cycles, most of them on a model's frame
+  header and tags only to count waits that were read anyway. Now asked in
+  a measured run only (`ps2_inst`), and the next animation frame's
+  vertices once a frame of it: 2 a frame. Two builds differing in that
+  alone, in turns: 68.8 -> 71.6 fps, textures 256 59.5 -> 61.4.
+- Smaller: each strip's walk over the runs read a 380-byte run for its
+  mask (a miss a run a strip): the masks in an array of their own, the
+  runs' heads in the core's fast part (`rh`, `rmask` in rp_list.c). The
+  world's runs of groups sorted by pass at load (a pass walks its own).
+  `rp_image_place`'s globals in one line (`tp`), an image's fields it
+  reads in its first line. cgame's traces skip a player's box that the
+  swept box misses (collision about 40 thousand cycles a frame less).
+- The placement of the code is worth more than most of these: the same
+  source linked in four random orders of its hot functions gave 66.8 to
+  73.3 fps; the EE's counters put it on the I-cache (16.0 against 19.6
+  thousand misses a frame, the D-cache alike). Over those four orders the
+  new source against the old: 70.5 for 68.8 fps on average. An order by
+  the call graph (`ld.lld --call-graph-ordering-file`, cdsort, the graph
+  from the code's jal and the profile's samples) gave 71.4 to 72.3 for
+  both sources: a candidate for a fixed order, not measured enough yet.
+- The whole: the timedemo 73.1 fps, textures 256 62.6 fps (kernel 46,
+  without the VM's scan at each vblank: 2 % of a frame).
+- What the EE writes for DMA does not go through the D-cache already
+  (`rp_dyn` is uncached accelerated, the records are built in the
+  scratchpad); what is left cached is small (the polygons' batch before
+  `rp_dyn`, a model frame's block, the sound stream's stage). Reading
+  through the UCAB does not pay here: any store empties it.
 
 ## 3. Why the earlier attempts stalled
 

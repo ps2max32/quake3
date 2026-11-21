@@ -185,6 +185,7 @@ struct msurf {
 	u16 (*pv)[Q3VU_M_VERTS]; /* a piece's vertices in the file */
 	u16 *block;         /* a frame's block in the cache + 1; 0: not made */
 	u16 last;           /* the block (+ 1) it was drawn with last */
+	u16 ahead;          /* the frame (+ 1) whose block's vertices were last asked in ahead */
 };
 #define RP_MODELS 1024
 static struct rmodel {
@@ -195,6 +196,8 @@ static struct rmodel {
 static int nmodels;
 static struct mx_heap *heap;
 static unsigned model_bytes;
+
+extern int ps2_inst; /* sys_ps2.c: a run measures */
 
 /* the cache of frames' blocks */
 #define CACHE_BYTES (4u << 20)
@@ -482,7 +485,9 @@ static md3Tag_t *model_tag(md3Header_t *m, int frame, const char *name) {
 	if (frame < 0)
 		frame = 0;
 	md3Tag_t *t = (md3Tag_t *)((byte *)m + m->ofsTags) + frame * m->numTags;
-	if (m->numTags && !mx_mem_resident(t, (u32)m->numTags * sizeof *t))
+	/* counted in a measured run only: the kernel's look-up costs some 800
+	   cycles, and the tags are read anyway */
+	if (ps2_inst && m->numTags && !mx_mem_resident(t, (u32)m->numTags * sizeof *t))
 		rp_model_stats.tag_waits++;
 	for (int i = 0; i < m->numTags; i++, t++)
 		if (!strcmp(t->name, name))
@@ -666,8 +671,11 @@ static const void *surf_chain(struct msurf *sf, int frame, int oldframe, const r
 		return 0;
 	if (!fo)
 		fo = fn;
-	/* the frame after is likely asked for next */
-	if (frame + 1 < sf->md3->numFrames && !sf->block[frame + 1]) {
+	/* the frame after is likely asked for next: its vertices asked in once
+	   (a draw of the same frame again asks nothing; frame_block asks for
+	   them itself when they are still not there) */
+	if (frame + 1 < sf->md3->numFrames && !sf->block[frame + 1] && sf->ahead != frame + 2) {
+		sf->ahead = (u16)(frame + 2);
 		const md3XyzNormal_t *x = (const md3XyzNormal_t *)((const u8 *)sf->md3 + sf->md3->ofsXyzNormals) +
 		                          (frame + 1) * sf->md3->numVerts;
 		if (!mx_mem_resident(x, (u32)sf->md3->numVerts * sizeof *x))
@@ -754,8 +762,8 @@ void rp_model_draw(const refEntity_t *e, float t) {
 	/* its sphere (the frames') against the frustum and the guard band */
 	const md3Frame_t *fr = (const md3Frame_t *)((const u8 *)h + h->ofsFrames);
 	const md3Frame_t *fn = &fr[frame], *fo = &fr[oldframe];
-	if (!mx_mem_resident(fn, sizeof *fn) || !mx_mem_resident(fo, sizeof *fo))
-		rp_model_stats.frame_waits++;
+	if (ps2_inst && (!mx_mem_resident(fn, sizeof *fn) || !mx_mem_resident(fo, sizeof *fo)))
+		rp_model_stats.frame_waits++; /* a measured run only, as the tags' */
 	float r = fn->radius > fo->radius ? fn->radius : fo->radius, c[3], d[3];
 	float sc = e->nonNormalizedAxes ? VectorLength(e->axis[0]) : 1.0f;
 	for (int a = 0; a < 3; a++)

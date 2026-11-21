@@ -68,7 +68,27 @@ static u32 full_blocks;      /* GS memory free at the start (rp_tex_full_blocks)
    longest ago; when there is none, the cache has it, as before. They leave
    the cache's room to the textures (q3dm6: about 150 CLUTs a frame). */
 #define CLUT_SLOTS 128
-static u32 cs_at[CLUT_SLOTS], cs_n, cs_used[CLUT_SLOTS]; /* the block; the frame + 1 that drew with it last */
+/* What rp_image_place reads each time, in one cache line of the core's
+   fast part (no miss, no TLB entry, between the draws that ask) */
+static struct {
+	u32 cs_n;          /* CLUT slots in use (below) */
+	u32 frame_uploads; /* images sent to GS memory in the frame being built */
+	u32 frame_blocks;  /* GS memory (256-byte blocks) of the images the frame drew with */
+	u32 want_blocks;   /* the same had every image all its levels (below) */
+	u32 tight;         /* GS memory is short (below) */
+	u32 tex_max;       /* r_ps2texmax (below) */
+	int force;         /* r_ps2texforce (below) */
+	int keeping;       /* rp_tex_frame asks for the screen's pictures: not a draw's asking */
+} tp MX_FAST_DATA MX_ALIGNED(64) = {.tex_max = 128};
+#define cs_n tp.cs_n
+#define frame_uploads tp.frame_uploads
+#define frame_blocks tp.frame_blocks
+#define want_blocks tp.want_blocks
+#define tex_max tp.tex_max
+#define force tp.force
+#define keeping tp.keeping
+int rp_tex_full MX_FAST_BSS;
+static u32 cs_at[CLUT_SLOTS], cs_used[CLUT_SLOTS]; /* the block; the frame + 1 that drew with it last */
 static u64 cs_key[CLUT_SLOTS];
 
 u32 rp_tex_clut_slots(void) { return cs_n; }
@@ -129,16 +149,15 @@ void rp_tex_init(void) {
 /* images sent to GS memory in the frame being built: no more than fit its
    record (about 60 quadwords of tags each) */
 #define FRAME_UPLOADS 32
-static u32 frame_uploads;
 
-static u32 frame_blocks; /* GS memory (256-byte blocks) of the images the frame drew with */
+/* frame_blocks (tp): GS memory (256-byte blocks) of the images the frame drew with */
 /* The same had every image all its levels: against what GS memory holds
    this says whether a frame's images fit. When they do not, the models' and
    the effects' images are placed without their finest level (a quarter of
    the memory; the map's stay as they are) until the frames have fitted
    again for two seconds: images that push each other out of GS memory
    every frame are sent again every frame. */
-static u32 want_blocks, tight, calm, want_last;
+static u32 calm, want_last; /* want_blocks and tight: tp */
 u32 rp_tex_want_blocks(void) { return want_last; }
 u32 rp_tex_full_blocks(void) { return full_blocks; }
 /* While tight, how much sooner (levels) a texture of the world goes to a
@@ -160,23 +179,21 @@ void rp_tex_room(u32 pct) { room_pct = pct < 10 ? 10 : pct; }
 /* r_ps2texmax: the largest level (texels a side) the cache places itself;
    a larger one only through the pool of fine levels (a test: 256, every
    image from its level of 256 through the cache) */
-static u32 tex_max = 128;
+/* tex_max (tp): 128 until set */
 void rp_tex_max(u32 texels) { tex_max = texels < 128 ? 128 : texels; }
 /* r_ps2texforce (a test): no image coarser for want of room: none sooner
    than its distance asks, none without its finest levels; what the cache has
    no room for goes through the stream area, as many KB a frame as it is set
    to whatever the passes' time, and is not drawn when that is full too */
-static int force;
+/* force: tp */
 void rp_tex_force(int on) { force = on; }
 static u32 full_at, coarse_at; /* rp_tex_stats.full and coarse at the frame before */
 static u32 lower_blocks, lower_calm, lowered_at, floor_want;
 #define LOWER_WAIT 30
 #define FAR_BIAS_MAX 2.0f
-static int keeping; /* rp_tex_frame asks for the screen's pictures: not a draw's asking */
 #define KEPT 128
 static struct rp_image *kept[KEPT]; /* the screen's pictures asked for lately */
 static u32 nkept;
-int rp_tex_full;
 
 u32 rp_tex_level_at(float rho, float b) {
 	union {
@@ -232,11 +249,11 @@ void rp_tex_frame(void) {
 		/* tight: the frame's images at full size are 90 % of what there is;
 		   until the frames have been under 80 % for a second */
 		if (want_blocks * 100 > cap * 90)
-			tight = 1, calm = 0;
+			tp.tight = 1, calm = 0;
 		else if (want_blocks * 100 > cap * 80)
 			calm = 0;
-		else if (tight && ++calm > 60)
-			tight = 0;
+		else if (tp.tight && ++calm > 60)
+			tp.tight = 0;
 		u32 frame = mx_frame_number();
 		u32 pred = (drawn + lower_blocks) * 100;
 		/* the counts were set to 0 (a run's statistics begin) */
@@ -244,7 +261,7 @@ void rp_tex_frame(void) {
 			full_at = rp_tex_stats.full, coarse_at = rp_tex_stats.coarse;
 		if (far_floor > 0 && (want_blocks > floor_want ? want_blocks - floor_want : floor_want - want_blocks) * 20 > cap)
 			far_floor = 0;
-		if (!tight)
+		if (!tp.tight)
 			far_bias = 0, far_floor = 0, lower_calm = 0;
 		else if ((rp_tex_stats.full != full_at && far_bias < FAR_BIAS_MAX) ||
 		         (rp_tex_stats.coarse != coarse_at && far_bias < 0.5f)) {
@@ -267,7 +284,7 @@ void rp_tex_frame(void) {
 		if (want_blocks > rp_tex_stats.want_max)
 			rp_tex_stats.want_max = want_blocks;
 		rp_tex_stats.want_sum += want_blocks / 4;
-		rp_tex_stats.tight += tight;
+		rp_tex_stats.tight += tp.tight;
 		want_last = want_blocks;
 		want_blocks = 0;
 	}
@@ -1016,7 +1033,7 @@ const void *rp_tex_stream_need(u32 seg) {
 	return drawn ? g->chain : (const u64 *)g->chain + 2;
 }
 
-int rp_tex_tight(void) { return tight; }
+int rp_tex_tight(void) { return tp.tight; }
 float rp_tex_far_bias(void) { return far_bias; }
 
 void rp_image_want(struct rp_image *im, float rho) {
@@ -1049,7 +1066,7 @@ const struct mx_tex *rp_image_place(struct rp_image *im) {
 		return im->ok ? &im->t : 0;
 	/* placed the plain way in the frame before, and nothing has changed
 	   since: its entries again, as they are (rp_debug 512: asked for as if new) */
-	if (im->frame == frame && im->ok && im->plain && !tight && !force && !rp_tex_full && !cs_n && im->plain_max == tex_max &&
+	if (im->frame == frame && im->ok && im->plain && !tp.tight && !force && !rp_tex_full && !cs_n && im->plain_max == tex_max &&
 	    !(im->fine && im->fine_frame == frame + 1) && !(rp_debug & 512) &&
 	    mx_vcache_again(im->ent, mx_vcache_tex_key(im->key, im->from), im->t.tbp[0]) &&
 	    (!im->plain_clut || mx_vcache_again(im->clut_ent, im->clut_key, im->t.cbp))) {
@@ -1084,7 +1101,7 @@ const struct mx_tex *rp_image_place(struct rp_image *im) {
 	im->frame = frame + 1, im->ok = 0;
 	/* a frame's images do not fit: this one without its finest level, when it
 	   is a model's or an effect's */
-	u32 f0 = tight && !force && !rp_tex_full && (im->kind == RP_IMAGE_MODEL || im->kind == RP_IMAGE_OTHER) && im->levels > 2 && im->w >= 64;
+	u32 f0 = tp.tight && !force && !rp_tex_full && (im->kind == RP_IMAGE_MODEL || im->kind == RP_IMAGE_OTHER) && im->levels > 2 && im->w >= 64;
 	if (f0 && im->split && f0 > im->m.tail)
 		f0 = 0;
 	/* an image of the file larger than 128 texels a side: the cache has it
@@ -1100,7 +1117,7 @@ const struct mx_tex *rp_image_place(struct rp_image *im) {
 	int fine = base == 1 && im->fine && im->fine_frame == frame + 1 && !f0;
 	f0 = f0 + base;
 	/* tight: a texture of the world from the level its distance needs */
-	if (tight && !fine && !rp_tex_full && im->kind == RP_IMAGE_WORLD && im->want_frame == frame + 1 && im->want > f0) {
+	if (tp.tight && !fine && !rp_tex_full && im->kind == RP_IMAGE_WORLD && im->want_frame == frame + 1 && im->want > f0) {
 		u32 last = im->split ? im->m.tail : im->levels > 2 ? (u32)im->levels - 2 : 0, f = im->want_lo;
 		if (was_there && was_from >= im->want_lo && was_from <= im->want)
 			f = was_from;
@@ -1175,7 +1192,7 @@ const struct mx_tex *rp_image_place(struct rp_image *im) {
 	im->from = (u8)from, im->ok = 1;
 	u32 blocks = im->t.blocks + clut_blocks;
 	/* what it would take more with the levels a quarter less soon */
-	if (tight && im->kind == RP_IMAGE_WORLD && im->want_frame == frame + 1 && from > base) {
+	if (tp.tight && im->kind == RP_IMAGE_WORLD && im->want_frame == frame + 1 && from > base) {
 		u32 less = im->want_less > base ? im->want_less : base;
 		if (less < from)
 			lower_blocks += (blocks << (2 * (from - less))) - blocks;
@@ -1183,7 +1200,7 @@ const struct mx_tex *rp_image_place(struct rp_image *im) {
 	frame_blocks += blocks, rp_tex_stats.kind_blocks[im->kind] += blocks;
 	want_blocks += blocks << (2 * (from > base ? from - base : 0));
 	im->uses++;
-	im->plain = !tight && !force && !rp_tex_full && !cs_n && !im->split && !fine && !again && from == base;
+	im->plain = !tp.tight && !force && !rp_tex_full && !cs_n && !im->split && !fine && !again && from == base;
 	if (im->plain) {
 		im->plain_max = tex_max, im->plain_blocks = blocks, im->plain_clut = (u8)own_clut;
 		im->ent = mx_vcache_entry(mx_vcache_tex_key(im->key, from));

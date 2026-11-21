@@ -9,6 +9,28 @@
 #include <mx/vcache.h>
 
 struct rp_image {
+	/* what rp_image_place reads of an image placed the frame before: its
+	   first cache line, then t (the struct is aligned to a line) */
+	u32 frame;              /* the frame it was placed in (t), + 1 */
+	u32 asked;              /* the frame a draw asked for it last, + 1 */
+	u32 uses;               /* frames that drew with it */
+	/* placed the plain way (whole, from the cache, no choice of level made
+	   for it): the next frame takes its entries again without asking
+	   (rp_image_place) while nothing has changed */
+	int ent, clut_ent;      /* the cache's entries (mx_vcache_entry) */
+	u32 plain_max;          /* the largest level's size it was placed for */
+	u32 plain_blocks;       /* what it counts for in the frame's memory */
+	u32 fine_frame;         /* the frame rp_image_fine gave it that level for, + 1 */
+	u8 from;                /* the level that is t's level 0 (a texture whose first levels
+	                           are not in memory yet) */
+	u8 ok;
+	u8 plain, plain_clut;   /* plain_clut: with a CLUT of its own in the cache */
+	u8 fine;                /* its first level's unit in the pool of fine levels, + 1; 0: none */
+	u8 kind;                /* RP_IMAGE_*: what it is of, for the report */
+	u8 kept;                /* in the list of the screen's pictures that keep their place */
+	u64 key;
+	u64 clut_key;           /* wide: its CLUT's place of its own in GS memory */
+	struct mx_tex t;        /* where it is in GS memory in the frame being built */
 	char name[64];
 	u16 w, h;               /* level 0's texels (powers of two) */
 	u16 pic_w, pic_h;       /* the picture's own size, before it was made that */
@@ -18,40 +40,20 @@ struct rp_image {
 	u8 wide;                /* a T4 with a CLUT of 256 words (the file's images without
 	                           alpha, rp_image_bin): its colours are the first 16 entries,
 	                           the lightmaps' brightness the alpha of 128 .. 255 */
-	u8 kind;                /* RP_IMAGE_*: what it is of, for the report */
-	u32 asked;              /* the frame a draw asked for it last, + 1 */
-	u8 kept;                /* in the list of the screen's pictures that keep their place */
 	u8 pinned;              /* its small levels and its CLUT are pinned in memory (image_pin) */
 	u16 stream;             /* in the stream area in frame stream_frame: its instance + 1 */
 	u32 stream_frame;       /* that frame + 1 */
 	const u8 *level[MX_TEX_LEVELS]; /* not split: where they lie (a locked file) */
 	const void *clut;       /* 256 or 16 words in the GS's order; 0: none of its own */
-	u64 clut_key;           /* wide: its CLUT's place of its own in GS memory */
 	struct mx_tex_mem m;
-	u64 key;
-	struct mx_tex t;        /* where it is in GS memory in the frame being built */
-	u32 frame;              /* that frame + 1 */
-	u8 from;                /* the level that is t's level 0 (a texture whose first levels
-	                           are not in memory yet) */
-	u8 ok;
-	u32 uses;               /* frames that drew with it */
-	/* placed the plain way (whole, from the cache, no choice of level made
-	   for it): the next frame takes its entries again without asking
-	   (rp_image_place) while nothing has changed */
-	u8 plain, plain_clut;   /* plain_clut: with a CLUT of its own in the cache */
-	int ent, clut_ent;      /* the cache's entries (mx_vcache_entry) */
-	u32 plain_max;          /* the largest level's size it was placed for */
-	u32 plain_blocks;       /* what it counts for in the frame's memory */
 	u8 want, want_lo;       /* the level it is wanted from in want_frame (rp_image_want), and half a level finer */
 	u8 want_less;           /* and with the levels a quarter of a level less soon */
 	u32 want_frame;         /* that frame, + 1 */
-	u8 fine;                /* its first level's unit in the pool of fine levels, + 1; 0: none */
-	u32 fine_frame;         /* the frame rp_image_fine gave it that level for, + 1 */
 	u32 *luma[2];           /* rp_image_luma's CLUTs */
 	u32 *opaque;            /* rp_image_opaque's */
 	u64 opaque_key;
 	u64 luma_key[2];
-};
+} __attribute__((aligned(64)));
 
 /* by its name: the map's and the scripts' (textures/), a lightmap page, the
    models', the screen's (gfx/2d, menu, ui, icons), the rest (sprites, effects) */
