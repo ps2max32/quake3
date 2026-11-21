@@ -13,6 +13,8 @@
 
    Fog: rp_world_fog (the world's surfaces; not yet what stands in it). */
 
+#include <stdlib.h>
+
 #include <mx/frame.h>
 #include <mx/gif.h>
 #include <mx/hires.h>
@@ -226,11 +228,19 @@ static void runs_make(void) {
 	__builtin_memcpy(grun, tmp, k * sizeof *grun);
 }
 
+/* each chunk's address as the DMAC reads it: its data is locked VM, whose
+   look-up is the kernel's (some 700 cycles); taken once at the load, as a
+   locked page stays at its frame */
+static u32 *chunk_pa;
+static inline u32 chunk_pa_of(const struct pm_chunk *ch) { return chunk_pa[ch - pm.chunk]; }
+
 void rp_world_free(void) {
 	images_free();
 	if (pm.h)
 		mx_vm_unlock(pm.base + pm.h->off_data, pm.h->size - pm.h->off_data);
 	pm.h = 0;
+	free(chunk_pa);
+	chunk_pa = 0;
 }
 
 int rp_world_load(const void *p, u32 size) {
@@ -247,6 +257,14 @@ int rp_world_load(const void *p, u32 size) {
 	pm.mat = (const void *)(pm.base + h->off_mat);
 	pm.tex = (const void *)(pm.base + h->off_tex);
 	pm.chunk = (const void *)(pm.base + h->off_chunk);
+	chunk_pa = malloc((h->nchunk ? h->nchunk : 1) * sizeof *chunk_pa);
+	if (!chunk_pa) {
+		mx_vm_unlock((const u8 *)p + h->off_data, h->size - h->off_data);
+		pm.h = 0;
+		return -1;
+	}
+	for (u32 j = 0; j < h->nchunk; j++)
+		chunk_pa[j] = mx_paddr_of(pm.base + pm.chunk[j].off_data).v;
 	pm.group = (const void *)(pm.base + h->off_group);
 	pm.model = (const void *)(pm.base + h->off_model);
 	pm.vis = pm.base + h->off_vis;
@@ -1001,7 +1019,7 @@ static int run_draw(const void *matrix, const struct item *it, u32 n) {
 						env_rows(&pass[k - 1], ch);
 					if (rp_run(matrix, &pass[k - 1]) < 0)
 						return -1;
-					rp_draw(pm.base + ch->off_data, it[i].mask, it[i].clip, ch->nverts, ch->nbatch);
+					rp_draw_pa(chunk_pa_of(ch), it[i].mask, it[i].clip, ch->nverts, ch->nbatch);
 				}
 				continue;
 			}
@@ -1009,7 +1027,7 @@ static int run_draw(const void *matrix, const struct item *it, u32 n) {
 				return -1;
 			for (u32 i = 0; i < n; i++) {
 				const struct pm_chunk *ch = &pm.chunk[it[i].chunk];
-				rp_draw(pm.base + ch->off_data, it[i].mask, it[i].clip, ch->nverts, ch->nbatch);
+				rp_draw_pa(chunk_pa_of(ch), it[i].mask, it[i].clip, ch->nverts, ch->nbatch);
 			}
 		}
 	}
@@ -1151,7 +1169,7 @@ void rp_world_dlights(const struct rp_dlight *lights, unsigned nl, unsigned max)
 			for (u32 k = 0; k < cnt[w]; k++) {
 				const struct item *it = &item[list[w][k]];
 				const struct pm_chunk *ch = &pm.chunk[it->chunk];
-				rp_draw(pm.base + ch->off_data, it->mask, it->clip, ch->nverts, ch->nbatch);
+				rp_draw_pa(chunk_pa_of(ch), it->mask, it->clip, ch->nverts, ch->nbatch);
 			}
 			dl_stats.runs++, dl_stats.chunks += cnt[w];
 		}
@@ -1268,7 +1286,7 @@ void rp_world_fog(void) {
 		for (u32 k = 0; k < cnt; k++) {
 			const struct item *it = &item[list[k]];
 			const struct pm_chunk *ch = &pm.chunk[it->chunk];
-			rp_draw(pm.base + ch->off_data, it->mask, it->clip, ch->nverts, ch->nbatch);
+			rp_draw_pa(chunk_pa_of(ch), it->mask, it->clip, ch->nverts, ch->nbatch);
 		}
 	}
 }
@@ -1333,7 +1351,7 @@ void rp_world_depth(int (*is)(u32 mat), const float *plane) {
 				return;
 			run = 1;
 		}
-		rp_draw(pm.base + ch->off_data, item[i].mask, item[i].clip, ch->nverts, ch->nbatch);
+		rp_draw_pa(chunk_pa_of(ch), item[i].mask, item[i].clip, ch->nverts, ch->nbatch);
 	}
 }
 

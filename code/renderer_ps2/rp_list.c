@@ -314,7 +314,7 @@ static struct run {
 	const void *ghost[2]; /* rp_debug 131072: the set-ups, drawing nothing */
 } run[MAX_RUN];
 static struct draw {
-	const void *chain;
+	u32 pa; /* the chain's address as the DMAC reads it */
 	u16 mask, verts;
 	u8 clip, batches;
 } draw[MAX_DRAW] MX_FAST_BSS;
@@ -339,14 +339,22 @@ int rp_run(const void *matrix, const struct rp_state *s) {
 int rp_run_last(void) { return (int)nrun - 1; }
 
 void rp_draw(const void *chain, u32 mask, int clip, u32 verts, u32 batches) {
-	if (!nrun || ndraw == MAX_DRAW || !chain) {
+	if (!chain) {
+		rp_list_stats.lost++;
+		return;
+	}
+	rp_draw_pa(mx_paddr_of(chain).v, mask, clip, verts, batches);
+}
+
+void rp_draw_pa(u32 pa, u32 mask, int clip, u32 verts, u32 batches) {
+	if (!nrun || ndraw == MAX_DRAW) {
 		rp_list_stats.lost++;
 		return;
 	}
 	if (rp_debug & 12)
 		clip = rp_debug >> 3 & 1;
 	struct draw *d = &draw[ndraw++];
-	d->chain = chain, d->mask = (u16)mask, d->verts = (u16)verts, d->clip = (u8)clip, d->batches = (u8)batches;
+	d->pa = pa, d->mask = (u16)mask, d->verts = (u16)verts, d->clip = (u8)clip, d->batches = (u8)batches;
 	rh[nrun - 1].n++, rmask[nrun - 1] |= (u16)mask;
 }
 
@@ -583,6 +591,19 @@ static void calls(const void **chain, u32 n) {
 	}
 }
 
+/* the same for chains by their DMA addresses (the draws') */
+static void calls_pa(const u32 *pa, u32 n) {
+	while (n) {
+		u32 k = n > 96 ? 96 : n;
+		u64 *c = mx_frame_reserve(k);
+		for (u32 i = 0; i < k; i++)
+			c = mx_e_tag(c, MX_TAG_CALL, 0, (mx_paddr){pa[i]}, 0, 0);
+		mx_frame_commit(c);
+		rp_list_stats.qw += k;
+		pa += k, n -= k;
+	}
+}
+
 static u64 dimx(void) {
 	/* the GS manual's 4 x 4 matrix */
 	static const s8 m[16] = {-4, 2, -3, 3, 0, -2, 1, -1, -3, 3, -4, 2, 1, -1, 0, -2};
@@ -647,7 +668,7 @@ void rp_list_begin(void) {
 /* Every strip's own record gets the draws that touch it (without strip
    records: all of them into the frame's record, once). */
 void rp_list_end(void) {
-	static const void *list[2][LIST_MAX];
+	static u32 list[2][LIST_MAX];
 	static s16 sid[MAX_RUN] MX_FAST_BSS, sseg[MAX_RUN] MX_FAST_BSS;
 	u32 nstrip = rp_view.nstrip;
 	rp_list_stats.runs += nrun, rp_list_stats.draws += ndraw;
@@ -752,7 +773,7 @@ void rp_list_end(void) {
 							break; /* no memory: the run is left out */
 						pre[np++] = hd->setup[v][!set];
 						calls(pre, np);
-						calls(list[v], n[v]);
+						calls_pa(list[v], n[v]);
 						/* rp_debug 131072: the list again, its vertices as XYZ3: VIF1 and VU1
 						   work twice, the GS draws once (do they wait for each other?) */
 						int again = 0;
@@ -764,7 +785,7 @@ void rp_list_end(void) {
 							}
 							if (rn->ghost[v]) {
 								calls(&rn->ghost[v], 1);
-								calls(list[v], n[v]);
+								calls_pa(list[v], n[v]);
 								again = 1; /* the context's tags are the ghost's: the next list sets its own */
 							}
 						}
@@ -777,7 +798,7 @@ void rp_list_end(void) {
 						break;
 				}
 				if (d[i].mask & bit) {
-					list[d[i].clip][n[d[i].clip]++] = d[i].chain;
+					list[d[i].clip][n[d[i].clip]++] = d[i].pa;
 					ndr++;
 					r_verts += d[i].verts, r_batches += d[i].batches;
 					if (d[i].clip)

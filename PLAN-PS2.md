@@ -1406,6 +1406,15 @@ a second; passes still drawn when the beam came, of about 9200):
   What is left is spread over some 270 pages of 5 to 10 refills a frame
   each (the renderer's run states and images, the scene's arrays, the
   texture cache's tables in libmxk).
+- The world's draws are chains in the map's locked VM: each CALL of one
+  asked the kernel for its physical address (`mx_paddr_of` of VM: some 700
+  cycles), every draw again in every strip, some 170 thousand cycles a
+  frame (the profile's piece_of, va_page, mx_vm_first_piece, in_vm). A
+  locked page stays at its frame: each chunk's address is taken once at
+  the map's load (`chunk_pa` in rp_world.c), the draws keep addresses
+  (`rp_draw_pa`, `calls_pa` in rp_list.c). Two builds in turns: 75.8 ->
+  81.6 fps, textures 256 63.9 -> 68.4; the picture of the timedemo's frame
+  600 the same, pixel for pixel.
 - What the EE writes for DMA does not go through the D-cache already
   (`rp_dyn` is uncached accelerated, the records are built in the
   scratchpad); what is left cached is small (the polygons' batch before

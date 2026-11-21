@@ -141,6 +141,9 @@ int rp_run_last(void);
    the near plane or the guard band (the programs that cut); verts, batches:
    for the counts. */
 void rp_draw(const void *chain, u32 mask, int clip, u32 verts, u32 batches);
+/* the same with the chain as the DMAC reads it (mx_paddr_of's, kept: a
+   look-up of locked VM is the kernel's) */
+void rp_draw_pa(u32 pa, u32 mask, int clip, u32 verts, u32 batches);
 /* The depth of the picture's pixels x0, y0 .. x1, y1 back to the farthest
    (a scene of its own on the screen, the view weapon): a draw of a run of
    its own. */
