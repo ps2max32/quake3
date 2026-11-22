@@ -4,10 +4,11 @@
    as a slab, the light filling it, the steps and a bar on the floor; Square
    stops it.
 
-     CONVERT.ELF <data dir> [max=128|256]
+     CONVERT.ELF <data dir> [<version>] [max=128|256]
 
-   The data directory is game.ini's data= ({data}): its baseq3 (the full
-   game, when it has pak0.pk3) or demoq3 (the demo). What it makes goes next
+   The data directory is game.ini's data= ({data}); the version the shell
+   chose of game.ini's versions= ({version}: baseq3, the full game, or
+   demoq3, the demo), without it baseq3 when it has pak0.pk3, else demoq3. What it makes goes next
    to the game (a game writes only there; the data directory is the user's):
 
      ps2/<game>/ps2tex.pk3      the textures as .p8 (pak.c), max a side
@@ -297,20 +298,29 @@ static void draw(void) {
 static u8 stack[256 << 10] MX_ALIGNED(16) MX_IRQ_BSS; /* a thread stack: core */
 
 int main(int argc, char **argv) {
-  const char *data = ".";
+  const char *data = ".", *version = 0;
+  int npos = 0;
   for (int i = 1; i < argc; i++) {
     if (!strncmp(argv[i], "max=", 4))
       maxside = atoi(argv[i] + 4) >= 256 ? 256 : 128;
     else if (!strcmp(argv[i], "prof"))
       prof_tex = 1;
-    else
+    else if (npos++ == 0)
       data = argv[i];
+    else
+      version = argv[i];
   }
-  /* the game: baseq3 when it has pak0.pk3, else the demo's demoq3 */
-  mx_snprintf(gamedir, sizeof gamedir, "%s/baseq3/pak0.pk3", data);
-  cv_file *f = cv_open(gamedir, 0);
-  mx_snprintf(game, sizeof game, "%s", f ? "baseq3" : "demoq3");
-  cv_close(f);
+  /* the game: the version the shell chose (game.ini's versions=, {version}),
+     else baseq3 when it has pak0.pk3, else the demo's demoq3 */
+  cv_file *f = 0;
+  if (version && *version)
+    mx_snprintf(game, sizeof game, "%s", version);
+  else {
+    mx_snprintf(gamedir, sizeof gamedir, "%s/baseq3/pak0.pk3", data);
+    f = cv_open(gamedir, 0);
+    mx_snprintf(game, sizeof game, "%s", f ? "baseq3" : "demoq3");
+    cv_close(f);
+  }
   mx_snprintf(gamedir, sizeof gamedir, "%s/%s", data, game);
   mx_snprintf(outdir, sizeof outdir, "ps2/%s", game);
   stamp_make();
