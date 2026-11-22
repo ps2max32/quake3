@@ -281,9 +281,19 @@ $(RUNDIR)/baseq3/maps/$(MAP).pmap: $(PS2CONV) $(RUNDIR)/baseq3/ps2tex.pk3
 # screen (MXSHELL's drawing: its `app` target builds it)
 MXSHELL ?= $(PS2MAX)/apps/mxshell
 CONV_JPEG := $(filter-out %/jmemansi.c %/jmemdos.c %/jmemmac.c %/jmemname.c,$(wildcard $(JPEG)/j*.c))
-CONV_SRCS := $(addprefix $(HERE)/tools/ps2conv/,ps2.c io.c pk3.c snd.c bin.c map.c pak.c) $(CONV_JPEG)
+# Its version, in the stamp it writes: a hash of the sources that decide
+# what it makes (not ps2.c and io.c: its screen and its files), so that any
+# change to them makes the data again at the game's next start
+CONV_MADE := $(addprefix $(HERE)/tools/ps2conv/,conv.h pk3.c snd.c bin.c map.c pak.c) $(CONV_JPEG)
+CONV_HASH := $(OUT)/ps2conv/hash.c
+$(CONV_HASH): FORCE
+	@mkdir -p $(dir $@)
+	@line="const char cv_hash[] = \"$$(cat $(CONV_MADE) | sha256sum | cut -c1-16)\";"; \
+	  [ "$$(cat $@ 2>/dev/null)" = "$$line" ] || echo "$$line" > $@
+FORCE:
+CONV_SRCS := $(addprefix $(HERE)/tools/ps2conv/,ps2.c io.c pk3.c snd.c bin.c map.c pak.c) $(CONV_JPEG) $(CONV_HASH)
 convert: $(OUT)/CONVERT.ELF
-$(OUT)/CONVERT.ELF: $(wildcard $(HERE)/tools/ps2conv/*.[ch])
+$(OUT)/CONVERT.ELF: $(wildcard $(HERE)/tools/ps2conv/*.[ch]) $(CONV_HASH)
 	$(MAKE) -C $(MXSHELL) app APP=q3convert APP_SRCS="$(CONV_SRCS)" \
 	        APP_CFLAGS="-DCV_PS2 -I$(HERE)/tools/ps2conv -I$(JPEG) -Wno-unused-parameter"
 	@mkdir -p $(dir $@)

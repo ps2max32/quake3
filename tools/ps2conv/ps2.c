@@ -18,7 +18,9 @@
                                 the game's directory, which the game's
                                 file system finds (fs_homepath ".")
      ps2/<game>/stamp           what they were made of: this converter's
-                                version, max, and each pak's name and size
+                                version (a hash of its sources that decide
+                                what it makes: any change to them makes all
+                                again), max, and each pak's name and size
 
    When the stamp says the same as the paks there now, it ends at once (status
    0) without a screen; else it makes all of it again. Status 0: done; 2:
@@ -46,7 +48,9 @@ u32 pad_pressed, pad_held;
 int screen;
 int pad_on; /* pn.h */
 
-#define VERSION 1
+/* its version: a hash of the sources that decide what it makes (the
+   Makefile's CONV_HASH, made at each build), in the stamp */
+extern const char cv_hash[];
 
 static char gamedir[128], game[16], outdir[64], title[48] = "Quake III Arena";
 static int maxside = 128;
@@ -56,7 +60,7 @@ static char stamp_now[2048];
 static void stamp_make(void) {
   int n;
   char *list = cv_list(gamedir, &n);
-  u32 at = (u32)mx_snprintf(stamp_now, sizeof stamp_now, "ps2conv %d\nmax %d\n", VERSION, maxside);
+  u32 at = (u32)mx_snprintf(stamp_now, sizeof stamp_now, "ps2conv %s\nmax %d\n", cv_hash, maxside);
   /* the paks in the order of their names */
   char *names[64];
   int k = 0;
