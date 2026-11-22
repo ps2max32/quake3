@@ -336,7 +336,7 @@ static struct mx_snd_sample *hw_sample_play(sfx_t *sfx, int loop, int *pending)
 	return NULL;
 }
 
-/* The sound's ADPCM: <name>.adp of the PS2's sound pak (tools/ps2snd.py:
+/* The sound's ADPCM: <name>.adp of the PS2's sound pak (tools/ps2conv/snd.c:
    "ADP1", the rate, the samples, then the blocks), else its file encoded
    here (a second of sound takes about 60 ms). */
 #define ADP_HEAD 12

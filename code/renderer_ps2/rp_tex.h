@@ -106,7 +106,7 @@ struct rp_image *rp_image_static(const char *name, u32 psm, u32 w, u32 h, u32 le
    its first use: its texels where the file has them, read into memory now
    (not by the first frame that draws it). bytes: its size is added. 0:
    none of that name. Without alpha of its own, its CLUT's alpha is the
-   lightmaps' brightness (tools/ps2bin.py): draw it with TEX0's TCC 0. */
+   lightmaps' brightness (tools/ps2conv/bin.c): draw it with TEX0's TCC 0. */
 struct rp_image *rp_image_bin(const char *name, u32 *bytes);
 /* An image with memory of its own: fill im->m.level[i] and im->m.clut (in
    the GS's order), then rp_image_ready. 0: no memory, or no image left. */

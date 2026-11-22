@@ -32,6 +32,7 @@
 #include <mx/hires.h>
 #include <mx/mem.h>
 #include <mx/mx.h>
+#include <mx/sif.h>
 #include <mx/vm.h>
 
 #include "rp_bin.h"
@@ -42,6 +43,8 @@
 #include "rp_sky.h"
 #include "rp_tex.h"
 #include "rp_world.h"
+
+void rp_data_path(char *path, int size, const char *file);
 
 refimport_t ri;
 static float scene_time; /* the scene's being drawn, for its shaders */
@@ -163,7 +166,7 @@ static void screen_init(void) {
 	          mx_hires_passes(), mx_hires_strip_height(), sbytes / 1024);
 	/* r_ps2texfine: the units (32 KB of GS memory, taken from the cache's) of
 	   the pool for the first levels of textures of 256 texels, for a file of
-	   images made with tools/ps2pak.py --max 256 (0, the default: none, they
+	   images made with max 256 (tools/ps2conv: CONVERT.ELF max=256) (0, the default: none, they
 	   are drawn from their level of 128; 8: the four to eight textures
 	   nearest the eye are as sharp as the PC's) */
 	rp_tex_fine_units((u32)ri.Cvar_Get("r_ps2texfine", "0", CVAR_ARCHIVE | CVAR_LATCH)->integer);
@@ -189,24 +192,40 @@ static void screen_init(void) {
 	/* the frames' chains: more frames wait to be shown at half the width
 	   (their passes take less), and the stream area's chains are more */
 	rp_list_init(width < 1920 || dyn_width || rp_tex_stream_pages() ? 1024 * 1024 : 768 * 1024);
-	/* the images and the models: two files beside the paks, mapped */
+	/* the images and the models: two files tools/ps2conv makes, mapped */
 	char path[MAX_OSPATH];
-	const char *base = ri.Cvar_Get("fs_basepath", "", 0)->string;
-	if (base[0] == '.' && base[1] == '/')
-		base += 2;
-	else if (base[0] == '.' && !base[1])
-		base = "";
-	/* the game's directory: baseq3, or the demo's demoq3 (+set com_basegame demoq3) */
-	const char *game = ri.Cvar_Get("com_basegame", BASEGAME, 0)->string;
-	Com_sprintf(path, sizeof path, "%s%s%s/ps2tex.bin", base, base[0] ? "/" : "", game);
+	rp_data_path(path, sizeof path, "ps2tex.bin");
 	if (rp_bin_open(&rp_bin_tex, path, 1) < 0)
-		ri.Error(ERR_FATAL, "ps2: no %s (tools/ps2bin.py makes it of ps2tex.pk3)", path);
-	Com_sprintf(path, sizeof path, "%s%s%s/ps2mdl.bin", base, base[0] ? "/" : "", game);
+		ri.Error(ERR_FATAL, "ps2: no %s (tools/ps2conv makes it: CONVERT.ELF, or ps2conv tex on the PC)", path);
+	rp_data_path(path, sizeof path, "ps2mdl.bin");
 	if (rp_bin_open(&rp_bin_mdl, path, 2) < 0)
-		ri.Error(ERR_FATAL, "ps2: no %s (tools/ps2bin.py makes it of the paks)", path);
+		ri.Error(ERR_FATAL, "ps2: no %s (tools/ps2conv makes it: CONVERT.ELF, or ps2conv mdl on the PC)", path);
 	ri.Printf(PRINT_ALL, "ps2: renderer: %u images (%u MB) and %u models (%u MB) mapped\n", rp_bin_tex.count,
 	          rp_bin_tex.size >> 20, rp_bin_mdl.count, rp_bin_mdl.size >> 20);
 	screen_on = 1;
+}
+
+/* A file tools/ps2conv makes of the game's data (file: ps2tex.bin, maps/q3dm1.pmap):
+   next to the game, ps2/<game>/<file> in fs_homepath (CONVERT.ELF, the game's setup on
+   the PS2), else beside the paks, <game>/<file> in fs_basepath (ps2conv on the PC, the
+   Makefile's pak and map). <game>: baseq3, or the demo's demoq3 (+set com_basegame
+   demoq3). A path without "./" (maxsdk's files take it as it is) */
+static const char *rp_dir(const char *cvar) {
+	const char *d = ri.Cvar_Get(cvar, "", 0)->string;
+	if (d[0] == '.' && d[1] == '/')
+		return d + 2;
+	return d[0] == '.' && !d[1] ? "" : d;
+}
+void rp_data_path(char *path, int size, const char *file) {
+	const char *game = ri.Cvar_Get("com_basegame", BASEGAME, 0)->string, *home = rp_dir("fs_homepath");
+	Com_sprintf(path, size, "%s%sps2/%s/%s", home, home[0] ? "/" : "", game, file);
+	int fd = mx_fio_open(path, MX_FIO_RDONLY);
+	if (fd >= 0) {
+		mx_fio_close(fd);
+		return;
+	}
+	const char *base = rp_dir("fs_basepath");
+	Com_sprintf(path, size, "%s%s%s/%s", base, base[0] ? "/" : "", game, file);
 }
 
 /* ---- the world ---------------------------------------------------------------------- */
@@ -2280,15 +2299,15 @@ static u32 world_passes(u32 mat, struct rp_state *pass, int *first) {
 }
 
 static void RP_LoadWorld(const char *name) {
-	char path[MAX_OSPATH], base[MAX_QPATH];
+	char path[MAX_OSPATH], base[MAX_QPATH + 8];
 	world_free();
 	marks_forget();
 	COM_StripExtension(name, base, sizeof base);
-	Com_sprintf(path, sizeof path, "%s/%s/%s.pmap", ri.Cvar_Get("fs_basepath", "", 0)->string,
-	            ri.Cvar_Get("com_basegame", BASEGAME, 0)->string, base);
-	world_map = mx_vm_map_file(path[0] == '.' && path[1] == '/' ? path + 2 : path, &world_size);
+	Q_strcat(base, sizeof base, ".pmap");
+	rp_data_path(path, sizeof path, base);
+	world_map = mx_vm_map_file(path, &world_size);
 	if (!world_map) {
-		ri.Printf(PRINT_WARNING, "ps2: renderer: no %s (tools/ps2map.py makes it): the world is not drawn\n", path);
+		ri.Printf(PRINT_WARNING, "ps2: renderer: no %s (tools/ps2conv makes it): the world is not drawn\n", path);
 		return;
 	}
 	if (rp_world_load(world_map, world_size) < 0) {

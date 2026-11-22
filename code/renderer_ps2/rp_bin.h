@@ -1,5 +1,5 @@
 /* rp_bin.h: the PS2 renderer's images and models as files mapped into memory
-   (rp_bin.c; tools/ps2bin.py makes them and has their layout). */
+   (rp_bin.c; tools/ps2conv/bin.c makes them and has their layout). */
 
 #ifndef RP_BIN_H
 #define RP_BIN_H

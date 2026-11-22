@@ -127,7 +127,7 @@ static struct rp_image *wtex[MAX_TEX], *wlm[MAX_LM];
 static u8 wfine[MAX_TEX]; /* the units a texture's first level takes in the pool of fine levels; 0: it has none */
 static int fine_on;       /* a texture of the map has */
 /* the lightmaps' CLUT for a surface without a texture (one with a texture
-   has it in its texture's CLUT, tools/ps2bin.py): entry 128 + i's alpha is
+   has it in its texture's CLUT, tools/ps2conv/bin.c): entry 128 + i's alpha is
    brightness i as the blend's factor (Cd * As, 0x80 is 1.0): twice the
    lightmap's value, the map's overbright range; in CSM1's order */
 static u32 lm_clut[256] MX_FAST_BSS MX_ALIGNED(64);

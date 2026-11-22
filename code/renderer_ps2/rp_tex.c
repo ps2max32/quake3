@@ -1,6 +1,6 @@
 /* rp_tex.c: the PS2 renderer's images. An image is a paletted texture (T8 or
    T4, its CLUT of 32-bit colours) with its MIPMAP levels, in memory: where a
-   mapped file has it (the file of images, tools/ps2bin.py; a map's lightmap
+   mapped file has it (the file of images, tools/ps2conv/bin.c; a map's lightmap
    pages, tools/ps2map.py), or in the renderer's heaps,
    the first levels pageable and the rest resident (<mx/vcache.h>: a texture
    whose first levels are paged out is drawn from the rest meanwhile).
@@ -448,7 +448,7 @@ struct rp_image *rp_image_bin(const char *name, u32 *bytes) {
 		*bytes += e->size;
 	/* its entry is in memory now, pinned (image_static): its levels under 32
 	   KiB and its CLUT. Its levels of 32 KiB or more lie on pages of their own
-	   after the entries (tools/ps2bin.py), read by the pager when a frame first
+	   after the entries (tools/ps2conv/bin.c), read by the pager when a frame first
 	   wants them (rp_image_place), not waited for. */
 	return im;
 }
@@ -521,7 +521,7 @@ u32 rp_image_luma(struct rp_image *im, int twice) {
 /* The CLUT of an image with alpha of its own for a surface that does not
    use that alpha and has a lightmap: its colours, and in the alpha of the
    entries 128 .. 255 the lightmaps' brightness (as the CLUT of an image
-   without alpha has it, tools/ps2bin.py), so that the texture and the
+   without alpha has it, tools/ps2conv/bin.c), so that the texture and the
    lightmap are drawn with one CLUT, from one vertex. A T4's 16 colours are
    the first 16 of the 256. Its block in GS memory for this frame, or 0. */
 u32 rp_image_opaque(struct rp_image *im) {

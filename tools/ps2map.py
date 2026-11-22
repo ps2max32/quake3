@@ -5,9 +5,9 @@
 
 Reads maps/MAP.bsp and the shader scripts from BASEQ3_DIR's pak*.pk3 (a later
 pak's file replaces an earlier one's) and the textures' sizes from
-ps2tex.pk3 (tools/ps2pak.py), and writes OUT.pmap: the map's drawn surfaces
+ps2tex.pk3 (tools/ps2conv/pak.c), and writes OUT.pmap: the map's drawn surfaces
 as chunks VU1 takes as they are. The textures themselves are the renderer's
-file of images (tools/ps2bin.py), found there by name. The file is mapped and locked on the PS2; the DMAC
+file of images (tools/ps2conv/bin.c), found there by name. The file is mapped and locked on the PS2; the DMAC
 reads the chunks where they lie, so everything it reads is 16-byte aligned.
 
 What is made of the BSP:
@@ -69,7 +69,7 @@ File layout (little-endian; "off" are bytes from the file's start):
     largest of R, G, B; 127 and more: 127, twice the texture's colour, the
     map's overbright range). It is drawn with the CLUT of the surface's
     texture, whose entries 128 .. 255 have that brightness as their alpha
-    (tools/ps2bin.py): the GS has one CLUT buffer, and two CLUTs by turns
+    (tools/ps2conv/bin.c): the GS has one CLUT buffer, and two CLUTs by turns
     would be loaded at every batch
   vis: ncluster rows of vis_bytes: bit g of row k set: the world's group g is
     seen from cluster k

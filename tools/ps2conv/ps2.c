@@ -1,0 +1,367 @@
+/* CONVERT.ELF: Quake 3's data made for the PS2 on the PS2 itself, the
+   game's setup= (MXSHELL starts it before the game, each time; mx-os.md,
+   "Packaging"). Its screen is the store's install screen: the game's cover
+   as a slab, the light filling it, the steps and a bar on the floor; Square
+   stops it.
+
+     CONVERT.ELF <data dir> [max=128|256]
+
+   The data directory is game.ini's data= ({data}): its baseq3 (the full
+   game, when it has pak0.pk3) or demoq3 (the demo). What it makes goes next
+   to the game (a game writes only there; the data directory is the user's):
+
+     ps2/<game>/ps2tex.pk3      the textures as .p8 (pak.c), max a side
+     ps2/<game>/ps2tex.bin      the renderer's file of images (bin.c)
+     ps2/<game>/ps2mdl.bin      its file of models
+     ps2/<game>/maps/<map>.pmap the maps (map.c)
+     <game>/ps2snd.pk3          the sounds as SPU ADPCM (snd.c): a pak of
+                                the game's directory, which the game's
+                                file system finds (fs_homepath ".")
+     ps2/<game>/stamp           what they were made of: this converter's
+                                version, max, and each pak's name and size
+
+   When the stamp says the same as the paks there now, it ends at once (status
+   0) without a screen; else it makes all of it again. Status 0: done; 2:
+   stopped by the user (nothing half made is used: the stamp is written
+   last); 1: failed (the screen says why until a button is pressed). */
+#include <GL/gl.h>
+#include <GL/glext.h>
+#include <mx/debug.h>
+#include <mx/loader.h>
+#include <mx/mx.h>
+#include <mx/pad.h>
+#include <mx/prof.h>
+#include <mx/sif.h>
+#include <mx/thread.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include "conv.h"
+#include "mxgl.h"
+#include "pn.h"
+
+MX_CORE_HEAP(512 << 10);
+
+u32 pad_pressed, pad_held;
+int screen;
+int pad_on; /* pn.h */
+
+#define VERSION 1
+
+static char gamedir[128], game[16], outdir[64], title[48] = "Quake III Arena";
+static int maxside = 128;
+static char stamp_now[2048];
+
+/* ---- the stamp ---- */
+static void stamp_make(void) {
+  int n;
+  char *list = cv_list(gamedir, &n);
+  u32 at = (u32)mx_snprintf(stamp_now, sizeof stamp_now, "ps2conv %d\nmax %d\n", VERSION, maxside);
+  /* the paks in the order of their names */
+  char *names[64];
+  int k = 0;
+  for (char *s = list; list && n-- && k < 64; s += strlen(s) + 1) {
+    u32 l = (u32)strlen(s);
+    if (l > 4 && (s[0] == 'p' || s[0] == 'P') && !strcmp(s + l - 4, ".pk3"))
+      names[k++] = s;
+  }
+  for (int i = 1; i < k; i++)
+    for (int j = i; j > 0 && strcmp(names[j - 1], names[j]) > 0; j--) {
+      char *t = names[j];
+      names[j] = names[j - 1], names[j - 1] = t;
+    }
+  for (int i = 0; i < k; i++) {
+    char p[192];
+    mx_snprintf(p, sizeof p, "%s/%s", gamedir, names[i]);
+    cv_file *f = cv_open(p, 0);
+    at += (u32)mx_snprintf(stamp_now + at, sizeof stamp_now - at, "%s %u\n", names[i], f ? cv_size(f) : 0);
+    cv_close(f);
+  }
+  free(list);
+}
+static int stamp_same(void) {
+  char p[96], buf[2048];
+  mx_snprintf(p, sizeof p, "%s/stamp", outdir);
+  cv_file *f = cv_open(p, 0);
+  if (!f)
+    return 0;
+  int n = cv_read(f, buf, sizeof buf - 1);
+  cv_close(f);
+  buf[n > 0 ? n : 0] = 0;
+  return !strcmp(buf, stamp_now);
+}
+
+/* ---- the work, on a thread of its own ---- */
+enum { ST_TEX, ST_SND, ST_MDL, ST_MAP, NSTEPS };
+static const char *const step_name[NSTEPS] = {"Textures", "Sounds", "Models", "Maps"};
+/* the share of the time each takes (measured on the PS2, the demo) */
+static const float step_share[NSTEPS] = {0.68f, 0.05f, 0.03f, 0.24f};
+static volatile int step = -1, finished, failed;
+static volatile u32 p_done, p_total;
+static char p_what[32], fail_msg[96];
+static int nmaps, map_at;
+static int prof_tex; /* tests: prof, the textures' profile (mx_prof) */
+
+static void progress(const char *what, u32 done, u32 total) {
+  mx_snprintf(p_what, sizeof p_what, "%s", what);
+  p_done = done, p_total = total;
+}
+
+static void work(void *arg) {
+  (void)arg;
+  char p[160], tex[160], s2[160];
+  cv_mkdir("ps2");
+  cv_mkdir(outdir);
+  /* the old stamp first away: what follows is half made until the new one */
+  mx_snprintf(p, sizeof p, "%s/stamp", outdir);
+  cv_remove(p);
+  mx_snprintf(tex, sizeof tex, "%s/ps2tex.pk3", outdir);
+  int r = 0;
+  step = ST_TEX;
+  if (prof_tex)
+    mx_prof_start(1000);
+  r = cv_pak(tex, gamedir, maxside);
+  if (prof_tex)
+    mx_prof_stop(), mx_prof_report(100);
+  if (!r) {
+    step = ST_SND;
+    cv_mkdir(game);
+    mx_snprintf(s2, sizeof s2, "%s/ps2snd.pk3", game);
+    r = cv_snd(s2, gamedir);
+  }
+  if (!r) {
+    step = ST_MDL;
+    mx_snprintf(p, sizeof p, "%s/ps2tex.bin", outdir);
+    r = cv_bin(p, 1, tex);
+    mx_snprintf(p, sizeof p, "%s/ps2mdl.bin", outdir);
+    if (!r)
+      r = cv_bin(p, 2, gamedir);
+  }
+  if (!r) {
+    step = ST_MAP;
+    pk3_set *s = pk3_open(gamedir);
+    mx_snprintf(p, sizeof p, "%s/maps", outdir);
+    cv_mkdir(p);
+    nmaps = 0;
+    for (int i = 0; s && i < pk3_count(s); i++) {
+      const char *n = pk3_name(s, i);
+      u32 l = (u32)strlen(n);
+      nmaps += !strncmp(n, "maps/", 5) && l > 9 && !strcmp(n + l - 4, ".bsp") && !strchr(n + 5, '/');
+    }
+    map_at = 0;
+    for (int i = 0; s && i < pk3_count(s) && !r; i++) {
+      const char *n = pk3_name(s, i);
+      u32 l = (u32)strlen(n);
+      if (strncmp(n, "maps/", 5) || l <= 9 || strcmp(n + l - 4, ".bsp") || strchr(n + 5, '/'))
+        continue;
+      char name[64];
+      mx_snprintf(name, sizeof name, "%.*s", (int)(l - 9), n + 5);
+      mx_snprintf(p, sizeof p, "%s/maps/%s.pmap", outdir, name);
+      if (cv_map(p, gamedir, name, tex))
+        r = cv_cancel ? -1 : 0, cv_log("%s: not made", name); /* one map that fails is not drawn: the rest goes on */
+      map_at++;
+    }
+    pk3_close(s);
+  }
+  if (!r) {
+    mx_snprintf(p, sizeof p, "%s/stamp", outdir);
+    cv_file *f = cv_open(p, 1);
+    if (!f || cv_write(f, stamp_now, (u32)strlen(stamp_now)))
+      r = -1;
+    cv_close(f);
+  }
+  if (r && !cv_cancel)
+    mx_snprintf(fail_msg, sizeof fail_msg, "%s could not be made (a full device?)", step >= 0 ? step_name[step] : "It");
+  failed = r != 0;
+  finished = 1;
+}
+
+/* ---- the game's cover (coverhd.t8: 256 x 361, the shell's format) ---- */
+static int cover_tex;
+static void cover_load(void) {
+  cv_file *f = cv_open("coverhd.t8", 0);
+  if (!f)
+    return;
+  u8 *buf = malloc(1024 + 256 * 512);
+  static u8 clut[1024];
+  if (!buf || cv_read(f, clut, 1024) != 1024 || cv_read(f, buf + 1024, 256 * 361) != 256 * 361) {
+    free(buf), cv_close(f);
+    return;
+  }
+  cv_close(f);
+  for (int k = 0; k < 256; k++) {
+    int at = (k & ~0x18) | (k & 8) << 1 | (k & 0x10) >> 1;
+    buf[4 * k] = clut[4 * at], buf[4 * k + 1] = clut[4 * at + 1], buf[4 * k + 2] = clut[4 * at + 2], buf[4 * k + 3] = 255;
+  }
+  memset(buf + 1024 + 256 * 361, buf[1024 + 256 * 360], 256 * (512 - 361));
+  GLuint t;
+  glGenTextures(1, &t);
+  glBindTexture(GL_TEXTURE_2D, t);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+  glCompressedTexImage2D(GL_TEXTURE_2D, 0, GL_PALETTE8_RGBA8_OES, 256, 512, 0, 1024 + 256 * 512, buf);
+  free(buf);
+  cover_tex = (int)t;
+}
+
+/* ---- the screen (the store's install screen) ---- */
+static float overall(void) {
+  float k = 0;
+  for (int i = 0; i < NSTEPS && i < step; i++)
+    k += step_share[i];
+  if (step >= 0 && step < NSTEPS) {
+    float in = step == ST_MAP ? (nmaps ? (map_at + (p_total ? (float)p_done / p_total : 0)) / nmaps : 0)
+                              : (p_total ? (float)p_done / p_total : 0);
+    k += step_share[step] * (in > 1 ? 1 : in);
+  }
+  return finished && !failed ? 1 : k;
+}
+
+static void draw(void) {
+  glClearColor((C_INK >> 16 & 255) / 255.0f, (C_INK >> 8 & 255) / 255.0f, (C_INK & 255) / 255.0f, 1);
+  glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+  room_begin(-1);
+  room_light(SCR_W * 0.5f, 240, 480, 300, 0.07f);
+  d_begin_2d();
+  room_draw();
+  d_rect(0, 0, SCR_W, SCR_H, argb(C_INK, 0.55f), argb(C_INK, 1));
+  /* the slab in the middle, the light filling it from below */
+  struct tile_look slab;
+  memset(&slab, 0, sizeof slab);
+  slab.w = 204, slab.h = 288, slab.x = SCR_W * 0.5f - 102, slab.y = 92, slab.lit = 1, slab.fade = 1;
+  slab.base = 0x1B232E;
+  if (cover_tex)
+    slab.tex = cover_tex, slab.tex_u = 1, slab.tex_v = 361.0f / 512.0f;
+  d_begin_3d();
+  light_at(SCR_W * 0.5f, 0);
+  d_tile(&slab);
+  d_begin_2d();
+  float k = overall();
+  d_rect(slab.x, slab.y + slab.h * (1 - 0.62f * k), slab.x + slab.w, slab.y + slab.h, argb(C_LAMP, 0.05f),
+         argb(C_LAMP, 0.22f));
+  char t[96], where[96];
+  int stopped = finished && cv_cancel;
+  mx_snprintf(t, sizeof t, "%s %s", stopped ? "Stopped:" : failed ? "Not ready:" : finished ? "Ready:" : "Preparing",
+              title);
+  float tw = d_text_w(FONT_TITLE, t);
+  d_text(FONT_TITLE, SCR_W * 0.5f - tw * 0.5f, 430, t, argb(C_WHITE, 1));
+  if (failed && !stopped)
+    mx_snprintf(where, sizeof where, "%s", fail_msg);
+  else if (stopped)
+    mx_snprintf(where, sizeof where, "Its data is made again at the next start");
+  else
+    mx_snprintf(where, sizeof where, "Its data made for the PS2, once%s%s", DOT,
+                !strcmp(game, "demoq3") ? "the demo" : "the full game");
+  tw = d_text_w(FONT_BODY, where);
+  d_text(FONT_BODY, SCR_W * 0.5f - tw * 0.5f, 462, where, argb(failed && !stopped ? C_WARN : C_DIM, 1));
+  /* the progress: the floor lit from the left */
+  float bx0 = SCR_W * 0.5f - 400, bx1 = SCR_W * 0.5f + 400;
+  if (SCR_W < 1100)
+    bx0 = MARGIN, bx1 = SCR_W - MARGIN;
+  d_bar(bx0, 500, bx1, 502, k, C_LAMP, 1);
+  d_glow(bx0 + (bx1 - bx0) * k, 501, 240, 60, argb(C_LAMP, 0.14f));
+  /* the steps */
+  float cw = (bx1 - bx0) / NSTEPS;
+  for (int i = 0; i < NSTEPS; i++) {
+    float sx = bx0 + cw * i;
+    int ph = finished && !failed ? NSTEPS : step;
+    int is_done = ph > i, now = ph == i && !finished;
+    u32 c = now ? C_LAMP : is_done ? C_WHITE : C_FAINT;
+    if (now)
+      d_glow(sx + 6, 532, 12, 12, argb(C_LAMP, 0.6f));
+    d_text(FONT_BODY, sx + (now || is_done ? 20 : 0), 538, step_name[i], argb(c, 1));
+    if (is_done)
+      d_ring(sx + 6, 532, 5, argb(C_WHITE, 0.9f));
+    char m[64] = "";
+    if (now && i == ST_MAP && nmaps)
+      mx_snprintf(m, sizeof m, "%s" DOT "%d of %d", p_what, map_at + 1 > nmaps ? nmaps : map_at + 1, nmaps);
+    else if (now && p_total)
+      mx_snprintf(m, sizeof m, "%u of %u", p_done, p_total);
+    d_text_fit(FONT_SMALL, FONT_LABEL, sx, 564, cw - 16, m, argb(C_FAINT, 1));
+  }
+  static const char *const h_run[] = {SYM_SQUARE, "Stop", 0};
+  static const char *const h_end[] = {SYM_CROSS, "Back", 0};
+  if (!finished)
+    hints_draw(h_run);
+  else if (failed)
+    hints_draw(h_end);
+  toast_draw();
+  mxgl_end_frame();
+  mxgl_frame_done();
+}
+
+static u8 stack[256 << 10] MX_ALIGNED(16) MX_IRQ_BSS; /* a thread stack: core */
+
+int main(int argc, char **argv) {
+  const char *data = ".";
+  for (int i = 1; i < argc; i++) {
+    if (!strncmp(argv[i], "max=", 4))
+      maxside = atoi(argv[i] + 4) >= 256 ? 256 : 128;
+    else if (!strcmp(argv[i], "prof"))
+      prof_tex = 1;
+    else
+      data = argv[i];
+  }
+  /* the game: baseq3 when it has pak0.pk3, else the demo's demoq3 */
+  mx_snprintf(gamedir, sizeof gamedir, "%s/baseq3/pak0.pk3", data);
+  cv_file *f = cv_open(gamedir, 0);
+  mx_snprintf(game, sizeof game, "%s", f ? "baseq3" : "demoq3");
+  cv_close(f);
+  mx_snprintf(gamedir, sizeof gamedir, "%s/%s", data, game);
+  mx_snprintf(outdir, sizeof outdir, "ps2/%s", game);
+  stamp_make();
+  if (stamp_same()) {
+    mx_printf("ps2conv: %s: made already\n", gamedir);
+    return 0;
+  }
+  mx_printf("ps2conv: %s: to be made (max %d)\n", gamedir, maxside);
+  /* the title from the game's own game.ini */
+  f = cv_open("game.ini", 0);
+  if (f) {
+    char buf[1024];
+    int n = cv_read(f, buf, sizeof buf - 1);
+    cv_close(f);
+    buf[n > 0 ? n : 0] = 0;
+    char *t = strstr(buf, "title=");
+    if (t && (t == buf || t[-1] == '\n')) {
+      t += 6;
+      u32 l = 0;
+      while (t[l] && t[l] != '\n' && t[l] != '\r' && l + 1 < sizeof title)
+        l++;
+      memcpy(title, t, l), title[l] = 0;
+    }
+  }
+  cfg_load();
+  mxgl_init();
+  pad_on = mx_pad_init() >= 0;
+  video_apply();
+  cover_load();
+  cv_progress = progress;
+  mx_thread_start(work, 0, stack, sizeof stack, mx_thread_prio(mx_thread_self()) + 1);
+  u32 end_at = 0;
+  for (;;) {
+    /* while it works, the screen about ten times a second (its frames take
+       the EE from the converter: a fifth of its time at sixty), ticks
+       counted as frames */
+    ticks += finished ? 1 : 6;
+    pad_pressed = pad_on ? mx_pad_pressed(0) | mx_pad_pressed(1) : 0;
+    toast_step();
+    if (!finished && (pad_pressed & MX_PAD_SQUARE))
+      cv_cancel = 1;
+    draw();
+    if (!finished)
+      mx_sleep_us(80000);
+    if (finished) {
+      if (cv_cancel)
+        return 2;
+      if (!failed) {
+        /* "Ready" a moment, then the game */
+        if (!end_at)
+          end_at = ticks;
+        if (ticks - end_at > 45)
+          return 0;
+      } else if (pad_pressed & (MX_PAD_CROSS | MX_PAD_CIRCLE))
+        return 1;
+    }
+  }
+}

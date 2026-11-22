@@ -846,7 +846,7 @@ done:
 
 #ifdef __PS2__
 /*
-The PS2's pak (tools/ps2pak.py): <name>.p8, a mipmapped image as
+The PS2's pak (tools/ps2conv/pak.c): <name>.p8, a mipmapped image as
 GL_OES_compressed_paletted_texture (its own palette, 8 or 4 bits a texel,
 its levels), behind a header. Uploaded with one glCompressedTexImage2D from
 the level Upload32 would start at (powers of two, picmip, the largest

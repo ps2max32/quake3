@@ -435,7 +435,7 @@ static const void *setup_chain(const struct rp_state *s, int cut, int state) {
 	   second time is made up for: the pass adds 6, as its own colour (the
 	   fog's, with the fog's share at 0: the lightmap's texels have no colour
 	   of their own). The first time: the images' palettes are 4 brighter
-	   (tools/ps2bin.py). */
+	   (tools/ps2conv/bin.c). */
 	int lmadd = lit && s->blend == RP_BLEND_NONE && !(rp_debug & 2097152);
 	int menv = s->prog == RP_PROG_MODEL && s->menv;
 	u32 entry = menv                       ? (cut ? Q3MEC_SETUP : Q3ME_SETUP)

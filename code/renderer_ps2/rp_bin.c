@@ -1,5 +1,5 @@
 /* rp_bin.c: the files of images and of models the renderer maps into memory
-   (tools/ps2bin.py). A page of them is read from the file when it is first
+   (tools/ps2conv/bin.c). A page of them is read from the file when it is first
    touched and costs no write to give up: nothing of them is loaded or
    copied when a map starts. */
 

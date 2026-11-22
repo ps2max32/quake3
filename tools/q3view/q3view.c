@@ -151,7 +151,7 @@ int main(int argc, char **argv) {
 	rp_list_init();
 	/* the textures: the game's file of images, beside the game's data */
 	if (rp_bin_open(&rp_bin_tex, "baseq3/ps2tex.bin", 1) < 0)
-		mx_printf("q3view: no baseq3/ps2tex.bin (tools/ps2bin.py): the map is drawn without textures\n");
+		mx_printf("q3view: no baseq3/ps2tex.bin (tools/ps2conv/bin.c): the map is drawn without textures\n");
 	if (rp_world_load(map, msize) < 0) {
 		mx_printf("q3view: %s is not a map of this version\n", mapname);
 		MX_TEST_END(1);

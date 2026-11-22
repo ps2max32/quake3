@@ -5,13 +5,15 @@
 #                        build/pcsx2-test/baseq3 (Q3DATA: the retail
 #                        baseq3 directory, copied there once)
 #   make pak             build/pcsx2-test/baseq3/ps2tex.pk3: the textures
-#                        as 8-bit paletted ones (tools/ps2pak.py), and
-#                        ps2snd.pk3: the sounds as SPU ADPCM (tools/ps2snd.py);
-#                        for REN=ps2 also ps2tex.bin and ps2mdl.bin, the
-#                        images and the models as files it maps
-#                        (tools/ps2bin.py)
+#                        as 8-bit paletted ones, and ps2snd.pk3: the
+#                        sounds as SPU ADPCM; for REN=ps2 also ps2tex.bin
+#                        and ps2mdl.bin, the images and the models as files
+#                        it maps (all by tools/ps2conv on the PC)
 #   make map MAP=<name>  build/pcsx2-test/baseq3/maps/<name>.pmap: a map as
-#                        REN=ps2 draws it (tools/ps2map.py)
+#                        REN=ps2 draws it (tools/ps2conv)
+#   make convert         $(OUT)/CONVERT.ELF: tools/ps2conv on the PS2, the
+#                        game's setup= (all of the above, made of the
+#                        user's data, with a progress screen)
 #
 # The engine (qcommon, server, client, botlib, renderergl1) is linked with
 # the game modules (game, cgame, q3_ui) built natively: each module is
@@ -245,28 +247,47 @@ else
 	$(PCSX2_RUN) $(OUT)/quake3.elf $(or $(TIMEOUT),600)
 endif
 
-# the textures as 8-bit paletted ones (tools/ps2pak.py; the renderer takes a
-# mipmapped image's .p8 before the original): a pk3 next to the paks
+# The game's data made for the PS2 by tools/ps2conv (C: the same code the
+# PS2 runs, below): the textures as 8-bit paletted ones (the renderer takes a
+# mipmapped image's .p8 before the original, TEXMAX texels a side at most)
+# and the sounds as ADPCM, pks next to the paks
+PS2CONV := $(PS2MAX)/build/apps/quake3/ps2conv/ps2conv
+$(PS2CONV): $(wildcard $(HERE)/tools/ps2conv/*.[ch])
+	$(MAKE) -C $(HERE)/tools/ps2conv
+TEXMAX ?= 128
 pak: $(RUNDIR)/baseq3/ps2tex.pk3 $(RUNDIR)/baseq3/ps2snd.pk3 $(RUNDIR)/baseq3/ps2tex.bin $(RUNDIR)/baseq3/ps2mdl.bin
-$(RUNDIR)/baseq3/ps2tex.pk3: $(HERE)/tools/ps2pak.py
+$(RUNDIR)/baseq3/ps2tex.pk3: $(PS2CONV)
 	@mkdir -p $(RUNDIR)/baseq3
-	python3 $(HERE)/tools/ps2pak.py $@ "$(Q3DATA)"
-$(RUNDIR)/baseq3/ps2snd.pk3: $(HERE)/tools/ps2snd.py
+	$(PS2CONV) pak $@ "$(Q3DATA)" $(TEXMAX)
+$(RUNDIR)/baseq3/ps2snd.pk3: $(PS2CONV)
 	@mkdir -p $(RUNDIR)/baseq3
-	python3 $(HERE)/tools/ps2snd.py $@ "$(Q3DATA)"
+	$(PS2CONV) snd $@ "$(Q3DATA)"
 
 # REN=ps2's files: the images and the models as it maps them, a map as it
 # draws it
-$(RUNDIR)/baseq3/ps2tex.bin: $(RUNDIR)/baseq3/ps2tex.pk3 $(HERE)/tools/ps2bin.py
-	python3 $(HERE)/tools/ps2bin.py tex $@ $<
-$(RUNDIR)/baseq3/ps2mdl.bin: $(HERE)/tools/ps2bin.py
+$(RUNDIR)/baseq3/ps2tex.bin: $(RUNDIR)/baseq3/ps2tex.pk3 $(PS2CONV)
+	$(PS2CONV) tex $@ $<
+$(RUNDIR)/baseq3/ps2mdl.bin: $(PS2CONV)
 	@mkdir -p $(RUNDIR)/baseq3
-	python3 $(HERE)/tools/ps2bin.py mdl $@ "$(Q3DATA)"
+	$(PS2CONV) mdl $@ "$(Q3DATA)"
 MAP ?= q3dm6
 map: $(RUNDIR)/baseq3/maps/$(MAP).pmap
-$(RUNDIR)/baseq3/maps/$(MAP).pmap: $(HERE)/tools/ps2map.py $(RUNDIR)/baseq3/ps2tex.pk3
+$(RUNDIR)/baseq3/maps/$(MAP).pmap: $(PS2CONV) $(RUNDIR)/baseq3/ps2tex.pk3
 	@mkdir -p $(dir $@)
-	python3 $(HERE)/tools/ps2map.py $@ "$(Q3DATA)" $(MAP) --tex $(RUNDIR)/baseq3/ps2tex.pk3
+	$(PS2CONV) map $@ "$(Q3DATA)" $(MAP) $(RUNDIR)/baseq3/ps2tex.pk3
+
+# CONVERT.ELF: the same converter on the PS2, the game's setup= (game.ini):
+# the user's data made there at the first start, on the store's install
+# screen (MXSHELL's drawing: its `app` target builds it)
+MXSHELL ?= $(PS2MAX)/apps/mxshell
+CONV_JPEG := $(filter-out %/jmemansi.c %/jmemdos.c %/jmemmac.c %/jmemname.c,$(wildcard $(JPEG)/j*.c))
+CONV_SRCS := $(addprefix $(HERE)/tools/ps2conv/,ps2.c io.c pk3.c snd.c bin.c map.c pak.c) $(CONV_JPEG)
+convert: $(OUT)/CONVERT.ELF
+$(OUT)/CONVERT.ELF: $(wildcard $(HERE)/tools/ps2conv/*.[ch])
+	$(MAKE) -C $(MXSHELL) app APP=q3convert APP_SRCS="$(CONV_SRCS)" \
+	        APP_CFLAGS="-DCV_PS2 -I$(HERE)/tools/ps2conv -I$(JPEG) -Wno-unused-parameter"
+	@mkdir -p $(dir $@)
+	$(LLVM)/llvm-strip -o $@ $(PS2MAX)/build/apps/mxshell/app/q3convert.elf
 
 clean:
 	rm -rf $(OUT)

@@ -4,8 +4,8 @@
    lit by the light grid on a model, blended with the vertex colours on the
    screen.
 
-   The images are the file of images' (rp_bin.c; tools/ps2bin.py makes it of
-   tools/ps2pak.py's pak: paletted, with their MIPMAP levels); one that is
+   The images are the file of images' (rp_bin.c; tools/ps2conv/bin.c makes it of
+   tools/ps2conv/pak.c's pak: paletted, with their MIPMAP levels); one that is
    not in it is not drawn.
 
    The GS blends (A - B) * C + D with C an alpha: the script's blends are
