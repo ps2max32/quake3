@@ -280,6 +280,8 @@ $(RUNDIR)/baseq3/maps/$(MAP).pmap: $(PS2CONV) $(RUNDIR)/baseq3/ps2tex.pk3
 # the user's data made there at the first start, on the store's install
 # screen (MXSHELL's drawing: its `app` target builds it)
 MXSHELL ?= $(PS2MAX)/apps/mxshell
+# its build directory, given to its make (an OUT given here would reach it too)
+MXSHELL_OUT ?= $(PS2MAX)/build/apps/mxshell
 CONV_JPEG := $(filter-out %/jmemansi.c %/jmemdos.c %/jmemmac.c %/jmemname.c,$(wildcard $(JPEG)/j*.c))
 # Its version, in the stamp it writes: a hash of the sources that decide
 # what it makes (not ps2.c and io.c: its screen and its files), so that any
@@ -294,10 +296,10 @@ FORCE:
 CONV_SRCS := $(addprefix $(HERE)/tools/ps2conv/,ps2.c io.c pk3.c snd.c bin.c map.c pak.c) $(CONV_JPEG) $(CONV_HASH)
 convert: $(OUT)/CONVERT.ELF
 $(OUT)/CONVERT.ELF: $(wildcard $(HERE)/tools/ps2conv/*.[ch]) $(CONV_HASH)
-	$(MAKE) -C $(MXSHELL) app APP=q3convert APP_SRCS="$(CONV_SRCS)" \
+	$(MAKE) -C $(MXSHELL) OUT=$(MXSHELL_OUT) app APP=q3convert APP_SRCS="$(CONV_SRCS)" \
 	        APP_CFLAGS="-DCV_PS2 -I$(HERE)/tools/ps2conv -I$(JPEG) -Wno-unused-parameter"
 	@mkdir -p $(dir $@)
-	$(LLVM)/llvm-strip -o $@ $(PS2MAX)/build/apps/mxshell/app/q3convert.elf
+	$(LLVM)/llvm-strip -o $@ $(MXSHELL_OUT)/app/q3convert.elf
 
 # The store's packages (ps2max32/store docs/index-format.md, "The package"),
 # released by the CI on a tag v*: quake3-gl (renderergl1 on libgl) and
