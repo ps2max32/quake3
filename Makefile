@@ -299,9 +299,25 @@ $(OUT)/CONVERT.ELF: $(wildcard $(HERE)/tools/ps2conv/*.[ch]) $(CONV_HASH)
 	@mkdir -p $(dir $@)
 	$(LLVM)/llvm-strip -o $@ $(PS2MAX)/build/apps/mxshell/app/q3convert.elf
 
+# The store's packages (ps2max32/store docs/index-format.md, "The package"),
+# released by the CI on a tag v*: quake3-gl (renderergl1 on libgl) and
+# quake3-ps2 (the PS2's own renderer), each <id>/ with quake3.elf,
+# CONVERT.ELF (its setup=) and code/ps2/game.ini; no game data
+PKG_DIR := $(OUT)/pkg
+package:
+	$(MAKE) REN=gl1 OUT=$(OUT)/gl $(OUT)/gl/quake3.elf
+	$(MAKE) REN=ps2 OUT=$(OUT)/ps2 $(OUT)/ps2/quake3.elf
+	$(MAKE) OUT=$(OUT) $(OUT)/CONVERT.ELF
+	for v in gl ps2; do \
+	  d=$(PKG_DIR)/quake3-$$v; rm -rf $$d && mkdir -p $$d && \
+	  $(LLVM)/llvm-strip -o $$d/quake3.elf $(OUT)/$$v/quake3.elf && \
+	  cp $(OUT)/CONVERT.ELF $(HERE)/code/ps2/game.ini $$d/ && \
+	  (cd $(PKG_DIR) && rm -f $(OUT)/quake3-$$v-ps2max.zip && python3 -c 'import sys, os, zipfile; z = zipfile.ZipFile(sys.argv[1], "w", zipfile.ZIP_DEFLATED); [z.write(os.path.join(d, f)) for d, _, fs in sorted(os.walk(sys.argv[2])) for f in sorted(fs)]; z.close()' $(OUT)/quake3-$$v-ps2max.zip quake3-$$v) || exit 1; \
+	done
+
 clean:
 	rm -rf $(OUT)
 
-.PHONY: all run pak map clean
+.PHONY: all run pak map clean package convert
 
 -include $(shell find $(OUT) -name '*.d' 2>/dev/null)

@@ -11,19 +11,22 @@
    demoq3, the demo), without it baseq3 when it has pak0.pk3, else demoq3. What it makes goes next
    to the game (a game writes only there; the data directory is the user's):
 
-     ps2/<game>/ps2tex.pk3      the textures as .p8 (pak.c), max a side
-     ps2/<game>/ps2tex.bin      the renderer's file of images (bin.c)
+     <game>/ps2tex.pk3          the textures as .p8 (pak.c), max a side:
+                                for renderergl1 (Quake 3 GL), which takes a
+                                .p8 before the original
+     <game>/ps2snd.pk3          the sounds as SPU ADPCM (snd.c)
+                                (both paks of the game's directory, which
+                                the game's file system finds: fs_homepath ".")
+     ps2/<game>/ps2tex.bin      renderer_ps2's file of images (bin.c)
      ps2/<game>/ps2mdl.bin      its file of models
      ps2/<game>/maps/<map>.pmap the maps (map.c)
-     <game>/ps2snd.pk3          the sounds as SPU ADPCM (snd.c): a pak of
-                                the game's directory, which the game's
-                                file system finds (fs_homepath ".")
      ps2/<game>/stamp           what they were made of: this converter's
                                 version (a hash of its sources that decide
                                 what it makes: any change to them makes all
                                 again), max, and each pak's name and size
 
-   When the stamp says the same as the paks there now, it ends at once (status
+   When the stamp says the same as the paks there now and what it made is
+   there, it ends at once (status
    0) without a screen; else it makes all of it again. Status 0: done; 2:
    stopped by the user (nothing half made is used: the stamp is written
    last); 1: failed (the screen says why until a button is pressed). */
@@ -53,7 +56,7 @@ int pad_on; /* pn.h */
    Makefile's CONV_HASH, made at each build), in the stamp */
 extern const char cv_hash[];
 
-static char gamedir[128], game[16], outdir[64], title[48] = "Quake III Arena";
+static char gamedir[128], game[16], outdir[64], title[48] = "Quake III Arena", version_name[24];
 static int maxside = 128;
 static char stamp_now[2048];
 
@@ -93,7 +96,24 @@ static int stamp_same(void) {
   int n = cv_read(f, buf, sizeof buf - 1);
   cv_close(f);
   buf[n > 0 ? n : 0] = 0;
-  return !strcmp(buf, stamp_now);
+  if (strcmp(buf, stamp_now))
+    return 0;
+  /* and what it made is there (an older converter put it elsewhere) */
+  static const char *const made[] = {"%s/ps2tex.pk3", "%s/ps2snd.pk3", 0};
+  for (int i = 0; made[i]; i++) {
+    mx_snprintf(p, sizeof p, made[i], game);
+    if (!(f = cv_open(p, 0)))
+      return 0;
+    cv_close(f);
+  }
+  static const char *const made2[] = {"%s/ps2tex.bin", "%s/ps2mdl.bin", 0};
+  for (int i = 0; made2[i]; i++) {
+    mx_snprintf(p, sizeof p, made2[i], outdir);
+    if (!(f = cv_open(p, 0)))
+      return 0;
+    cv_close(f);
+  }
+  return 1;
 }
 
 /* ---- the work, on a thread of its own ---- */
@@ -106,6 +126,11 @@ static volatile u32 p_done, p_total;
 static char p_what[32], fail_msg[96];
 static int nmaps, map_at;
 static int prof_tex; /* tests: prof, the textures' profile (mx_prof) */
+/* tests: shot=<frames>, the screen to host:convert.tga after that many
+   frames, then stopped (status 2); here=<dir>, game.ini and coverhd.t8
+   read from there (the shell starts it in the game's directory) */
+static int shot_at;
+static const char *here = "";
 
 static void progress(const char *what, u32 done, u32 total) {
   mx_snprintf(p_what, sizeof p_what, "%s", what);
@@ -120,7 +145,11 @@ static void work(void *arg) {
   /* the old stamp first away: what follows is half made until the new one */
   mx_snprintf(p, sizeof p, "%s/stamp", outdir);
   cv_remove(p);
-  mx_snprintf(tex, sizeof tex, "%s/ps2tex.pk3", outdir);
+  /* an older converter's place of the textures' pak */
+  mx_snprintf(p, sizeof p, "%s/ps2tex.pk3", outdir);
+  cv_remove(p);
+  cv_mkdir(game);
+  mx_snprintf(tex, sizeof tex, "%s/ps2tex.pk3", game);
   int r = 0;
   step = ST_TEX;
   if (prof_tex)
@@ -130,7 +159,6 @@ static void work(void *arg) {
     mx_prof_stop(), mx_prof_report(100);
   if (!r) {
     step = ST_SND;
-    cv_mkdir(game);
     mx_snprintf(s2, sizeof s2, "%s/ps2snd.pk3", game);
     r = cv_snd(s2, gamedir);
   }
@@ -184,7 +212,9 @@ static void work(void *arg) {
 /* ---- the game's cover (coverhd.t8: 256 x 361, the shell's format) ---- */
 static int cover_tex;
 static void cover_load(void) {
-  cv_file *f = cv_open("coverhd.t8", 0);
+  char cp[160];
+  mx_snprintf(cp, sizeof cp, "%scoverhd.t8", here);
+  cv_file *f = cv_open(cp, 0);
   if (!f)
     return;
   u8 *buf = malloc(1024 + 256 * 512);
@@ -241,22 +271,25 @@ static void draw(void) {
   light_at(SCR_W * 0.5f, 0);
   d_tile(&slab);
   d_begin_2d();
+  if (!slab.tex) /* without a cover: its title on the slab, as the shelf's tile */
+    d_text_fit(FONT_TITLE, FONT_BODY, slab.x + 16, slab.y + slab.h - 22, slab.w - 32, title, argb(C_WHITE, 1));
   float k = overall();
   d_rect(slab.x, slab.y + slab.h * (1 - 0.62f * k), slab.x + slab.w, slab.y + slab.h, argb(C_LAMP, 0.05f),
          argb(C_LAMP, 0.22f));
-  char t[96], where[96];
+  /* the game and its data's version; what is going on */
+  char t[96], where[128];
   int stopped = finished && cv_cancel;
-  mx_snprintf(t, sizeof t, "%s %s", stopped ? "Stopped:" : failed ? "Not ready:" : finished ? "Ready:" : "Preparing",
-              title);
+  mx_snprintf(t, sizeof t, "%s" DOT "%s", title, version_name);
   float tw = d_text_w(FONT_TITLE, t);
   d_text(FONT_TITLE, SCR_W * 0.5f - tw * 0.5f, 430, t, argb(C_WHITE, 1));
   if (failed && !stopped)
-    mx_snprintf(where, sizeof where, "%s", fail_msg);
+    mx_snprintf(where, sizeof where, "Not ready: %s", fail_msg);
   else if (stopped)
-    mx_snprintf(where, sizeof where, "Its data is made again at the next start");
+    mx_snprintf(where, sizeof where, "Stopped" DOT "optimized again at the next start");
+  else if (finished)
+    mx_snprintf(where, sizeof where, "Optimized for PS2");
   else
-    mx_snprintf(where, sizeof where, "Its data made for the PS2, once%s%s", DOT,
-                !strcmp(game, "demoq3") ? "the demo" : "the full game");
+    mx_snprintf(where, sizeof where, "Optimizing for PS2" DOT "once, before its first start");
   tw = d_text_w(FONT_BODY, where);
   d_text(FONT_BODY, SCR_W * 0.5f - tw * 0.5f, 462, where, argb(failed && !stopped ? C_WARN : C_DIM, 1));
   /* the progress: the floor lit from the left */
@@ -305,6 +338,10 @@ int main(int argc, char **argv) {
       maxside = atoi(argv[i] + 4) >= 256 ? 256 : 128;
     else if (!strcmp(argv[i], "prof"))
       prof_tex = 1;
+    else if (!strncmp(argv[i], "shot=", 5))
+      shot_at = atoi(argv[i] + 5);
+    else if (!strncmp(argv[i], "here=", 5))
+      here = argv[i] + 5;
     else if (npos++ == 0)
       data = argv[i];
     else
@@ -324,26 +361,46 @@ int main(int argc, char **argv) {
   mx_snprintf(gamedir, sizeof gamedir, "%s/%s", data, game);
   mx_snprintf(outdir, sizeof outdir, "ps2/%s", game);
   stamp_make();
-  if (stamp_same()) {
+  if (!shot_at && stamp_same()) {
     mx_printf("ps2conv: %s: made already\n", gamedir);
     return 0;
   }
   mx_printf("ps2conv: %s: to be made (max %d)\n", gamedir, maxside);
-  /* the title from the game's own game.ini */
-  f = cv_open("game.ini", 0);
+  /* the version's name: game.ini's versions= ("<name>:<file>:<word>"),
+     else these */
+  mx_snprintf(version_name, sizeof version_name, "%s", !strcmp(game, "demoq3") ? "Demo" : "Full game");
+  /* the title and the version from the game's own game.ini (its directory
+     is where the shell starts this; a game.ini without setup=CONVERT.ELF
+     is not Quake 3's) */
+  char ip[160];
+  mx_snprintf(ip, sizeof ip, "%sgame.ini", here);
+  f = cv_open(ip, 0);
   if (f) {
-    char buf[1024];
+    static char buf[2048];
     int n = cv_read(f, buf, sizeof buf - 1);
     cv_close(f);
     buf[n > 0 ? n : 0] = 0;
     char *t = strstr(buf, "title=");
-    if (t && (t == buf || t[-1] == '\n')) {
+    if (strstr(buf, "setup=CONVERT.ELF") && t && (t == buf || t[-1] == '\n')) {
       t += 6;
       u32 l = 0;
       while (t[l] && t[l] != '\n' && t[l] != '\r' && l + 1 < sizeof title)
         l++;
       memcpy(title, t, l), title[l] = 0;
     }
+    char *v = strstr(buf, "versions=");
+    if (strstr(buf, "setup=CONVERT.ELF") && v && (v == buf || v[-1] == '\n'))
+      for (v += 9; *v && *v != '\n' && *v != '\r';) {
+        char *c1 = strchr(v, ':'), *c2 = c1 ? strchr(c1 + 1, ':') : 0;
+        if (!c2)
+          break;
+        u32 wl = (u32)strcspn(c2 + 1, ",\r\n");
+        if (wl == strlen(game) && !strncmp(c2 + 1, game, wl))
+          mx_snprintf(version_name, sizeof version_name, "%.*s", (int)(c1 - v), v);
+        v = c2 + 1 + wl;
+        if (*v == ',')
+          v++;
+      }
   }
   cfg_load();
   mxgl_init();
@@ -363,6 +420,11 @@ int main(int argc, char **argv) {
     if (!finished && (pad_pressed & MX_PAD_SQUARE))
       cv_cancel = 1;
     draw();
+    if (shot_at && ticks / 6 == (u32)shot_at) {
+      int r = mxgl_screenshot("host:convert.tga");
+      mx_printf("ps2conv: shot %d\n", r);
+      return 2; /* at once, as the shell's and the store's shot= */
+    }
     if (!finished)
       mx_sleep_us(80000);
     if (finished) {

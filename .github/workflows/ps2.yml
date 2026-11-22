@@ -1,7 +1,9 @@
 # .github/workflows/ps2.yml of ps2max32/quake3 (template: ci/app.yml of ps2max32/docker).
 # Builds with the commits its ps2max.deps names (LLVM, maxsdk, ...), through
-# the reusable build of ps2max32/docker. Every push and PR: the game as an
-# artifact; a tag v*: also a GitHub release with it.
+# the reusable build of ps2max32/docker. Every push and PR: the store's
+# packages quake3-gl and quake3-ps2 (make package: each with CONVERT.ELF,
+# built on MXSHELL's drawing) as an artifact; a tag v*: also a GitHub
+# release with them.
 name: ps2
 
 on:
@@ -16,6 +18,5 @@ jobs:
   ps2:
     uses: ps2max32/docker/.github/workflows/build.yml@main
     with:
-      artifacts: |
-        out/*.elf
-        out/*.hog
+      build: make -j$(nproc) OUT=$PWD/out package
+      artifacts: out/*-ps2max.zip
