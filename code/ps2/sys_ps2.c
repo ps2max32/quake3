@@ -449,7 +449,6 @@ void IN_Restart(void) {}
                          host:quake3.trc: off */
 #endif
 const struct mx_vm_config mx_vm_config = {
-	.swap = "quake3.swp",
 	/* no core heap: libgl's pinned memory (arenas, lists, textures; beam
 	   racing's records while it is on) is frames taken from the pool as
 	   needed, the rest of RAM VM's pages (Quake 3 waits on the swap file) */

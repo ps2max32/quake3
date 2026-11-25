@@ -59,9 +59,7 @@ REN_CFLAGS := -DPS2_REN_PS2
 # its VU1 programs (tools/ps2vu.py writes code/renderer_ps2/vu/q3vu.vsm)
 VSM_DIRS   += $(HERE)/code/renderer_ps2/vu
 endif
-# the program in VM (ld/maxsdk-vm.ld), started by mxlink; MX_MEMORY=phys:
-# all of it in physical memory (32 MiB, no VM in PCSX2's recompiler)
-MX_MEMORY ?= vm
+# an MXOS program: in VM (ld/maxsdk-vm.ld), started by the kernel (apps/mxos)
 include $(MAXSDK)/mk/maxsdk.mk
 # in VM: Quake III in VM, libgl in core
 ifeq ($(REN),gl1)
@@ -240,12 +238,8 @@ run: $(OUT)/quake3.elf
 	@mkdir -p $(RUNDIR)/baseq3
 	@for f in "$(Q3DATA)"/pak*.pk3; do \
 	  [ -f "$(RUNDIR)/baseq3/$$(basename "$$f")" ] || cp -v "$$f" $(RUNDIR)/baseq3/; done
-ifeq ($(MX_MEMORY),vm)
 	cp $(OUT)/quake3.elf $(RUNDIR)/quake3.elf && echo "host:quake3.elf" > $(RUNDIR)/mxload.txt
 	PCSX2_EE=interp $(PCSX2_RUN) $(MX_LOADER) $(or $(TIMEOUT),1800)
-else
-	$(PCSX2_RUN) $(OUT)/quake3.elf $(or $(TIMEOUT),600)
-endif
 
 # The game's data made for the PS2 by tools/ps2conv (C: the same code the
 # PS2 runs, below): the textures as 8-bit paletted ones (the renderer takes a
