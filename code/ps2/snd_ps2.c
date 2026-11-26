@@ -186,6 +186,16 @@ static qboolean hw_evict(const sfx_t *keep)
 	return qtrue;
 }
 
+/* sfx's sample is in SPU RAM no more: another program in front wrote it
+   (the kernel gives SPU RAM to the process in front). It is copied again as
+   one that was never there (not while a copy is made). */
+static void hw_drop_lost(struct mx_snd_sample *s)
+{
+	hw_bytes -= s->size;
+	mx_snd_free(s);
+	Com_Memset(s, 0, sizeof *s);
+}
+
 /* A copy into SPU RAM while the game plays is made by a thread of its own
    (s_ps2async 1, the default): the IOP takes about 3 ms for each 4 KB of
    it and the game slept through that, a frame or two at a sound's first
@@ -286,8 +296,10 @@ static struct mx_snd_sample *hw_sample(sfx_t *sfx, int loop)
 {
 	struct mx_snd_sample *s = SAMPLE(sfx, loop);
 	hw_job_wait();
-	if (s->spu)
+	if (s->spu && !mx_snd_lost(s))
 		return s;
+	if (s->spu)
+		hw_drop_lost(s);
 	if (!sfx->ps2Adpcm || sfx->ps2Bytes < 16)
 		return NULL;
 	int t0 = Sys_Milliseconds();
@@ -319,8 +331,15 @@ static struct mx_snd_sample *hw_sample_play(sfx_t *sfx, int loop, int *pending)
 	*pending = 0;
 	if (hw_job.thread <= 0)
 		return hw_sample(sfx, loop);
-	if (s->spu)
+	if (s->spu && !mx_snd_lost(s))
 		return s;
+	if (s->spu) {
+		if (hw_job.sfx) {
+			*pending = 1;
+			return NULL;
+		}
+		hw_drop_lost(s);
+	}
 	if (!sfx->ps2Adpcm || sfx->ps2Bytes < 16)
 		return NULL;
 	if (hw_job.failed == sfx) {
