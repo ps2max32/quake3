@@ -41,19 +41,23 @@ void rp_bin_touch(const void *p, u32 bytes) {
 	(void)sum;
 }
 
-const struct rp_bin_entry *rp_bin_find(const struct rp_bin *b, const char *name) {
-	u32 lo = 0, hi = b->count;
-	while (lo < hi) {
-		u32 mid = (lo + hi) / 2;
-		const u8 *a = (const u8 *)b->index[mid].name, *n = (const u8 *)name;
-		while (*a && *a == *n)
-			a++, n++;
-		if (*a == *n)
-			return &b->index[mid];
-		if (*a < *n)
-			lo = mid + 1;
-		else
-			hi = mid;
+const struct rp_bin_entry *rp_bin_find(const struct rp_bin *b, const char *name, const struct rp_bin **in) {
+	for (; b; b = b->under) {
+		u32 lo = 0, hi = b->base ? b->count : 0;
+		while (lo < hi) {
+			u32 mid = (lo + hi) / 2;
+			const u8 *a = (const u8 *)b->index[mid].name, *n = (const u8 *)name;
+			while (*a && *a == *n)
+				a++, n++;
+			if (*a == *n) {
+				*in = b;
+				return &b->index[mid];
+			}
+			if (*a < *n)
+				lo = mid + 1;
+			else
+				hi = mid;
+		}
 	}
 	return 0;
 }

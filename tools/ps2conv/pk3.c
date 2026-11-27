@@ -1,6 +1,6 @@
-/* The paks: read (all pak*.pk3 of a directory in the order of their names,
-   a later one's file over an earlier one's, as the game's file system), and
-   written (stored, no compression). */
+/* The paks: read (all .pk3 of a directory but this converter's own, ps2*.pk3,
+   in the order of their names, a later one's file over an earlier one's, as
+   the game's file system), and written (stored, no compression). */
 #include "conv.h"
 
 #include <stdio.h>
@@ -97,7 +97,18 @@ static int add_pak(pk3_set *s, cv_file *f) {
   return 0;
 }
 
-static int cmp_str(const void *a, const void *b) { return strcmp(*(char *const *)a, *(char *const *)b); }
+static int lower(int c) { return c >= 'A' && c <= 'Z' ? c + 32 : c; }
+int pk3_name_cmp(const char *a, const char *b) {
+  while (*a && lower(*a) == lower(*b))
+    a++, b++;
+  return lower(*(const unsigned char *)a) - lower(*(const unsigned char *)b);
+}
+int pk3_is_pak(const char *name) {
+  u32 l = (u32)strlen(name);
+  return l > 4 && !pk3_name_cmp(name + l - 4, ".pk3") &&
+         !(lower(name[0]) == 'p' && lower(name[1]) == 's' && name[2] == '2');
+}
+static int cmp_str(const void *a, const void *b) { return pk3_name_cmp(*(char *const *)a, *(char *const *)b); }
 
 pk3_set *pk3_open(const char *dir) {
   int n;
@@ -106,16 +117,9 @@ pk3_set *pk3_open(const char *dir) {
     return 0;
   char **names = malloc((size_t)(n ? n : 1) * sizeof *names);
   int k = 0;
-  for (char *s = list; n--; s += strlen(s) + 1) {
-    u32 l = (u32)strlen(s);
-    char low[256];
-    if (l >= sizeof low)
-      continue;
-    for (u32 i = 0; i <= l; i++)
-      low[i] = s[i] >= 'A' && s[i] <= 'Z' ? s[i] + 32 : s[i];
-    if (!strncmp(low, "pak", 3) && l > 4 && !strcmp(low + l - 4, ".pk3"))
+  for (char *s = list; n--; s += strlen(s) + 1)
+    if (pk3_is_pak(s))
       names[k++] = s;
-  }
   qsort(names, (size_t)k, sizeof *names, cmp_str);
   pk3_set *set = calloc(1, sizeof *set);
   for (int i = 0; i < k; i++) {

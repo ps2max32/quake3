@@ -68,13 +68,11 @@ static void stamp_make(void) {
   /* the paks in the order of their names */
   char *names[64];
   int k = 0;
-  for (char *s = list; list && n-- && k < 64; s += strlen(s) + 1) {
-    u32 l = (u32)strlen(s);
-    if (l > 4 && (s[0] == 'p' || s[0] == 'P') && !strcmp(s + l - 4, ".pk3"))
+  for (char *s = list; list && n-- && k < 64; s += strlen(s) + 1)
+    if (pk3_is_pak(s))
       names[k++] = s;
-  }
   for (int i = 1; i < k; i++)
-    for (int j = i; j > 0 && strcmp(names[j - 1], names[j]) > 0; j--) {
+    for (int j = i; j > 0 && pk3_name_cmp(names[j - 1], names[j]) > 0; j--) {
       char *t = names[j];
       names[j] = names[j - 1], names[j - 1] = t;
     }

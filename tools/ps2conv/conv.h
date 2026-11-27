@@ -48,6 +48,11 @@ extern volatile int cv_cancel; /* set by the caller: the work stops, < 0 */
    one's (as the game's file system), names in lower case */
 typedef struct pk3_set pk3_set;
 pk3_set *pk3_open(const char *dir);
+/* Whether a file of a game's directory is one of its paks, as the game's file
+   system takes them: any .pk3 but the ones this converter writes (ps2*.pk3) */
+int pk3_is_pak(const char *name);
+/* Paks' names compared as the game's file system orders them (case aside) */
+int pk3_name_cmp(const char *a, const char *b);
 void pk3_close(pk3_set *s);
 int pk3_count(const pk3_set *s);
 const char *pk3_name(const pk3_set *s, int i); /* sorted by name */

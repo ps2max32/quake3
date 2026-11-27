@@ -44,6 +44,8 @@
 #include "rp_tex.h"
 #include "rp_world.h"
 
+static int rp_data_path_of(char *path, int size, const char *game, const char *file);
+static const char *rp_mod(void);
 void rp_data_path(char *path, int size, const char *file);
 
 refimport_t ri;
@@ -100,6 +102,53 @@ static cvar_t *r_ps2halfat;    /* r_ps2width 0 with the Z in the picture: half t
 static int z_in_picture; /* r_ps2ownz 0: the passes' Z is the next strip of the picture */
 static cvar_t *r_ps2trilinear;
 static u32 tri_frames, tri_changes, tri_calm;
+
+/* The images and the models: two files tools/ps2conv makes, mapped. The
+   base game's; a mod's (fs_game) over them, when it has its own (a mod made of
+   the base game's files alone needs none). At each start of the renderer, as
+   the mod may have changed (game_restart, the menu's Mods): a mod's files once
+   mapped stay so (address space only: their pages are dropped when not used) */
+static void bins_choose(void) {
+	static struct rp_bin base_tex, base_mdl;
+	static struct {
+		char name[MAX_QPATH];
+		struct rp_bin tex, mdl;
+	} mods[4];
+	char path[MAX_OSPATH];
+	const char *game = ri.Cvar_Get("com_basegame", BASEGAME, 0)->string, *mod = rp_mod();
+	if (!base_tex.base) {
+		rp_data_path_of(path, sizeof path, game, "ps2tex.bin");
+		if (rp_bin_open(&base_tex, path, 1) < 0)
+			ri.Error(ERR_FATAL, "ps2: no %s (tools/ps2conv makes it: CONVERT.ELF, or ps2conv tex on the PC)", path);
+		rp_data_path_of(path, sizeof path, game, "ps2mdl.bin");
+		if (rp_bin_open(&base_mdl, path, 2) < 0)
+			ri.Error(ERR_FATAL, "ps2: no %s (tools/ps2conv makes it: CONVERT.ELF, or ps2conv mdl on the PC)", path);
+		ri.Printf(PRINT_ALL, "ps2: renderer: %u images (%u MB) and %u models (%u MB) mapped\n", base_tex.count,
+		          base_tex.size >> 20, base_mdl.count, base_mdl.size >> 20);
+	}
+	rp_bin_tex = base_tex, rp_bin_mdl = base_mdl;
+	if (!mod)
+		return;
+	int i = 0;
+	while (i < 4 && mods[i].name[0] && Q_stricmp(mods[i].name, mod))
+		i++;
+	if (i == 4)
+		return;
+	if (!mods[i].name[0]) {
+		Q_strncpyz(mods[i].name, mod, sizeof mods[i].name);
+		if (rp_data_path_of(path, sizeof path, mod, "ps2tex.bin"))
+			rp_bin_open(&mods[i].tex, path, 1);
+		if (rp_data_path_of(path, sizeof path, mod, "ps2mdl.bin"))
+			rp_bin_open(&mods[i].mdl, path, 2);
+		mods[i].tex.under = &base_tex, mods[i].mdl.under = &base_mdl;
+	}
+	if (mods[i].tex.base)
+		rp_bin_tex = mods[i].tex;
+	if (mods[i].mdl.base)
+		rp_bin_mdl = mods[i].mdl;
+	ri.Printf(PRINT_ALL, "ps2: renderer: %s: %u images and %u models of its own\n", mod,
+	          mods[i].tex.base ? mods[i].tex.count : 0, mods[i].mdl.base ? mods[i].mdl.count : 0);
+}
 
 static void screen_init(void) {
 	if (screen_on)
@@ -192,16 +241,6 @@ static void screen_init(void) {
 	/* the frames' chains: more frames wait to be shown at half the width
 	   (their passes take less), and the stream area's chains are more */
 	rp_list_init(width < 1920 || dyn_width || rp_tex_stream_pages() ? 1024 * 1024 : 768 * 1024);
-	/* the images and the models: two files tools/ps2conv makes, mapped */
-	char path[MAX_OSPATH];
-	rp_data_path(path, sizeof path, "ps2tex.bin");
-	if (rp_bin_open(&rp_bin_tex, path, 1) < 0)
-		ri.Error(ERR_FATAL, "ps2: no %s (tools/ps2conv makes it: CONVERT.ELF, or ps2conv tex on the PC)", path);
-	rp_data_path(path, sizeof path, "ps2mdl.bin");
-	if (rp_bin_open(&rp_bin_mdl, path, 2) < 0)
-		ri.Error(ERR_FATAL, "ps2: no %s (tools/ps2conv makes it: CONVERT.ELF, or ps2conv mdl on the PC)", path);
-	ri.Printf(PRINT_ALL, "ps2: renderer: %u images (%u MB) and %u models (%u MB) mapped\n", rp_bin_tex.count,
-	          rp_bin_tex.size >> 20, rp_bin_mdl.count, rp_bin_mdl.size >> 20);
 	screen_on = 1;
 }
 
@@ -216,16 +255,36 @@ static const char *rp_dir(const char *cvar) {
 		return d + 2;
 	return d[0] == '.' && !d[1] ? "" : d;
 }
-void rp_data_path(char *path, int size, const char *file) {
-	const char *game = ri.Cvar_Get("com_basegame", BASEGAME, 0)->string, *home = rp_dir("fs_homepath");
-	Com_sprintf(path, size, "%s%sps2/%s/%s", home, home[0] ? "/" : "", game, file);
+static int rp_exists(const char *path) {
 	int fd = mx_fio_open(path, MX_FIO_RDONLY);
-	if (fd >= 0) {
-		mx_fio_close(fd);
-		return;
-	}
+	if (fd < 0)
+		return 0;
+	mx_fio_close(fd);
+	return 1;
+}
+/* the file of one game's directory (path: the second place when neither has
+   it), whether it is there */
+static int rp_data_path_of(char *path, int size, const char *game, const char *file) {
+	const char *home = rp_dir("fs_homepath");
+	Com_sprintf(path, size, "%s%sps2/%s/%s", home, home[0] ? "/" : "", game, file);
+	if (rp_exists(path))
+		return 1;
 	const char *base = rp_dir("fs_basepath");
 	Com_sprintf(path, size, "%s%s%s/%s", base, base[0] ? "/" : "", game, file);
+	return rp_exists(path);
+}
+/* the mod played (fs_game, a directory over the base game's), or 0 */
+static const char *rp_mod(void) {
+	const char *mod = ri.Cvar_Get("fs_game", "", 0)->string,
+	           *game = ri.Cvar_Get("com_basegame", BASEGAME, 0)->string;
+	return mod[0] && Q_stricmp(mod, game) ? mod : 0;
+}
+/* the mod's file when it has it, else the base game's */
+void rp_data_path(char *path, int size, const char *file) {
+	const char *mod = rp_mod();
+	if (mod && rp_data_path_of(path, size, mod, file))
+		return;
+	rp_data_path_of(path, size, ri.Cvar_Get("com_basegame", BASEGAME, 0)->string, file);
 }
 
 /* ---- the world ---------------------------------------------------------------------- */
@@ -1909,8 +1968,10 @@ static int RP_MarkFragments(int numPoints, const vec3_t *points, const vec3_t pr
 
 /* where the renderer's mapped files lie, for a report by address (sys_ps2.c) */
 void ps2_ren_regions(void (*fn)(const char *name, const void *p, unsigned bytes)) {
-	fn("ps2tex.bin", rp_bin_tex.base, rp_bin_tex.size);
-	fn("ps2mdl.bin", rp_bin_mdl.base, rp_bin_mdl.size);
+	for (const struct rp_bin *b = &rp_bin_tex; b; b = b->under)
+		fn(b->under ? "the mod's ps2tex.bin" : "ps2tex.bin", b->base, b->size);
+	for (const struct rp_bin *b = &rp_bin_mdl; b; b = b->under)
+		fn(b->under ? "the mod's ps2mdl.bin" : "ps2mdl.bin", b->base, b->size);
 	fn("the map", world_map, world_size);
 }
 
@@ -2154,6 +2215,7 @@ static void RP_BeginRegistration(glconfig_t *config) {
 	ri.Cvar_Get("r_availableModes", "", CVAR_ROM);
 	ri.Cvar_Set("r_availableModes", "1920x1080");
 	screen_init();
+	bins_choose();
 	/* no frame in flight draws what goes now: the map, the images */
 	world_free();
 	frames_flush();

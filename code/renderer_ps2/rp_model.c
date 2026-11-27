@@ -431,8 +431,9 @@ qhandle_t rp_model_register(const char *name) {
 	for (char *c = base; *c; c++)
 		if (*c == '\\')
 			*c = '/';
-	const struct rp_bin_entry *be = rp_bin_find(&rp_bin_mdl, base);
-	md3Header_t *hd = be ? (md3Header_t *)(rp_bin_mdl.base + be->off) : NULL;
+	const struct rp_bin *in;
+	const struct rp_bin_entry *be = rp_bin_find(&rp_bin_mdl, base, &in);
+	md3Header_t *hd = be ? (md3Header_t *)(in->base + be->off) : NULL;
 	if (hd && be->size >= sizeof *hd && hd->ident == MD3_IDENT && hd->version == MD3_VERSION && hd->numFrames > 0 &&
 	    hd->numSurfaces <= MD3_MAX_SURFACES)
 		m->md3 = hd;

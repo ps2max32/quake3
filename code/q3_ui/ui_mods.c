@@ -74,6 +74,9 @@ static void UI_Mods_MenuEvent( void *ptr, int event ) {
 	}
 
 	switch ( ((menucommon_s*)ptr)->id ) {
+	case ID_LIST:
+		// a pad's button on the list: its arrows stay in it, so the
+		// selected one is loaded from there, as with Fight
 	case ID_GO:
 		trap_Cvar_Set( "fs_game", s_mods.fs_gameList[s_mods.list.curvalue] );
 		trap_Cmd_ExecuteText( EXEC_APPEND, "vid_restart;" );

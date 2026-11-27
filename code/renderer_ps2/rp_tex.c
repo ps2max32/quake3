@@ -10,6 +10,7 @@
    racing's once record (the passes replay a frame's stream; an upload is done
    once, before them). What no frame in flight draws with makes room. */
 
+#include <mx/draw.h>
 #include <mx/frame.h>
 #include <mx/gif.h>
 #include <mx/hires.h>
@@ -130,7 +131,24 @@ static int clut_place(u64 key, int small, u32 *bp) {
 	return r;
 }
 
+/* The GS memory's content was lost (another process had the graphics, or a
+   pause of beam racing dropped the frames waiting with their uploads:
+   <mx/draw.h>): what this keeps there itself, beside the cache (maxsdk
+   resets that), is sent again when next drawn */
+static void tex_lost(void *arg) {
+	(void)arg;
+	for (u32 i = 0; i < CLUT_SLOTS; i++)
+		cs_key[i] = 0, cs_used[i] = 0;
+	for (u32 k = 0; k < fine_n; k++)
+		if (fine_unit[k])
+			fine_unit[k]->fine = 0, fine_unit[k] = 0;
+}
+static const struct mx_draw_ops tex_ops = {tex_lost, 0};
+
 void rp_tex_init(void) {
+	static int draw_id = -1;
+	if (draw_id < 0)
+		draw_id = mx_draw_open(&tex_ops);
 	/* no pool until a map has images for it (rp_tex_fine_use) */
 	fine_n = 0;
 	s_pages = 0;
@@ -432,14 +450,15 @@ struct rp_image *rp_image_bin(const char *name, u32 *bytes) {
 	struct rp_image *im = rp_image_find(name);
 	if (im)
 		return im;
-	const struct rp_bin_entry *e = rp_bin_tex.base ? rp_bin_find(&rp_bin_tex, name) : 0;
+	const struct rp_bin *in;
+	const struct rp_bin_entry *e = rp_bin_find(&rp_bin_tex, name, &in);
 	if (!e)
 		return 0;
 	const u8 *level[MX_TEX_LEVELS];
 	u32 levels = e->levels > MX_TEX_LEVELS ? MX_TEX_LEVELS : e->levels;
 	for (u32 l = 0; l < levels; l++)
-		level[l] = rp_bin_tex.base + e->off_level[l];
-	im = image_static(name, e->psm, e->w, e->h, levels, e->alpha, level, rp_bin_tex.base + e->off_clut,
+		level[l] = in->base + e->off_level[l];
+	im = image_static(name, e->psm, e->w, e->h, levels, e->alpha, level, in->base + e->off_clut,
 	                  e->psm == MX_GS_PSM_T4 && !e->alpha);
 	if (!im)
 		return 0;
