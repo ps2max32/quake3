@@ -885,6 +885,9 @@ void UI_MouseEvent( int dx, int dy )
 	// convert X bias to 640 coords
 	bias = uis.bias / uis.xscale;
 
+	if (dx || dy)
+		uis.mouseSeen = qtrue;
+
 	// update mouse screen position
 	uis.cursorx += dx;
 	if (uis.cursorx < -bias)
@@ -1232,9 +1235,10 @@ void UI_Refresh( int realtime )
 		}
 	}
 
-	// draw cursor
+	// draw cursor, once a mouse has moved (none on a pad alone)
 	UI_SetColor( NULL );
-	UI_DrawHandlePic( uis.cursorx-16, uis.cursory-16, 32, 32, uis.cursor);
+	if (uis.mouseSeen)
+		UI_DrawHandlePic( uis.cursorx-16, uis.cursory-16, 32, 32, uis.cursor);
 
 #ifndef NDEBUG
 	if (uis.debug)

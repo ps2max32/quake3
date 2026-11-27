@@ -235,9 +235,13 @@ static int starts(const char *s, const char *with) {
 	return !*with;
 }
 
+/* the screen's pictures; with them those that fill it (the menus' background,
+   menuback's map, and a level's picture while it loads: tools/ps2conv keeps
+   them up to 512, and they are drawn from their finest level) */
 static u32 kind_of(const char *name) {
-	return starts(name, "*lightmap")   ? RP_IMAGE_LIGHTMAP
-	       : starts(name, "textures/") ? RP_IMAGE_WORLD
+	return starts(name, "*lightmap")                                            ? RP_IMAGE_LIGHTMAP
+	       : starts(name, "textures/sfx/logo512") || starts(name, "levelshots/") ? RP_IMAGE_SCREEN
+	       : starts(name, "textures/")                                          ? RP_IMAGE_WORLD
 	       : starts(name, "models/")   ? RP_IMAGE_MODEL
 	       : starts(name, "gfx/2d/") || starts(name, "menu/") || starts(name, "ui/") || starts(name, "icons/")
 	           ? RP_IMAGE_SCREEN
@@ -1124,10 +1128,12 @@ const struct mx_tex *rp_image_place(struct rp_image *im) {
 	if (f0 && im->split && f0 > im->m.tail)
 		f0 = 0;
 	/* an image of the file larger than 128 texels a side: the cache has it
-	   from its level of 128, as when the file had no more; its first level is
+	   from its level of 128, as when the file had no more (not a picture of
+	   the screen: seen whole, in the menus and while a level loads); its first level is
 	   the pool's, in the frames it has a unit there (rp_image_fine) */
 	u32 base = 0;
-	while (!im->split && base + 2 < (u32)im->levels && (im->w > im->h ? im->w : im->h) >> base > tex_max)
+	while (!im->split && im->kind != RP_IMAGE_SCREEN && base + 2 < (u32)im->levels &&
+	       (im->w > im->h ? im->w : im->h) >> base > tex_max)
 		base++;
 	/* but not a model's that is big on the screen (rp_image_want_model): its
 	   finest level is seen there (a player up close, the view weapon's) */

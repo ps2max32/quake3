@@ -10,7 +10,9 @@
    image before the original, and uploads it with one glCompressedTexImage2D;
    the PS2's own renderer (code/renderer_ps2) draws with nothing else: an
    image without a .p8 is not drawn. The pictures of the screen (gfx/2d,
-   menu, ui, icons: the font, the HUD) are kept up to 256 a side.
+   menu, ui, icons: the font, the HUD) are kept up to 256 a side, the ones
+   that fill it (the menus' background, the levels' pictures while one
+   loads: seen only there, so they cost no frame of play) up to 512.
 
    Each image is made the size the renderer would (sides rounded down to
    powers of two, by Pillow's BOX filter as the Python tool did: the colour
@@ -54,6 +56,7 @@
 #define GL_PALETTE8_RGB8_OES 0x8B95
 #define GL_PALETTE8_RGBA8_OES 0x8B96
 #define MAX2D 256
+#define MAXFULL 512
 #define T4DB 35.0
 #define KMEANS 3 /* rounds after Wu's cut */
 
@@ -774,6 +777,13 @@ static u8 *convert(const u8 *data, u32 n, int is_tga, int maxside, u32 *outn, do
   return out;
 }
 
+/* the pictures that fill the screen: the menus' background (menuback's
+   map), the levels' pictures and the one for a level without */
+static int full_screen(const char *n) {
+  return !strncmp(n, "textures/sfx/logo512.", 21) || !strncmp(n, "levelshots/", 11) ||
+         !strncmp(n, "menu/art/unknownmap.", 20);
+}
+
 static int two_d(const char *n) {
   return !strncmp(n, "gfx/2d/", 7) || !strncmp(n, "menu/", 5) || !strncmp(n, "ui/", 3) || !strncmp(n, "icons/", 6);
 }
@@ -826,7 +836,7 @@ int cv_pak(const char *out_pk3, const char *gamedir, int maxside) {
     u32 l = (u32)strlen(nm), n, on;
     u8 *d = pk3_read(s, pick[k], &n);
     double mse;
-    u8 *p8 = d ? convert(d, n, !strcmp(nm + l - 4, ".tga"), two_d(nm) ? MAX2D : maxside, &on, &mse) : 0;
+    u8 *p8 = d ? convert(d, n, !strcmp(nm + l - 4, ".tga"), full_screen(nm) ? MAXFULL : two_d(nm) ? MAX2D : maxside, &on, &mse) : 0;
     free(d);
     if (!p8) {
       cv_log("skipped %s: not an image this reads", nm);

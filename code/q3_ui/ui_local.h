@@ -538,6 +538,7 @@ typedef struct {
 	int					frametime;
 	int					realtime;
 	int					cursorx;
+	qboolean			mouseSeen;	// a mouse moved: its cursor is drawn (none without one, as on a pad)
 	int					cursory;
 	int					menusp;
 	menuframework_s*	activemenu;
