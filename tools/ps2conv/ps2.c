@@ -25,9 +25,16 @@
                                 what it makes: any change to them makes all
                                 again), max, and each pak's name and size
 
-   When the stamp says the same as the paks there now and what it made is
-   there, it ends at once (status
-   0) without a screen; else it makes all of it again. Status 0: done; 2:
+   The mods beside it in the data directory (a directory with paks of its
+   own, as LegoC: the game's fs_game, its menu's Mods) are made the same
+   way, each directory alone and after the game's: <mod>/ps2tex.pk3,
+   <mod>/ps2snd.pk3, ps2/<mod>/ps2tex.bin, ps2mdl.bin and stamp (the game
+   takes them over baseq3's; a mod's maps are not made: they would need the
+   base game's textures).
+
+   When each directory's stamp says the same as its paks there now and what
+   it made is there, it ends at once (status 0) without a screen; else it
+   makes those directories again. Status 0: done; 2:
    stopped by the user (nothing half made is used: the stamp is written
    last); 1: failed (the screen says why until a button is pressed). */
 #include <GL/gl.h>
@@ -56,12 +63,32 @@ int pad_on; /* pn.h */
    Makefile's CONV_HASH, made at each build), in the stamp */
 extern const char cv_hash[];
 
-static char gamedir[128], game[16], outdir[64], title[48] = "Quake III Arena", version_name[24];
+static char gamedir[128], game[24], outdir[64], title[48] = "Quake III Arena", version_name[24];
 static int maxside = 128;
 static char stamp_now[2048];
+/* the directories to look at: the game's (baseq3 or demoq3) first, then the
+   mods beside it */
+#define MAX_UNITS 9
+static struct unit {
+  char dir[24];      /* below the data directory */
+  char name[48];     /* on the screen: the version's name, a mod's description.txt */
+  u32 weight;        /* its paks' bytes: its share of the bar */
+  int todo;          /* its stamp is not the same */
+  char stamp[2048];  /* what its stamp is to say */
+} units[MAX_UNITS];
+static int nunits;
+static volatile int unit_at; /* the one being made */
+static const char *data = ".";
+static void unit_use(int i) {
+  mx_snprintf(game, sizeof game, "%s", units[i].dir);
+  mx_snprintf(gamedir, sizeof gamedir, "%s/%s", data, game);
+  mx_snprintf(outdir, sizeof outdir, "ps2/%s", game);
+}
 
 /* ---- the stamp ---- */
+static u32 stamp_weight;
 static void stamp_make(void) {
+  stamp_weight = 0;
   int n;
   char *list = cv_list(gamedir, &n);
   u32 at = (u32)mx_snprintf(stamp_now, sizeof stamp_now, "ps2conv %s\nmax %d\n", cv_hash, maxside);
@@ -81,6 +108,7 @@ static void stamp_make(void) {
     mx_snprintf(p, sizeof p, "%s/%s", gamedir, names[i]);
     cv_file *f = cv_open(p, 0);
     at += (u32)mx_snprintf(stamp_now + at, sizeof stamp_now - at, "%s %u\n", names[i], f ? cv_size(f) : 0);
+    stamp_weight += f ? cv_size(f) : 0;
     cv_close(f);
   }
   free(list);
@@ -135,8 +163,27 @@ static void progress(const char *what, u32 done, u32 total) {
   p_done = done, p_total = total;
 }
 
+static int make_one(int base);
 static void work(void *arg) {
   (void)arg;
+  int r = 0;
+  for (int i = 0; i < nunits && !r; i++) {
+    if (!units[i].todo)
+      continue;
+    unit_at = i;
+    unit_use(i);
+    mx_snprintf(stamp_now, sizeof stamp_now, "%s", units[i].stamp);
+    step = -1, nmaps = 0, map_at = 0, p_done = p_total = 0;
+    r = make_one(i == 0);
+  }
+  if (r && !cv_cancel)
+    mx_snprintf(fail_msg, sizeof fail_msg, "%s could not be made (a full device?)", step >= 0 ? step_name[step] : "It");
+  failed = r != 0;
+  finished = 1;
+}
+
+/* one directory: the game's (base: with its maps) or a mod's */
+static int make_one(int base) {
   char p[160], tex[160], s2[160];
   cv_mkdir("ps2");
   cv_mkdir(outdir);
@@ -168,7 +215,9 @@ static void work(void *arg) {
     if (!r)
       r = cv_bin(p, 2, gamedir);
   }
-  if (!r) {
+  if (!r && !base)
+    step = ST_MAP;
+  if (!r && base) {
     step = ST_MAP;
     pk3_set *s = pk3_open(gamedir);
     mx_snprintf(p, sizeof p, "%s/maps", outdir);
@@ -201,10 +250,7 @@ static void work(void *arg) {
       r = -1;
     cv_close(f);
   }
-  if (r && !cv_cancel)
-    mx_snprintf(fail_msg, sizeof fail_msg, "%s could not be made (a full device?)", step >= 0 ? step_name[step] : "It");
-  failed = r != 0;
-  finished = 1;
+  return r;
 }
 
 /* ---- the game's cover (coverhd.t8: 256 x 361, the shell's format) ---- */
@@ -247,6 +293,16 @@ static float overall(void) {
                               : (p_total ? (float)p_done / p_total : 0);
     k += step_share[step] * (in > 1 ? 1 : in);
   }
+  /* the directories to make, by their paks' bytes */
+  u32 all = 0, before = 0;
+  for (int i = 0; i < nunits; i++)
+    if (units[i].todo) {
+      all += units[i].weight;
+      if (i < unit_at)
+        before += units[i].weight;
+    }
+  if (all)
+    k = ((float)before + (float)units[unit_at].weight * k) / (float)all;
   return finished && !failed ? 1 : k;
 }
 
@@ -277,7 +333,7 @@ static void draw(void) {
   /* the game and its data's version; what is going on */
   char t[96], where[128];
   int stopped = finished && cv_cancel;
-  mx_snprintf(t, sizeof t, "%s" DOT "%s", title, version_name);
+  mx_snprintf(t, sizeof t, "%s" DOT "%s", title, unit_at ? units[unit_at].name : version_name);
   float tw = d_text_w(FONT_TITLE, t);
   d_text(FONT_TITLE, SCR_W * 0.5f - tw * 0.5f, 430, t, argb(C_WHITE, 1));
   if (failed && !stopped)
@@ -329,7 +385,7 @@ static void draw(void) {
 static u8 stack[256 << 10] MX_ALIGNED(16) MX_IRQ_BSS; /* a thread stack: core */
 
 int main(int argc, char **argv) {
-  const char *data = ".", *version = 0;
+  const char *version = 0;
   int npos = 0;
   for (int i = 1; i < argc; i++) {
     if (!strncmp(argv[i], "max=", 4))
@@ -356,14 +412,60 @@ int main(int argc, char **argv) {
     mx_snprintf(game, sizeof game, "%s", f ? "baseq3" : "demoq3");
     cv_close(f);
   }
-  mx_snprintf(gamedir, sizeof gamedir, "%s/%s", data, game);
-  mx_snprintf(outdir, sizeof outdir, "ps2/%s", game);
-  stamp_make();
-  if (!shot_at && stamp_same()) {
-    mx_printf("ps2conv: %s: made already\n", gamedir);
-    return 0;
+  /* the game's directory, then the mods beside it: directories with paks
+     of their own (not the other base game, nor Team Arena's missionpack,
+     whose game code this does not have) */
+  mx_snprintf(units[0].dir, sizeof units[0].dir, "%s", game);
+  nunits = 1;
+  int dn;
+  char *dl = cv_list(data, &dn);
+  for (char *d = dl; dl && dn-- && nunits < MAX_UNITS; d += strlen(d) + 1) {
+    if (d[0] == '.' || strlen(d) >= sizeof units[0].dir || !pk3_name_cmp(d, "baseq3") || !pk3_name_cmp(d, "demoq3") ||
+        !pk3_name_cmp(d, "missionpack") || !pk3_name_cmp(d, game))
+      continue;
+    char sub[160];
+    int sn, paks = 0;
+    mx_snprintf(sub, sizeof sub, "%s/%s", data, d);
+    char *sl = cv_list(sub, &sn);
+    for (char *e = sl; sl && sn--; e += strlen(e) + 1)
+      paks += pk3_is_pak(e);
+    free(sl);
+    if (!paks)
+      continue;
+    struct unit *u = &units[nunits++];
+    mx_snprintf(u->dir, sizeof u->dir, "%s", d);
+    mx_snprintf(u->name, sizeof u->name, "%s", d);
+    /* its name: description.txt, as the game's Mods menu shows it */
+    mx_snprintf(sub, sizeof sub, "%s/%s/description.txt", data, d);
+    cv_file *df = cv_open(sub, 0);
+    if (df) {
+      char b[48];
+      int n = cv_read(df, b, sizeof b - 1);
+      cv_close(df);
+      u32 l = 0;
+      while (n > 0 && l < (u32)n && b[l] != '\n' && b[l] != '\r')
+        l++;
+      while (l && b[l - 1] == ' ')
+        l--;
+      if (l)
+        memcpy(u->name, b, l), u->name[l] = 0;
+    }
   }
-  mx_printf("ps2conv: %s: to be made (max %d)\n", gamedir, maxside);
+  free(dl);
+  int todo = 0;
+  for (int i = 0; i < nunits; i++) {
+    unit_use(i);
+    stamp_make();
+    struct unit *u = &units[i];
+    memcpy(u->stamp, stamp_now, sizeof u->stamp);
+    u->weight = stamp_weight ? stamp_weight : 1;
+    u->todo = shot_at || !stamp_same();
+    todo += u->todo;
+    mx_printf("ps2conv: %s: %s (max %d)\n", gamedir, u->todo ? "to be made" : "made already", maxside);
+  }
+  if (!todo)
+    return 0;
+  unit_use(0);
   /* the version's name: game.ini's versions= ("<name>:<file>:<word>"),
      else these */
   mx_snprintf(version_name, sizeof version_name, "%s", !strcmp(game, "demoq3") ? "Demo" : "Full game");
