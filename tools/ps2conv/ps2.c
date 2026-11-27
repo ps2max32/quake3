@@ -350,8 +350,12 @@ static void draw(void) {
   float bx0 = SCR_W * 0.5f - 400, bx1 = SCR_W * 0.5f + 400;
   if (SCR_W < 1100)
     bx0 = MARGIN, bx1 = SCR_W - MARGIN;
-  d_bar(bx0, 500, bx1, 502, k, C_LAMP, 1);
-  d_glow(bx0 + (bx1 - bx0) * k, 501, 240, 60, argb(C_LAMP, 0.14f));
+  /* two units, but three lines of the picture at least, as in 1080i: in
+     PAL (512 lines, 0.71 a unit) two units were one line, in one field of
+     the two only */
+  float bh = 3.0f / px_y > 2 ? 3.0f / px_y : 2;
+  d_bar(bx0, 500, bx1, 500 + bh, k, C_LAMP, 1);
+  d_glow(bx0 + (bx1 - bx0) * k, 500 + bh * 0.5f, 240, 60, argb(C_LAMP, 0.14f));
   /* the steps */
   float cw = (bx1 - bx0) / NSTEPS;
   for (int i = 0; i < NSTEPS; i++) {
